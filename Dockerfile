@@ -2,8 +2,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system dependencies required by Playwright
+# Install system dependencies required by Playwright(+ git REQUIRED for pip git dependencies)
 RUN apt-get update && apt-get install -y \
+    git \
     wget curl unzip \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
