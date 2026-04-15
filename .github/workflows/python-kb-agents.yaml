@@ -1,0 +1,105 @@
+name: Deploy-KBCurator
+on:
+  workflow_dispatch: 
+  # push:
+  #   branches:
+  #     - kb-cicd
+    paths:    
+      - 'src/kbcurrator/**'
+      - 'Dockerfile'
+      - '.github/workflows/python-kb-agents.yaml'
+   
+env:
+  AZURE_WEBAPP_NAME: forgeX-dev-kb
+  REGISTRY: ${{ secrets.registry }}
+  DOCKER_IMAGE_NAME: developement-kbcurator
+  rg_name: ${{ secrets.DEV_RG_NAME }}
+  subscription_id: ${{ secrets.subscription_id }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Log in to Azure Container Registry
+      run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login ${{ env.REGISTRY }} -u ${{ secrets.REGISTRY_USERNAME }} --password-stdin
+
+    - name: Build and Push Docker Image
+      run: |    
+        docker build -t ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} .
+        docker push ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+
+    - name: Save Previous Image Tag
+      id: previous
+      run: |
+        az webapp config show \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.rg_name }} \
+          --query linuxFxVersion \
+          --output tsv > previous_image.txt
+
+    - name: Set LinuxFxVersion to New Image
+      run: |
+        az webapp config set \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.rg_name }} \
+          --linux-fx-version "DOCKER|${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}"
+
+    - name: Enable ACR Access via Managed Identity
+      run: |
+        az resource update \
+          --ids /subscriptions/${{ env.subscription_id }}/resourceGroups/${{ env.rg_name }}/providers/Microsoft.Web/sites/${{ env.AZURE_WEBAPP_NAME }}/config/web \
+          --set properties.acrUseManagedIdentityCreds=true
+
+    - name: Set Health Check Path
+      run: |
+        az webapp update \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.rg_name }} \
+          --set siteConfig.healthCheckPath="/health"
+
+    - name: Restart App Service
+      run: |
+        az webapp restart \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.rg_name }}
+
+
+    - name: Rollback if Deployment Fails
+      if: failure()
+      run: |
+        PREV_IMAGE=$(cat previous_image.txt)
+        az webapp config set \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.rg_name }} \
+          --linux-fx-version "$PREV_IMAGE"
+        az webapp restart \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.rg_name }}
+
+    - name: Verify deployed image
+      run: |
+        DEPLOYED_IMAGE=$(az webapp config show \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.rg_name }} \
+          --query linuxFxVersion \
+          --output tsv)
+
+        echo "Deployed image: $DEPLOYED_IMAGE"
+
+        EXPECTED_IMAGE="DOCKER|${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}"
+
+        if [ "$DEPLOYED_IMAGE" != "$EXPECTED_IMAGE" ]; then
+          echo "❌ Deployment failed or image mismatch!"
+          exit 1
+        else
+          echo "✅ Image deployed successfully."
+        fi
