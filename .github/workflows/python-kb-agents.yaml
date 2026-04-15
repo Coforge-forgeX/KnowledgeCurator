@@ -10,9 +10,9 @@ on:
       - '.github/workflows/python-kb-agents.yaml'
    
 env:
-  AZURE_WEBAPP_NAME: forgeX-dev-kb
+  AZURE_WEBAPP_NAME: forgeX-dev-kb-poly
   REGISTRY: ${{ secrets.registry }}
-  DOCKER_IMAGE_NAME: developement-kbcurator
+  DOCKER_IMAGE_NAME: dev-poly-kbcurator
   rg_name: ${{ secrets.DEV_RG_NAME }}
   subscription_id: ${{ secrets.subscription_id }}
 
