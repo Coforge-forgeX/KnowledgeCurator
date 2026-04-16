@@ -1,9 +1,9 @@
 name: Deploy-KBCurator
 on:
   workflow_dispatch: 
-  push:
-    branches:
-      - kb-cicd
+  # push:
+  #   branches:
+  #     - kb-cicd
     paths:    
       - 'src/kbcurrator/**'
       - 'Dockerfile'
@@ -34,10 +34,8 @@ jobs:
 
     - name: Build and Push Docker Image
       run: |           
-       docker build --no-cache \
-        --build-arg GH_PAT_READ=${{ secrets.GH_PAT_READ }} \
-        -t ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} .
-        
+       docker build  \       
+        -t ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} .        
         docker push ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
 
     - name: Save Previous Image Tag
