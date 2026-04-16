@@ -11,17 +11,6 @@ RUN apt-get update && apt-get install -y \
     libasound2 libpangocairo-1.0-0 libpango-1.0-0 libgtk-3-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Accept token from workflow
-ARG GH_PAT_READ
-
-# Configure git to use token for github.com
-#RUN git config --global url."https://${GH_PAT_READ}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
-# Configure git to use fine‑grained PAT correctly
-RUN git config --global \
-  url."https://x-access-token:${GH_PAT_READ}@github.com/".insteadOf \
-  "https://github.com/"
-
-
 # Copy entire repo
 COPY . /app
 
