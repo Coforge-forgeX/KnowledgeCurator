@@ -1,9 +1,9 @@
 name: Deploy-KBCurator
 on:
   workflow_dispatch: 
-  push:
-    branches:
-      - kb-cicd
+  # push:
+  #   branches:
+  #     - kb-cicd
     paths:    
       - 'src/kbcurrator/**'
       - 'Dockerfile'
