@@ -33,4 +33,5 @@ RUN playwright install --with-deps chromium
 EXPOSE 9000
 
 # Run FastAPI app
-CMD ["uvicorn", "kbcurrator.server.main:http_app", "--host", "0.0.0.0", "--port", "9000"]
+#CMD ["uvicorn", "kbcurrator.server.main:http_app", "--host", "0.0.0.0", "--port", "9000"]
+CMD ["sh", "-c", "uvicorn kbcurator.server.main:http_app --host 0.0.0.0 --port ${PORT:-9000}"]
