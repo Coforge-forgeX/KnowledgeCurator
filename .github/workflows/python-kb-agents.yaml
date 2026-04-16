@@ -34,7 +34,7 @@ jobs:
 
     - name: Build and Push Docker Image
       run: |           
-       docker build \
+       docker build --no-cache \
         --build-arg GH_PAT_READ=${{ secrets.GH_PAT_READ }} \
         -t ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} .
         
