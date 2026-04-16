@@ -12,10 +12,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Accept token from workflow
-ARG GITHUB_TOKEN
+ARG GH_PAT_READ
 
 # Configure git to use token for github.com
-RUN git config --global url."https://${GITHUB_TOKEN}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+RUN git config --global url."https://${GH_PAT_READ}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
 
 # Copy entire repo
 COPY . /app
