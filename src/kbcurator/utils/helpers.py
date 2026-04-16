@@ -1,6 +1,6 @@
-from agent_search.utils.azurecustomllm import AzureCustomLLM
+from kbcurator.utils.azurecustomllm import AzureCustomLLM
 import re
-from agent_search.utils.prompt_builder import PromptBuilder
+from kbcurator.utils.prompt_builder import PromptBuilder
 
 # Function to evaluate quality of prompt
 def evaluate_user_input(user_input,industry,sub_industry):

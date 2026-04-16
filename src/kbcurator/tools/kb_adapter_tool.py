@@ -1,4 +1,4 @@
-from agent_search.server.server import mcp
+from kbcurator.server.server import mcp
 from azure.storage.blob import generate_blob_sas, BlobSasPermissions, BlobServiceClient
 import requests
 from dotenv import load_dotenv

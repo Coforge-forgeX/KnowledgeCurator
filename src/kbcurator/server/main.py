@@ -3,17 +3,17 @@ import json
 import asyncio
 from typing import List, Optional
 import os
-from agent_search.server.server import mcp
+from kbcurator.server.server import mcp
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
-from agent_search.utils.auth import extract_token_from_headers, verify_jwt_token
-from agent_search.utils.request_context import request_var
-from agent_search.utils.mongodb_singleton import get_mongodb_client
-from agent_search.utils.session_history_manager import SessionHistoryManager
+from kbcurator.utils.auth import extract_token_from_headers, verify_jwt_token
+from kbcurator.utils.request_context import request_var
+from kbcurator.utils.mongodb_singleton import get_mongodb_client
+from kbcurator.utils.session_history_manager import SessionHistoryManager
 import uvicorn
-from agent_search.server import storage_config
+from kbcurator.server import storage_config
 
 # --- Initialize global services (DI singletons) ---
 mongo_client = get_mongodb_client()
@@ -22,10 +22,10 @@ session = SessionHistoryManager(mongo_client)
 storage_config.initialize_storage()
 
 # --- Import tools so they are registered with MCP ---
-import agent_search.tools.ingestion_new        # noqa: F401
-import agent_search.tools.kb_adapter_tool      # noqa: F401
-import agent_search.tools.user_management_system  # noqa: F401
-import agent_search.tools.kb_curator_chatbot   # noqa: F401
+import kbcurator.tools.ingestion_new        # noqa: F401
+import kbcurator.tools.kb_adapter_tool      # noqa: F401
+import kbcurator.tools.user_management_system  # noqa: F401
+import kbcurator.tools.kb_curator_chatbot   # noqa: F401
 
 
 # ---------------------------
@@ -333,7 +333,7 @@ def _get_port() -> int:
 
 if __name__ == "__main__":
     uvicorn.run(
-        "agent_search.server.main:http_app",
+        "kbcurator.server.main:http_app",
         host="0.0.0.0",
         port=_get_port(),
         reload=False,

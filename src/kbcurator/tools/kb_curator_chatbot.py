@@ -7,20 +7,20 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 # Third-party and internal imports
 sys.path.append("../utils")
-from agent_search.utils.prompt_builder import PromptBuilder
-from agent_search.utils.azurecustomllm import AzureCustomLLM
-from agent_search.utils.classifier import classifier
-from agent_search.utils.mcp_service_client import MCPServiceClient
-from agent_search.server.server import mcp
-from agent_search.server.main import session
-from agent_search.utils.helpers import evaluate_user_input
+from kbcurator.utils.prompt_builder import PromptBuilder
+from kbcurator.utils.azurecustomllm import AzureCustomLLM
+from kbcurator.utils.classifier import classifier
+from kbcurator.utils.mcp_service_client import MCPServiceClient
+from kbcurator.server.server import mcp
+from kbcurator.server.main import session
+from kbcurator.utils.helpers import evaluate_user_input
 import difflib
-from agent_search.utils.chatbot_context import ChatbotContext
+from kbcurator.utils.chatbot_context import ChatbotContext
 import re
 from urllib.parse import urlparse
-from agent_search.utils.access_validation import validate_user_workspace_access
-from agent_search.utils.request_context import request_var
-from agent_search.tools.user_management_system import Session, UserMap
+from kbcurator.utils.access_validation import validate_user_workspace_access
+from kbcurator.utils.request_context import request_var
+from kbcurator.tools.user_management_system import Session, UserMap
 from fastmcp.server.dependencies import get_http_headers
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')

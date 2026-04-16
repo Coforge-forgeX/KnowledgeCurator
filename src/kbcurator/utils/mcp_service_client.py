@@ -1,5 +1,5 @@
 import socket
-from agent_search.client.mcp_client import MCPClient
+from kbcurator.client.mcp_client import MCPClient
 import json
 import asyncio
 from dotenv import load_dotenv

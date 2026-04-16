@@ -81,4 +81,4 @@ dependencies = [
 where = ["src"]
 
 [project.scripts]
-kb-server = "agent_search.server.main:http_app"
+kb-server = "kbcurator.server.main:http_app"

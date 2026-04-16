@@ -14,13 +14,13 @@ from common_adapters.lightrag.neptune.neptune_impl import NeptuneGraphStorage
 from common_adapters.lightrag.neptune.neptune_to_neo4j_converter import NeptuneToNeo4jConverter
 from common_adapters.doc_extract import DocReader
 from common_adapters.storage.exceptions import StorageError, NotFoundError
-from agent_search.server import storage_config
+from kbcurator.server import storage_config
 
 import inspect
 
 from lightrag.kg.shared_storage import initialize_share_data, initialize_pipeline_status
 import aiohttp
-from agent_search.server.server import mcp
+from kbcurator.server.server import mcp
 import psycopg2
 from azure.storage.blob import BlobServiceClient
 from docx import Document
@@ -42,10 +42,10 @@ from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.async_configs import BrowserConfig, CrawlerRunConfig, CacheMode, DefaultMarkdownGenerator
-from agent_search.utils.azurecustomllm import AzureCustomLLM
-from agent_search.utils.access_validation import validate_user_workspace_access
-from agent_search.utils.request_context import request_var
-from agent_search.tools.user_management_system import Session,UserMap
+from kbcurator.utils.azurecustomllm import AzureCustomLLM
+from kbcurator.utils.access_validation import validate_user_workspace_access
+from kbcurator.utils.request_context import request_var
+from kbcurator.tools.user_management_system import Session,UserMap
  
 load_dotenv(os.path.abspath(os.path.join(os.getcwd(),'.env')))
  
