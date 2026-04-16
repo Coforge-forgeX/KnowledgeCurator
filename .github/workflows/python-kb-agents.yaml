@@ -33,11 +33,9 @@ jobs:
       run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login ${{ env.REGISTRY }} -u ${{ secrets.REGISTRY_USERNAME }} --password-stdin
 
     - name: Build and Push Docker Image
-      run: |           
-       docker build  \       
-        -t ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
-        .        
-        docker push ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+      run: |
+       docker build -t ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} .
+       docker push ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
 
     - name: Save Previous Image Tag
       id: previous
