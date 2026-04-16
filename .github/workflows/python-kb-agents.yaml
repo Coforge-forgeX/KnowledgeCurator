@@ -5,7 +5,7 @@ on:
     branches:
       - kb-cicd
     paths:    
-      - 'src/kbcurrator/**'
+      - 'src/kbcurator/**'
       - 'Dockerfile'
       - '.github/workflows/python-kb-agents.yaml'
    
