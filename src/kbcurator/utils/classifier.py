@@ -1,6 +1,6 @@
 from typing import Optional
-from agent_search.utils.azurecustomllm import AzureCustomLLM
-from agent_search.utils.prompt_builder import PromptBuilder
+from kbcurator.utils.azurecustomllm import AzureCustomLLM
+from kbcurator.utils.prompt_builder import PromptBuilder
 
 _llm_classifier = None
 

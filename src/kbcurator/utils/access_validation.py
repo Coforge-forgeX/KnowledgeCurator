@@ -1,10 +1,10 @@
 """
 Helper for validating user and workspace access based on JWT claims.
 """
-from agent_search.utils.request_context import request_var
+from kbcurator.utils.request_context import request_var
 
 from sqlalchemy.orm import sessionmaker
-from agent_search.utils.request_context import request_var
+from kbcurator.utils.request_context import request_var
 
 def validate_user_workspace_access(user_id=None, workspace_id=None):
     """

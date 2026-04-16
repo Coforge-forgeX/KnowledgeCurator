@@ -1,7 +1,7 @@
 from fastmcp import FastMCP
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
-from agent_search.utils.mongodb_singleton import get_mongodb_client
+from kbcurator.utils.mongodb_singleton import get_mongodb_client
 import logging
 from dotenv import load_dotenv
 

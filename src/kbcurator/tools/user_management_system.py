@@ -1,5 +1,5 @@
-from agent_search.utils.access_validation import validate_user_workspace_access
-from agent_search.server.server import mcp
+from kbcurator.utils.access_validation import validate_user_workspace_access
+from kbcurator.server.server import mcp
 import psycopg2
 from configparser import ConfigParser
 from sqlalchemy import create_engine, func, MetaData
@@ -11,15 +11,15 @@ import os
 import sys
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
-from agent_search.utils.auth import create_jwt_token, verify_jwt_token, create_refresh_token, verify_refresh_token
-from agent_search.utils.request_context import request_var
+from kbcurator.utils.auth import create_jwt_token, verify_jwt_token, create_refresh_token, verify_refresh_token
+from kbcurator.utils.request_context import request_var
 from sqlalchemy import select, func as sql_func
 
 # --- New Import for Password Hashing ---
 from passlib.hash import argon2
 from threading import RLock
-from agent_search.utils.auth import extract_token_from_headers, revoke_token
-from agent_search.utils.auth import JWT_TRANSPORT_ENCODE, JWT_RETURN_RAW_ACCESS, JWT_SET_ACCESS_COOKIE, encode_for_transport
+from kbcurator.utils.auth import extract_token_from_headers, revoke_token
+from kbcurator.utils.auth import JWT_TRANSPORT_ENCODE, JWT_RETURN_RAW_ACCESS, JWT_SET_ACCESS_COOKIE, encode_for_transport
 
 
 load_dotenv(os.path.abspath(os.path.join(os.getcwd(),'.env')))
