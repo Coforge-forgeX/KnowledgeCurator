@@ -1,5 +1,4 @@
 name: Deploy-KBCurator
-
 on:
   workflow_dispatch: 
   push:
