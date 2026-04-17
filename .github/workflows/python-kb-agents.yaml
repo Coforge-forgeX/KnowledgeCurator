@@ -1,4 +1,4 @@
-name: Deploy-KBCurator
+name: Deploy-KBCurator deploy to poly app
 on:
   workflow_dispatch: 
   push:
