@@ -1,9 +1,9 @@
 name: Deploy-KBCurator deploy to poly app
 on:
   workflow_dispatch: 
-  push:
-    branches:
-      - kb-cicd
+  # push:
+  #   branches:
+  #     - kb-cicd
     paths:    
       - 'src/kbcurator/**'
       - 'Dockerfile'
@@ -34,7 +34,7 @@ jobs:
 
     - name: Build and Push Docker Image
       run: |
-       docker build -t ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} .
+       docker build --no-cache -t ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} .
        docker push ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
 
     - name: Save Previous Image Tag
