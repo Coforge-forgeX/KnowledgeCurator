@@ -1,9 +1,9 @@
 name: Deploy-KBCurator deploy to poly app
 on:
   workflow_dispatch: 
-  # push:
-  #   branches:
-  #     - kb-cicd
+  push:
+    branches:
+      - kb-cicd
     paths:    
       - 'src/kbcurator/**'
       - 'Dockerfile'
