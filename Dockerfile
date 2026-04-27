@@ -32,9 +32,4 @@ RUN playwright install --with-deps chromium
 # Expose FastAPI port
 EXPOSE 9000
 
-# Run FastAPI app
-#CMD ["uvicorn", "kbcurrator.server.main:http_app", "--host", "0.0.0.0", "--port", "9000"]
-#CMD ["sh", "-c", "uvicorn kbcurator.server.main:http_app --host 0.0.0.0 --port ${PORT:-9000}"]
-#CMD ["sh", "-c", "uvicorn agent_search.server.main:http_app --host 0.0.0.0 --port ${PORT:-9000}"]
-CMD ["sh", "-c", "uvicorn kbcurator.server:app --host 0.0.0.0 --port ${PORT:-9000}"]
-#CMD ["python", "-m", "kbcurator.server.main"]
+CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker kbcurator.server.main:http_app --bind 0.0.0.0:${PORT:-9000}"]
