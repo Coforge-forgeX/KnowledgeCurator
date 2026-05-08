@@ -3,7 +3,7 @@ on:
   workflow_dispatch: 
   push:
     branches:
-      - kb-cicd
+      - development
     paths:    
       - 'src/kbcurator/**'
       - 'Dockerfile'
