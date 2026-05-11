@@ -34,8 +34,7 @@ class AzureCustomLLM(LLM):
             os.environ["OPENAI_API_VERSION"] = config.get("Azure_OpenAI_llm_Model", "api_version")
         else:
             # Fall back to environment variables (standard deployment path)
-            missing = [v for v in ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
-                                   "AZURE_OPENAI_DEPLOYMENT", "OPENAI_API_VERSION")
+            missing = [v for v in ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT")
                        if not os.getenv(v)]
             if missing:
                 raise EnvironmentError(
