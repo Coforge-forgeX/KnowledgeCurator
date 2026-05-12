@@ -524,16 +524,7 @@ When handling relationships with timestamps:
             # -------------------------
             # Summarization using UnifiedAIAdapter
             # -------------------------
-            summary_prompt = f"""
-### Summarize results across Knowledge Bases
-
-Query: {question}
-
-Conversation History:
-{history}
-
-Below are raw responses per knowledge base:
-"""
+            summary_prompt = system_prompt
 
             for kb, resp in results.items():
                 summary_prompt += f"\n--- KB: {kb} ---\n{str(resp)}\n"
