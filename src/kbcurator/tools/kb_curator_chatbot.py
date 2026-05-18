@@ -1,26 +1,28 @@
 import os
 import sys
 import logging
+import ast
 from dotenv import load_dotenv
 import json
+import psycopg2
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 # Third-party and internal imports
 sys.path.append("../utils")
-from kbcurator.utils.prompt_builder import PromptBuilder
-from kbcurator.utils.azurecustomllm import AzureCustomLLM
-from kbcurator.utils.classifier import classifier
-from kbcurator.utils.mcp_service_client import MCPServiceClient
-from kbcurator.server.server import mcp
-from kbcurator.server.main import session
-from kbcurator.utils.helpers import evaluate_user_input
+from ..utils.prompt_builder import PromptBuilder
+from ..utils.azurecustomllm import AzureCustomLLM
+from ..utils.classifier import classifier
+from ..utils.mcp_service_client import MCPServiceClient
+from ..server.server import mcp
+from ..server.main import session
+from ..utils.helpers import evaluate_user_input
 import difflib
-from kbcurator.utils.chatbot_context import ChatbotContext
+from ..utils.chatbot_context import ChatbotContext
 import re
 from urllib.parse import urlparse
-from kbcurator.utils.access_validation import validate_user_workspace_access
-from kbcurator.utils.request_context import request_var
-from kbcurator.tools.user_management_system import Session, UserMap
+from ..utils.access_validation import validate_user_workspace_access
+from ..utils.request_context import request_var
+from .user_management_system import Session, UserMap
 from fastmcp.server.dependencies import get_http_headers
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -93,17 +95,73 @@ class IntentDetector:
         return intent
 
 def extract_filename(user_message):
-    # Improved regex to extract filename with spaces and quotes
+    # Extract a filename from quoted or unquoted user text.
+    # Supports common characters used in real file names (spaces, underscores, parentheses, hyphens).
     import re
-    # Try to match filename in double or single quotes
-    match = re.search(r'"([^"]+\.[^"]+)"|\'([^\']+\.[^\']+)\'', user_message)
+
+    # Try explicit command-style phrasing first (unquoted)
+    verb_match = re.search(
+        r"(?:delete|remove|erase|confirm)\s+(?:file\s+)?(.+?\.[A-Za-z0-9]+)\s*$",
+        user_message,
+        re.IGNORECASE,
+    )
+    if verb_match:
+        return verb_match.group(1).strip().strip('"\'')
+
+    # Try quoted filename next
+    match = re.search(r'"([^"]+\.[A-Za-z0-9]+)"|\'([^\']+\.[A-Za-z0-9]+)\'', user_message)
     if match:
-        return match.group(1) or match.group(2)
-    match = re.search(r'([\w\s\-]+\.[A-Za-z0-9]+)', user_message)
-    return match.group(1).strip() if match else None
+        return (match.group(1) or match.group(2)).strip()
+
+    # Generic unquoted filename/path pattern (use last match to avoid leading verbs)
+    matches = re.findall(r'([A-Za-z0-9_\-()\s/\\]+\.[A-Za-z0-9]+)', user_message)
+    if matches:
+        return matches[-1].strip().strip('"\'')
+
+    return None
 
 def find_similar_files(filename, indexed_files):
     return difflib.get_close_matches(filename, indexed_files.keys(), n=3, cutoff=0.5)
+
+def _is_confirm_message(user_message: str) -> bool:
+    return "confirm" in (user_message or "").lower()
+
+def _normalize_filename_for_match(value: str) -> str:
+    if not value:
+        return ""
+    base_name = os.path.basename(value)
+    base_name = base_name.replace("\\", "/").split("/")[-1]
+    return re.sub(r"[^a-z0-9]", "", base_name.lower())
+
+def resolve_indexed_filename(requested_filename: str, indexed_files: Dict[str, list]) -> Optional[str]:
+    if not requested_filename or not indexed_files:
+        return None
+
+    # 1) Exact key match first
+    if requested_filename in indexed_files:
+        return requested_filename
+
+    requested_norm = _normalize_filename_for_match(requested_filename)
+
+    # 2) Exact normalized basename match
+    for key in indexed_files.keys():
+        if _normalize_filename_for_match(key) == requested_norm:
+            return key
+
+    # 3) Containment normalized match (handles shortened names)
+    for key in indexed_files.keys():
+        key_norm = _normalize_filename_for_match(key)
+        if requested_norm and key_norm and (
+            requested_norm in key_norm or key_norm in requested_norm
+        ):
+            return key
+
+    # 4) Best fuzzy match as final fallback
+    candidates = find_similar_files(requested_filename, indexed_files)
+    if candidates:
+        return candidates[0]
+
+    return None
 
 async def get_parsed_data(message: str) -> json:
     parser_prompt = PromptBuilder.get_parser_prompt(message)
@@ -187,7 +245,40 @@ class Chatbot:
     def save_context(self, context: ChatbotContext):
         self.session.save_context(context)
 
-    async def process_message(self, message: str) -> str:
+    def _parse_indexed_files_response(self, indexed_files: Any) -> Dict[str, list]:
+        try:
+            if not indexed_files:
+                return {}
+            if isinstance(indexed_files, dict):
+                return indexed_files
+            content = getattr(indexed_files, "content", None)
+            if not content:
+                return {}
+            text_json = getattr(content[0], "text", "") if len(content) > 0 else ""
+            parsed = json.loads(text_json) if text_json else {}
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    def _get_latest_task_ids_from_history(self) -> List[int]:
+        """
+        Return the most recent non-empty task_ids list from session history.
+        This lets query responses carry a stable task reference even when
+        the query tool itself does not emit task_ids.
+        """
+        try:
+            history = self.session.load_history(self.workspace_id, self.user_id, self.session_id)
+            for msg in reversed(history or []):
+                task_ids = msg.get("task_ids") if isinstance(msg, dict) else None
+                if isinstance(task_ids, list):
+                    cleaned = [t for t in task_ids if t is not None]
+                    if cleaned:
+                        return cleaned
+            return []
+        except Exception:
+            return []
+
+    async def process_message(self, message: str):
         try:
             print(f"Inside Process message: {message}")
             context = self.get_or_create_context(self.session_id)
@@ -224,30 +315,93 @@ class Chatbot:
             context.last_intent = intent
             context.conversation_history[-1]["intent"] = intent
 
+        #     print(f"Detected intent: {intent} for message: {message[:50]}")
+
+        #     intent_response = await self.route_intent(intent, message, context)
+        #     print("Query RAG response: ", intent_response[:50])
+        #     if type(intent_response) == dict:
+        #         response = intent_response["response"]
+        #         task_ids = intent_response["task_ids"]
+        #         print(f"Response: {response[:50]}, tasks: {task_ids}")
+        #     else:
+        #         response = intent_response
+        #         task_ids = []
+        #         print(f"Response: {response[:50]}, no tasks for this tool")
+
+        #     context.conversation_history[-1]["assistant"] = response
+        #     insert_id = self.session.append_message(self.workspace_id, self.user_id, self.session_id, "assistant", response, task_ids)
+        #     self.save_context(context)
+
+        #     # print(f"Updated context history length: {context.conversation_history}")
+        #     return response
+        # except Exception as e:
+        #     print(f"Error processing message: {e}")
+        #     return "Sorry, something went wrong while processing your request. Please try again"
             print(f"Detected intent: {intent} for message: {message[:50]}")
 
             intent_response = await self.route_intent(intent, message, context)
-            print(f"LightRAG response: {intent_response}\nLightRAG response type: {type(intent_response)}")
+            print("Query RAG response: ", str(intent_response)[:50])
+            
+            # Handle different response types
             if type(intent_response) == dict:
-                response = intent_response["response"]
-                task_ids = intent_response["task_ids"]
-                print(f"Response: {response[:50]}, tasks: {task_ids}")
+                response = intent_response.get("response", "")
+                task_ids = intent_response.get("task_ids", [])
+                sources = intent_response.get("sources", [])
+
+                if not task_ids:
+                    task_ids = self._get_latest_task_ids_from_history()
+                print(f"Response: {response[:50]}, tasks: {task_ids}, sources: {len(sources)}")
             else:
                 response = intent_response
-                task_ids = []
-                print(f"Response: {response[:50]}, no tasks for this tool")
+                task_ids = self._get_latest_task_ids_from_history()
+                sources = []
+                print(f"Response: {str(response)[:50]}, no tasks for this tool")
 
             context.conversation_history[-1]["assistant"] = response
-            insert_id = self.session.append_message(self.workspace_id, self.user_id, self.session_id, "assistant", response, task_ids)
+            
+            # Save message with sources if available
+            if sources:
+                insert_id = self.session.append_message(
+                    self.workspace_id, 
+                    self.user_id, 
+                    self.session_id, 
+                    "assistant", 
+                    response, 
+                    sources  # Pass sources instead of task_ids for search responses
+                )
+            else:
+                insert_id = self.session.append_message(
+                    self.workspace_id, 
+                    self.user_id, 
+                    self.session_id, 
+                    "assistant", 
+                    response, 
+                    task_ids
+                )
+            
             self.save_context(context)
 
+            # Return structured response with sources if available
+            if sources:
+                return {
+                    "response": response,
+                    "sources": sources,
+                    "task_ids": task_ids
+                }
+            
+            if task_ids:
+                return {
+                    "response": response,
+                    "task_ids": task_ids
+                }
+            
             # print(f"Updated context history length: {context.conversation_history}")
             return response
         except Exception as e:
             print(f"Error processing message: {e}")
             return "Sorry, something went wrong while processing your request. Please try again"
-
-    async def route_intent(self, intent: str, message: str, context: ChatbotContext) -> str:
+        
+    async def route_intent(self, intent: str, message: str, context: ChatbotContext):
         """Route to the appropriate handler based on detected intent."""
         if intent == "search_kb":
             return await self.handle_search(message, context)
@@ -271,7 +425,20 @@ class Chatbot:
         else:
             return "I'm not sure how to help with that. Could you please rephrase?"
     
-    async def handle_search(self, message: str, context: ChatbotContext) -> str:
+    # async def handle_search(self, message: str, context: ChatbotContext) -> str:
+    #     # Extract search query
+    #     try:
+    #         print(f"Inside Search kb {message}")
+    #         history = self.session.load_history(self.workspace_id, self.user_id, self.session_id)
+    #         history = history[-5:]
+    #         # print(f"History: {history}, type: {type(history)}")
+    #         assistant_message = await self.mcp_tool_obj.query_rag('Search',message, history, self.workspace_id, self.role_id)
+    #         print(assistant_message[:50])
+    #         return assistant_message
+    #     except Exception as e:
+    #         return (f"Error occurred while handling search: {e}")
+
+    async def handle_search(self, message: str, context: ChatbotContext) -> dict:
         # Extract search query
         try:
             print(f"Inside Search kb {message}")
@@ -279,8 +446,25 @@ class Chatbot:
             history = history[-5:]
             # print(f"History: {history}, type: {type(history)}")
             assistant_message = await self.mcp_tool_obj.query_rag('Search',message, history, self.workspace_id, self.role_id)
-            print(assistant_message[:50])
-            return assistant_message
+            print(f"Query RAG response type: {type(assistant_message)}")
+            
+            # Check if response is structured (dict with sources) or plain text
+            if isinstance(assistant_message, dict) and "sources" in assistant_message:
+                print(f"Structured response with {len(assistant_message.get('sources', []))} sources")
+                return {
+                    "response": assistant_message.get("response", ""),
+                    "sources": assistant_message.get("sources", []),
+                    "task_ids": assistant_message.get("task_ids", [])
+                }
+            elif isinstance(assistant_message, dict):
+                return {
+                    "response": assistant_message.get("response", ""),
+                    "task_ids": assistant_message.get("task_ids", [])
+                }
+            else:
+                # Backward compatibility: plain text response
+                print(f"Plain text response: {str(assistant_message)[:50]}")
+                return str(assistant_message)
         except Exception as e:
             return (f"Error occurred while handling search: {e}")
 
@@ -330,11 +514,16 @@ class Chatbot:
             print(f"In handle_upload with message: {assistant_message}")
             result = await self.mcp_tool_obj.upload_rag(intent, self.file_names, self.workspace_id, self.user_id, self.role_id, self.file_contents)
             # Extract 'response' if result is a dict and has 'response' key
-            # if isinstance(result, dict) and "response" in result:
-            #     assistant_message = result["response"]
-            # else:
-            #     assistant_message = str(result)
-            return result
+            if isinstance(result, dict) and "response" in result:
+                assistant_message = result["response"]
+                assistant_tasks = result["task_ids"]
+            else:
+                assistant_message = str(result)
+                assistant_tasks = []
+            return {
+                    "response": assistant_message,
+                    "task_ids": assistant_tasks
+                }
         except Exception as e:
             return f"Error occurred while handling upload: {e}"
     
@@ -342,26 +531,67 @@ class Chatbot:
         # Extract file name from message
         try:
             print(f"Handling delete file for message: {message}")
-            indexed_files = await self.mcp_tool_obj.get_indexed_files()
+           # indexed_files = await self.mcp_tool_obj.get_indexed_files()
+            indexed_files = await self.mcp_tool_obj.get_indexed_files(self.workspace_id, self.role_id)
             print(f"Indexed files response: {indexed_files}")
-            lst = indexed_files.content
-            text_json = lst[0].text
-            result_dict = json.loads(text_json)
+            result_dict = self._parse_indexed_files_response(indexed_files)
             print(f"Indexed files: {result_dict}")
 
             filename = extract_filename(message)
             print(f"Extracted filename: {filename}")
-            
-            similar_files = find_similar_files(filename, result_dict)
-            if similar_files:
+
+            if not filename:
+                return (
+                    "I couldn't detect a file name in your request. "
+                    "Please provide the exact file name including extension, "
+                    "for example: Delete \"example.docx\"."
+                )
+
+            # If index metadata is temporarily empty/unavailable, avoid misleading "file not found"
+            # and allow a confirm path for direct blob deletion.
+            if not result_dict:
                 context.pending_confirmation = {
                     "action": "delete_file",
-                    "options": similar_files
+                    "requested_filename": filename,
+                    "options": [],
+                    "indexed_match_key": None,
+                    "indexed_candidate": None,
                 }
-                return (f"These files are similar to your request: {', '.join(similar_files)}. "
-                        "Please type the exact file name and reply 'confirm' to delete.")
-            else:
-                return "No similar files found."
+                return (
+                    f"Indexed file metadata is currently unavailable for '{filename}' in this workspace. "
+                    "This can happen if indexing is still syncing. "
+                    f"Reply with 'confirm {filename}' to proceed with blob deletion now, "
+                    "or retry delete after a short wait to remove indexed records as well."
+                )
+            
+            similar_files = find_similar_files(filename, result_dict)
+            indexed_match_key = resolve_indexed_filename(filename, result_dict)
+            context.pending_confirmation = {
+                "action": "delete_file",
+                "requested_filename": filename,
+                "options": similar_files,
+                "indexed_match_key": indexed_match_key,
+                "indexed_candidate": similar_files[0] if similar_files else None,
+            }
+
+            if indexed_match_key:
+                return (
+                    f"Found indexed mapping for '{filename}' as '{indexed_match_key}'. "
+                    f"Reply with 'confirm {filename}' to delete it."
+                )
+
+            if similar_files:
+                return (
+                    f"Exact file '{filename}' not found in index. "
+                    f"Similar files: {', '.join(similar_files)}. "
+                    f"Reply with 'confirm {filename}' to delete exact blob path, "
+                    "or confirm one of the listed file names to delete indexed records."
+                )
+
+            return (
+                f"Exact file '{filename}' not found in index and no similar files were found. "
+                f"Reply with 'confirm {filename}' to attempt exact blob deletion."
+            )
         except Exception as e:
             return (f"Error occurred while handling delete file: {e}")
     
@@ -382,42 +612,199 @@ class Chatbot:
            
         except Exception as e:
             return f"Error occurred while indexing URL: {str(e)}"
+        
+
+    async def delete_file_task_from_db(self, file_path: str):
+        conn = psycopg2.connect(
+            host=os.environ["POSTGRES_HOST"],
+            user=os.environ["POSTGRES_USER"],
+            password=os.environ["POSTGRES_PASSWORD"],
+            dbname=os.environ.get("POSTGRES_DATABASE") or os.environ.get("POSTGRESQL_DATABASE_DATABASE_2"),
+        )
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM public.file_tasks WHERE file_path = %s", (file_path,))
+        finally:
+            conn.close()
+    
 
     async def handle_confirmation(self, user_message, context):
         try:
             print(f"Handling confirmation for action: {context.pending_confirmation}")
             
             if context.pending_confirmation and context.pending_confirmation["action"] == "delete_file":
-                # Extract file name and confirmation from user message
-                filename = extract_filename(user_message)
-                print(f"Provided filename for deletion: {filename}")
+                pending = context.pending_confirmation
 
-                if filename in context.pending_confirmation["options"] and "confirm" in user_message.lower():
-                    print(f"Proceed with file deletion: {filename}")
-                    indexed_files = await self.mcp_tool_obj.get_indexed_files()
-                    lst = indexed_files.content
-                    text_json = lst[0].text
-                    result_dict = json.loads(text_json)
-
-                    list_doc_ids_to_delete = result_dict.get(filename)
-                    print(f"Document IDs to delete: {list_doc_ids_to_delete}")
-
-                    if list_doc_ids_to_delete:
-                        for doc_id in list_doc_ids_to_delete:
-                            result = await self.mcp_tool_obj.delete_file(doc_id)
-                            print(f"Deleted document ID {doc_id}: {result}")
-                            context.pending_confirmation = None
-                        
-                        delet_from_blob = await self.mcp_tool_obj.delete_files_from_blob([filename])
-                        print(f"Deleted file from blob storage: {delet_from_blob}")
-                        return f"File '{filename}' has been deleted."
-                    else:
-                        print(f"No document IDs found for file: {filename}")
-                        return f"No document IDs found for file: {filename}. Cannot proceed with indexed data deletion. Please check the file name and try again."
-                else:
-                    # Stop operation and clear pending confirmation
+                if not _is_confirm_message(user_message):
                     context.pending_confirmation = None
                     return "File deletion cancelled. No action taken."
+
+                # Extract file name from confirmation, fallback to originally requested filename
+                filename = extract_filename(user_message) or pending.get("requested_filename")
+                print(f"Provided filename for deletion: {filename}")
+
+                if not filename:
+                    context.pending_confirmation = None
+                    return "File deletion cancelled. No valid file name was provided."
+
+                print(f"Proceed with file deletion: {filename}")
+                indexed_files = await self.mcp_tool_obj.get_indexed_files(self.workspace_id, self.role_id)
+                result_dict = self._parse_indexed_files_response(indexed_files)
+
+                indexed_lookup_name = pending.get("indexed_match_key") or filename
+                list_doc_ids_to_delete = result_dict.get(indexed_lookup_name) or []
+
+                # Fallback: if exact filename key is not present, use best indexed candidate captured earlier.
+                if not list_doc_ids_to_delete:
+                    candidate_name = pending.get("indexed_candidate")
+                    if candidate_name and candidate_name in result_dict:
+                        list_doc_ids_to_delete = result_dict.get(candidate_name) or []
+                        indexed_lookup_name = candidate_name
+
+                print(f"Document IDs to delete: {list_doc_ids_to_delete}")
+
+                deleted_doc_count = 0
+                failed_doc_count = 0
+                deletion_in_progress = False
+                deletion_error_text = ""
+                if list_doc_ids_to_delete:
+                    bulk_result = await self.mcp_tool_obj.delete_files_by_doc_ids(
+                        list_doc_ids_to_delete,
+                        self.workspace_id,
+                        self.role_id,
+                    )
+                    print(f"Bulk delete result: {bulk_result}")
+
+                    summary = {}
+                    try:
+                        if isinstance(bulk_result, dict):
+                            # Client-side timeout/transport errors can happen while server-side
+                            # deletion continues; treat this as in-progress, not hard failure.
+                            if bulk_result.get("status") == "client_exception":
+                                deletion_in_progress = True
+                                deletion_error_text = bulk_result.get("error") or ""
+                        else:
+                            structured = getattr(bulk_result, "structured_content", None)
+                            if isinstance(structured, dict):
+                                summary = structured.get("summary", {}) or {}
+                    except Exception:
+                        summary = {}
+
+                    deleted_doc_count = int(summary.get("success", 0) or 0)
+                    # Treat both explicit failures and not_found as not deleted for response purposes.
+                    failed_doc_count = int(summary.get("failed", 0) or 0) + int(summary.get("not_found", 0) or 0)
+
+                # Always attempt blob deletion for the exact confirmed filename.
+                delet_from_blob = await self.mcp_tool_obj.delete_files_from_blob([filename], self.workspace_id, self.role_id)
+                print(f"Deleted file from blob storage: {delet_from_blob}")
+
+                blob_deleted_files = []
+                blob_result_text = ""
+                blob_error = False
+
+                try:
+                    blob_error = bool(getattr(delet_from_blob, "is_error", False))
+                    content = getattr(delet_from_blob, "content", None)
+                    if content:
+                        first_item = content[0]
+                        blob_result_text = getattr(first_item, "text", "") or ""
+
+                    # Expected shape from tool text: "Deleted files: ['path1', ...]"
+                    if blob_result_text and "Deleted files:" in blob_result_text:
+                        raw_list = blob_result_text.split("Deleted files:", 1)[1].strip()
+                        parsed_list = ast.literal_eval(raw_list)
+                        if isinstance(parsed_list, list):
+                            blob_deleted_files = parsed_list
+                except Exception:
+                    # Keep response resilient even if tool payload format changes.
+                    pass
+
+                context.pending_confirmation = None
+
+                if deleted_doc_count > 0:
+                    if blob_error:
+                        return (
+                            f"Removed {deleted_doc_count} indexed document record(s) for '{filename}'. "
+                            "Blob deletion reported an error."
+                        )
+
+                    if blob_deleted_files:
+                        for blob_path in blob_deleted_files:
+                            await self.delete_file_task_from_db(blob_path)
+                        return (
+                            f"Removed {deleted_doc_count} indexed document record(s) for '{indexed_lookup_name}'. "
+                            f"Deleted blob file(s): {blob_deleted_files}."
+                        )
+
+                    if blob_result_text:
+                        return (
+                            f"Removed {deleted_doc_count} indexed document record(s) for '{indexed_lookup_name}'. "
+                            f"Blob deletion result: {blob_result_text}"
+                        )
+
+                    return (
+                        f"File '{filename}' deleted. "
+                        f"Removed {deleted_doc_count} indexed document record(s) and requested blob deletion."
+                    )
+
+                if deletion_in_progress:
+                    if blob_deleted_files:
+                        return (
+                            f"Deletion started for {len(list_doc_ids_to_delete)} indexed document record(s) for '{indexed_lookup_name}'. "
+                            f"Deleted blob file(s): {blob_deleted_files}. "
+                            "Index cleanup is still running in background; please recheck indexed files shortly."
+                        )
+
+                    if blob_result_text:
+                        return (
+                            f"Deletion started for {len(list_doc_ids_to_delete)} indexed document record(s) for '{indexed_lookup_name}'. "
+                            f"Blob deletion result: {blob_result_text}. "
+                            "Index cleanup is still running in background; please recheck indexed files shortly."
+                        )
+
+                    if deletion_error_text:
+                        return (
+                            f"Deletion started for {len(list_doc_ids_to_delete)} indexed document record(s) for '{indexed_lookup_name}', "
+                            f"but the client connection ended early ({deletion_error_text}). "
+                            "The backend may still be completing index cleanup."
+                        )
+
+                    return (
+                        f"Deletion started for {len(list_doc_ids_to_delete)} indexed document record(s) for '{indexed_lookup_name}'. "
+                        "Index cleanup is still running in background; please recheck indexed files shortly."
+                    )
+
+                if failed_doc_count > 0:
+                    return (
+                        f"Unable to delete {failed_doc_count} indexed record(s) for '{indexed_lookup_name}' "
+                        "in the current workspace context. Blob deletion was still attempted."
+                    )
+
+                if blob_error:
+                    return (
+                        f"No indexed document records were found for '{filename}'. "
+                        "Blob deletion reported an error."
+                    )
+
+                if blob_deleted_files:
+                    for blob_path in blob_deleted_files:
+                        await self.delete_file_task_from_db(blob_path)
+                    return (
+                        f"No indexed document records were found for '{filename}'. "
+                        f"Deleted blob file(s): {blob_deleted_files}."
+                    )
+
+                if blob_result_text:
+                    return (
+                        f"No indexed document records were found for '{filename}'. "
+                        f"Blob deletion result: {blob_result_text}"
+                    )
+
+                return (
+                    f"Requested deletion for '{filename}' from blob storage. "
+                    "No indexed document records were found for this exact file name."
+                )
         except Exception as e:
             return (f"Error occurred while handling confirmation: {e}")
 
@@ -503,7 +890,17 @@ async def message_gpt(
             token=token
             )
         response = await bot.process_message(user_message)
-        return {"response": response}
+        #return {"response": response}
+        # Check if response is structured with sources
+        if isinstance(response, dict) and ("sources" in response or "task_ids" in response):
+            return {
+                "response": response.get("response", ""),
+                "sources": response.get("sources", []),
+             #   "sources": response.get("task_ids", [])
+                "task_ids":response.get("task_ids",[])
+            }
+        else:
+            return {"response": response}
     except Exception as e:
         print(f"Error in message_gpt: {e}")
         return {"error":f"Sorry, something went wrong while processing your request. Please try again.{e}"}
@@ -554,6 +951,8 @@ def get_conversation_history(workspace_id: str = None, user_id: str = None, limi
             for ses in con_hist:
                 logger.info(f"Session ID: {ses}")
                 history = session.load_history(workspace_id, user_id, ses)
+                # Fetch the conversation title from context collection
+                title = session.get_conversation_title(workspace_id, user_id, ses)
                 if history and len(history) >= 2:
                     last_msg = history[-2]
                     last_messages.append({
@@ -561,6 +960,7 @@ def get_conversation_history(workspace_id: str = None, user_id: str = None, limi
                         "content": last_msg.get("content"),
                         "task_ids": last_msg.get("task_ids") if last_msg.get("task_ids") else None,
                         "session_id": ses,
+                        "title": title,
                         "time_modified": last_msg.get("timestamp")
                     })
             return {"response": last_messages}
@@ -570,6 +970,8 @@ def get_conversation_history(workspace_id: str = None, user_id: str = None, limi
             conversations = []
             for ses in res:
                 data = session.load_history(workspace_id, user_id, ses)
+                # Fetch the conversation title from context collection
+                title = session.get_conversation_title(workspace_id, user_id, ses)
                 logger.info(f"Data for session {ses}: {data}")
                 if isinstance(data, list) and len(data) >= 2: 
                     user_msg = next((msg for msg in reversed(data) if msg.get("role") == "user"), None)
@@ -579,6 +981,7 @@ def get_conversation_history(workspace_id: str = None, user_id: str = None, limi
                     conversations.append({
                         "session_id": ses,
                         "time_modified": time_modified_str,
+                        "title": title,
                         "user": user_msg["content"] if user_msg else None,
                         "assistant": assistant_msg["content"] if assistant_msg else None,
                         "task_ids": assistant_msg["task_ids"] if assistant_msg else None
@@ -587,6 +990,7 @@ def get_conversation_history(workspace_id: str = None, user_id: str = None, limi
                     conversations.append({
                         "session_id": ses,
                         "time_modified": "N/A",
+                        "title": title,
                         "user": None,
                         "assistant": None,
                         "task_ids": assistant_msg.get("task_ids") if assistant_msg else None

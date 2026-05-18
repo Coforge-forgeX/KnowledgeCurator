@@ -4,21 +4,24 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-search"
+name = "kbcurator"
 version = "0.1.0"
 requires-python = ">=3.10"
 
 # Local-path dependency for zip-based testing.
 # Replace with git URL in real usage:
-# common-adapters @ git+ssh://git@github.com/YOUR_ORG/common-adapters.git@v1.0.0
+# common-adapters @ git+ssh://git@github.com/YOUR_ORG/common-adapters.git@v1.0.1
 dependencies = [
-  "common-adapters @ git+https://github.com/Coforge-forgeX/forgexpackages.git@v1.0.0",
+  "common-adapters @ git+https://github.com/Coforge-forgeX/forgexpackages.git@main",
+  "pandas>=2.3.0",
+  "pyarrow>=20.0.0",
+  "streamlit",
 
   # MCP server stack
   "fastmcp>=2.9.1",
   "fastapi-mcp>=0.3.4",
+  "uvicorn>=0.30.0",
   "mcp[cli]>=1.10.0",
-  "uvicorn>=0.24.0",
   "starlette>=0.27.0",
 
   # Auth & config
@@ -58,22 +61,34 @@ dependencies = [
   "python-docx>=1.2.0",
   "pytesseract",
   "easyocr>=1.7.2",
+  "paddleocr>=3.3.1",
+  "paddlepaddle>=3.2.0",
   "pdf2image>=1.17.0",
   "unstructured==0.7.12",
+  "unstructured[pdf]",
   "azure-ai-documentintelligence>=1.0.0",
 
   # Web crawling
   "crawl4ai",
-  "aiohttp>=3.8.0",
+  "aiohttp>=3.12.13",
 
   # Cloud
   "azure-storage-blob>=12.26.0",
   "boto3>=1.28.0",
 
   # Utilities
-  "numpy>=1.24.0",
+  "numpy>=2.3.2",
   "tiktoken",
   "requests",
+  "configparser",
+  "shiny",
+  "logging",
+  "pytest>=8.4.1",
+  "ragas>=0.2.15",
+  "datasets>=3.6.0",
+  "evaluate>=0.4.4",
+  "pillow>=11.3.0",
+  "gunicorn>=22.0.0",
   "nest-asyncio>=1.6.0",
 ]
 

@@ -1,36 +1,43 @@
-
-import json
+from dotenv import load_dotenv
+load_dotenv()
+from common_adapters.langfuse_instrumentation import setup_langfuse
+setup_langfuse()   
 import asyncio
-from typing import List, Optional
+import json
 import os
-from kbcurator.server.server import mcp
+from typing import List, Optional
+
+import uvicorn
+from .server import mcp
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
-from kbcurator.utils.auth import extract_token_from_headers, verify_jwt_token
-from kbcurator.utils.request_context import request_var
-from kbcurator.utils.mongodb_singleton import get_mongodb_client
-from kbcurator.utils.session_history_manager import SessionHistoryManager
-import uvicorn
-from kbcurator.server import storage_config
+from starlette.responses import (
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
+from ..utils.auth import extract_token_from_headers
+from ..utils.sso_jwt import verify_token
+from ..utils.mongodb_singleton import get_mongodb_client
+from ..utils.request_context import request_var
+from ..utils.session_history_manager import SessionHistoryManager
 
 # --- Initialize global services (DI singletons) ---
 mongo_client = get_mongodb_client()
 session = SessionHistoryManager(mongo_client)
 
-storage_config.initialize_storage()
-
 # --- Import tools so they are registered with MCP ---
-import kbcurator.tools.ingestion_new        # noqa: F401
-import kbcurator.tools.kb_adapter_tool      # noqa: F401
-import kbcurator.tools.user_management_system  # noqa: F401
-import kbcurator.tools.kb_curator_chatbot   # noqa: F401
-
-
+from ..tools import ingestion_new  # noqa: F401
+from ..tools import kb_adapter_tool  # noqa: F401
+from ..tools import kb_curator_chatbot  # noqa: F401
+from ..tools import user_management_system  # noqa: F401
+from ..tools import sso_login_tool  # noqa: F401
+from ..tools import account_status_tool  # noqa: F401
 # ---------------------------
 # Middleware
 # ---------------------------
+
 
 class AuthMiddleware(BaseHTTPMiddleware):
     """
@@ -41,21 +48,33 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     PUBLIC_TOOLS: List[str] = [
         "login_user",
+        "sso_login_user",
         "refresh_jwt_token",
         "query_rag",
         "upload_and_index_tool",
     ]
 
     async def dispatch(self, request: Request, call_next):
+        # Make request available to tools via ContextVar
         request_var.set(request)
 
+        # Skip auth for preflight
         if request.method.upper() == "OPTIONS":
             return await call_next(request)
 
-        if request.url.path.startswith("/mcp") and request.method.upper() == "POST":
+        # Only protect the MCP HTTP endpoint (POST)
+        if (
+            request.url.path.startswith("/mcp")
+            and request.method.upper() == "POST"
+        ):
+            # Parse body shallowly to infer the tool name without heavy ops
             try:
                 body_bytes = await request.body()
-                payload = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+                payload = (
+                    json.loads(body_bytes.decode("utf-8"))
+                    if body_bytes
+                    else {}
+                )
             except Exception:
                 payload = {}
 
@@ -66,12 +85,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 or payload.get("operation")
             )
 
+            # If no tool name, let the request pass (MCP may reject appropriately later)
             if not tool_name:
                 return await call_next(request)
 
+            # Allow public tools without JWT
             if tool_name in self.PUBLIC_TOOLS:
                 return await call_next(request)
 
+            # Require JWT for any other tool
             token = extract_token_from_headers(dict(request.headers))
             if not token:
                 return JSONResponse(
@@ -83,7 +105,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
 
             try:
-                claims = verify_jwt_token(token)
+                claims = verify_token(token)
                 request.state.jwt_claims = claims
             except Exception as e:
                 return JSONResponse(
@@ -103,6 +125,7 @@ class SecurityAndCORSMiddleware(BaseHTTPMiddleware):
     - Adds CSP, HSTS, and CORS headers on all responses.
     - Supports dynamic origin reflection using ALLOWED_ORIGINS env var.
     """
+
     def _parse_allowed_origins(self) -> Optional[List[str]]:
         raw = os.getenv("ALLOWED_ORIGINS", "").strip()
         if not raw:
@@ -114,67 +137,76 @@ class SecurityAndCORSMiddleware(BaseHTTPMiddleware):
         return val in ("1", "true", "yes", "y", "t")
 
     async def dispatch(self, request: Request, call_next):
-        allowed_origins = self._parse_allowed_origins()
-        allow_credentials = self._bool_env("ALLOW_CREDENTIALS", default=False)
-        req_origin = request.headers.get("origin")
-        ac_req_headers = request.headers.get("access-control-request-headers", "")
-        ac_req_method = request.headers.get("access-control-request-method", "GET")
-
-        allow_origin: Optional[str] = None
-        vary_origin = False
-        if allowed_origins:
-            if req_origin and req_origin in allowed_origins:
-                allow_origin = req_origin
-                vary_origin = True
-        else:
-            if req_origin and allow_credentials:
-                allow_origin = req_origin
-                vary_origin = True
-            else:
-                allow_origin = "*"
-
+        # Handle preflight early; do NOT hit the router
         if request.method.upper() == "OPTIONS":
-            headers = {}
-            if allow_origin:
-                headers["Access-Control-Allow-Origin"] = allow_origin
-            if vary_origin:
-                headers["Vary"] = "Origin"
-            if allow_credentials and req_origin:
-                headers["Access-Control-Allow-Credentials"] = "true"
-            else:
-                headers["Access-Control-Allow-Credentials"] = "false"
-            headers["Access-Control-Allow-Methods"] = ac_req_method or "GET, POST, OPTIONS"
-            headers["Access-Control-Allow-Headers"] = ac_req_headers or "Authorization, Content-Type, x-amz-content-sha256"
-            headers["Access-Control-Max-Age"] = "600"
-            headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
-            headers["Content-Security-Policy"] = (
-                "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; "
-                "img-src 'self' data: https:; object-src 'none'; frame-ancestors 'none';"
-            )
-            return PlainTextResponse("ok", status_code=204, headers=headers)
+            response = PlainTextResponse("ok", status_code=200)
+        else:
+            response = await call_next(request)
 
-        response = await call_next(request)
-
+        # ---------- Security Headers ----------
+        # Content Security Policy (tune as needed)
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; "
-            "img-src 'self' data: https:; object-src 'none'; frame-ancestors 'none';"
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self'; "
+            "font-src 'self'; "
+            "img-src 'self' data: https:; "
+            "object-src 'none'; "
+            "frame-ancestors 'none';"
         )
-        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+        # HTTP Strict Transport Security
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=63072000; includeSubDomains; preload"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
 
-        if allow_origin:
-            response.headers["Access-Control-Allow-Origin"] = allow_origin
-        if vary_origin:
-            response.headers["Vary"] = "Origin"
-        if allow_credentials and req_origin:
+        # ---------- CORS ----------
+        allowed_origins = self._parse_allowed_origins()  # None => not set
+        allow_credentials = self._bool_env("ALLOW_CREDENTIALS", default=False)
+
+        request_origin = request.headers.get("origin", "*")
+        if allowed_origins:
+            # Strict allowlist
+            if request_origin and request_origin in allowed_origins:
+                response.headers["Access-Control-Allow-Origin"] = (
+                    request_origin
+                )
+                response.headers["Vary"] = "Origin"
+            # else: no ACAO header, browser will block
+        else:
+            # No explicit allow list set:
+            # - If credentials are allowed, reflect the origin (common pattern when you control the app).
+            # - If not, allow any origin without credentials.
+            if request_origin and allow_credentials:
+                response.headers["Access-Control-Allow-Origin"] = (
+                    request_origin
+                )
+                response.headers["Vary"] = "Origin"
+            else:
+                response.headers["Access-Control-Allow-Origin"] = "*"
+
+        if allow_credentials and request_origin:
             response.headers["Access-Control-Allow-Credentials"] = "true"
         else:
             response.headers["Access-Control-Allow-Credentials"] = "false"
 
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-        response.headers["Access-Control-Expose-Headers"] = (
-            "Authorization, Content-Type, Set-Cookie, mcp-protocol-version, x-amz-content-sha256"
+        response.headers["Access-Control-Allow-Methods"] = (
+            "GET, POST, PUT, DELETE, OPTIONS, PATCH"
         )
-
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Authorization, Content-Type, Accept, X-Requested-With"
+        )
+        response.headers["Access-Control-Expose-Headers"] = (
+            "Authorization, Content-Type, Set-Cookie"
+        )
+        response.headers["Access-Control-Max-Age"] = (
+            "600"  # cache preflight for 10 minutes
+        )
+        # Remove server header to hide server technology (VAPT requirement)
+        if "Server" in response.headers:
+            del response.headers["Server"]
         return response
 
 
@@ -188,6 +220,7 @@ custom_middleware = [
 # MCP app + routes
 # ---------------------------
 
+# Create the base MCP Starlette app
 base_app = mcp.http_app(
     transport="http",
     path="/mcp",
@@ -195,30 +228,42 @@ base_app = mcp.http_app(
     stateless_http=True,
 )
 
+
+# Health check (GET + OPTIONS)
 async def health_check(request: Request):
     return JSONResponse({"status": "ok"})
 
+
 base_app.add_route("/health", health_check, methods=["GET", "OPTIONS"])
 
+
+# Optional root endpoint (GET + OPTIONS)
 async def root(request: Request):
     return JSONResponse({"service": "mcp", "status": "ok"})
+
 
 base_app.add_route("/", root, methods=["GET", "OPTIONS"])
 
 
+# SSE-aware GET on /mcp to prevent reconnect storms
 async def mcp_get(request: Request):
     accept = (request.headers.get("accept") or "").lower()
 
     if "text/event-stream" in accept:
+        # Lightweight SSE stream to keep connection open and avoid reconnect storm
         async def stream():
             try:
+                # Open the stream
                 yield b": connected\n\n"
                 while True:
+                    # Stop if client disconnected
                     if await request.is_disconnected():
                         break
+                    # Heartbeat every 15s
                     yield b": keep-alive\n\n"
                     await asyncio.sleep(15)
             except asyncio.CancelledError:
+                # Server shutting down
                 pass
 
         return StreamingResponse(
@@ -227,18 +272,26 @@ async def mcp_get(request: Request):
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
+    # Non-SSE callers get a simple JSON
     return JSONResponse(
         status_code=200,
-        content={"endpoint": "/mcp", "methods": ["POST", "GET"], "status": "ok"},
+        content={
+            "endpoint": "/mcp",
+            "methods": ["POST", "GET"],
+            "status": "ok",
+        },
         headers={"Cache-Control": "no-cache"},
     )
 
+
+# Replace prior informational GET/OPTIONS with SSE-aware handler
 base_app.add_route("/mcp", mcp_get, methods=["GET", "OPTIONS"])
 
 
 # ---------------------------
 # Cookie wrapper (refresh token)
 # ---------------------------
+
 
 class CookieWrapperApp:
     """
@@ -258,10 +311,6 @@ class CookieWrapperApp:
             await self.app(scope, receive, send)
             return
 
-        if scope.get("path", "").startswith("/mcp"):
-            await self.app(scope, receive, send)
-            return
-
         response_started = False
         status_code = None
         headers = []
@@ -274,67 +323,85 @@ class CookieWrapperApp:
                 response_started = True
                 status_code = message["status"]
                 headers = list(message.get("headers", []))
-
-                for k, v in headers:
-                    if k.lower() == b"content-type" and b"text/event-stream" in v.lower():
-                        await send(message)
-                        return
                 return
 
             elif message["type"] == "http.response.body":
-                if response_started and any(
-                    k.lower() == b"content-type" and b"text/event-stream" in v.lower()
-                    for k, v in headers
-                ):
-                    await send(message)
-                    return
-
                 body_parts.append(message.get("body", b""))
-
                 if not message.get("more_body", False):
                     full_body = b"".join(body_parts)
-
                     try:
                         request = request_var.get()
-                        if request and getattr(request.state, "refresh_token", None):
-                            pass
+                        if request and getattr(
+                            request.state, "refresh_token", None
+                        ):
+                            # Load cookie config
+                            cookie_name = os.getenv(
+                                "REFRESH_COOKIE_NAME", "refresh_token"
+                            )
+                            cookie_value_raw = getattr(
+                                request.state, "refresh_token"
+                            )
+                            max_age = int(
+                                getattr(
+                                    request.state,
+                                    "refresh_token_expires",
+                                    86400,
+                                )
+                            )
+                            same_site = os.getenv(
+                                "REFRESH_COOKIE_SAMESITE", "None"
+                            )  # None|Lax|Strict
+                            secure_flag = self._bool_env(
+                                "REFRESH_COOKIE_SECURE", default=True
+                            )
+
+                            # Build cookie
+                            # Note: When sending cookies cross-site, you *must* use SameSite=None; Secure
+                            cookie_attrs = [
+                                f"{cookie_name}={cookie_value_raw}",
+                                "Path=/",
+                                f"Max-Age={max_age}",
+                                "HttpOnly",
+                            ]
+                            if secure_flag:
+                                cookie_attrs.append("Secure")
+                            if same_site:
+                                cookie_attrs.append(f"SameSite={same_site}")
+
+                            cookie_header = "; ".join(cookie_attrs)
+                            headers.append(
+                                (b"set-cookie", cookie_header.encode("utf-8"))
+                            )
                     except Exception:
+                        # Never break the response flow due to cookie issues
                         pass
 
-                    await send({
-                        "type": "http.response.start",
-                        "status": status_code,
-                        "headers": headers,
-                    })
-                    await send({
-                        "type": "http.response.body",
-                        "body": full_body,
-                    })
+                    # Remove server header to hide server technology (VAPT requirement)
+                    headers = [
+                        (name, value)
+                        for name, value in headers
+                        if name.lower() != b"server"
+                    ]
+
+                    # Now send the actual response start + full body
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": status_code,
+                            "headers": headers,
+                        }
+                    )
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": full_body,
+                        }
+                    )
             else:
                 await send(message)
 
         await self.app(scope, receive, send_wrapper)
 
 
+# Wrap the MCP app with the cookie layer
 http_app = CookieWrapperApp(base_app)
-
-
-# ---------------------------
-# Local run / Azure App Service entry
-# ---------------------------
-
-def _get_port() -> int:
-    for key in ("WEBSITES_PORT", "PORT"):
-        val = os.getenv(key)
-        if val and val.isdigit():
-            return int(val)
-    return 8000
-
-
-if __name__ == "__main__":
-    uvicorn.run(
-        "kbcurator.server.main:http_app",
-        host="0.0.0.0",
-        port=_get_port(),
-        reload=False,
-    )

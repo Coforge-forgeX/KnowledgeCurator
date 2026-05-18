@@ -32,7 +32,7 @@ class SessionHistoryManager:
         doc = self.context_collection.find_one({"session_id": session_id})
         if doc:
             try:
-                from kbcurator.utils.chatbot_context import ChatbotContext  # if you want to avoid circular import, or import at top if safe
+                from utils.chatbot_context import ChatbotContext  # if you want to avoid circular import, or import at top if safe
                 return ChatbotContext.from_dict(doc)
             except Exception:
                 return doc
@@ -43,15 +43,41 @@ class SessionHistoryManager:
         """Generate a new session ID."""
         return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
-    def append_message(self, workspace_id, user_id, session_id, role, content, task_ids):
+    # def append_message(self, workspace_id, user_id, session_id, role, content, task_ids):
+    #     try:
+    #         doc = {
+    #             "workspace_id": workspace_id,
+    #             "user_id": user_id,
+    #             "session_id": session_id,
+    #             "role": role,
+    #             "content": content,
+    #             "tasks": task_ids,
+    #             "timestamp": datetime.utcnow()
+    #         }
+    #         insert_result = self.chat_collection.insert_one(doc)
+    #         return insert_result.inserted_id
+    #     except Exception as e:
+    #         logging.error(f"Error in append_message: {e}")
+    #         return None
+
+    def append_message(self, workspace_id, user_id, session_id, role, content, task_ids_or_sources):
         try:
+            # Detect if it's sources (list of dicts with download_url) or task_ids
+            is_sources = (
+                isinstance(task_ids_or_sources, list) and 
+                task_ids_or_sources and 
+                isinstance(task_ids_or_sources[0], dict) and 
+                'download_url' in task_ids_or_sources[0]
+            )
+            
             doc = {
                 "workspace_id": workspace_id,
                 "user_id": user_id,
                 "session_id": session_id,
                 "role": role,
                 "content": content,
-                "tasks": task_ids,
+                "sources": task_ids_or_sources if is_sources else [],
+                "tasks": task_ids_or_sources if not is_sources else [],
                 "timestamp": datetime.utcnow()
             }
             insert_result = self.chat_collection.insert_one(doc)
@@ -72,11 +98,30 @@ class SessionHistoryManager:
             return ["Error fetching sessions"]
         
 
+    # def load_history(self, workspace_id, user_id, session_id):
+    #     try:
+    #         query = {"workspace_id": workspace_id, "user_id": user_id, "session_id": session_id}
+    #         messages = list(self.chat_collection.find(query).sort("timestamp", 1))
+    #         return [{"role": m["role"], "content": m["content"], "timestamp": m["timestamp"], "task_ids":m.get("task_ids",None)} for m in messages]
+    #     except Exception as e:
+    #         logging.error(f"Error in load_history: {e}")
+    #         return []
+
     def load_history(self, workspace_id, user_id, session_id):
         try:
             query = {"workspace_id": workspace_id, "user_id": user_id, "session_id": session_id}
             messages = list(self.chat_collection.find(query).sort("timestamp", 1))
-            return [{"role": m["role"], "content": m["content"], "timestamp": m["timestamp"], "task_ids":m.get("task_ids",None)} for m in messages]
+            return [
+                {
+                    "role": m["role"], 
+                    "content": m["content"], 
+                    "timestamp": m["timestamp"], 
+                    "session_id": m["session_id"],
+                    "task_ids": m.get("tasks", None),  # Fixed: read from "tasks" not "task_ids"
+                    "sources": m.get("sources", [])     # Added: return sources field
+                } 
+                for m in messages
+            ]
         except Exception as e:
             logging.error(f"Error in load_history: {e}")
             return []
@@ -100,3 +145,65 @@ class SessionHistoryManager:
                 "status": "error",
                 "message": str(e)
             }
+
+    def set_conversation_title(self, workspace_id, user_id, session_id, title):
+        """Set/update the conversation title in the context collection."""
+        try:
+            filter_query = {
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "session_id": session_id
+            }
+            update_data = {
+                "$set": {
+                    "title": title,
+                    "timestamp": datetime.utcnow()
+                }
+            }
+            result = self.context_collection.update_one(filter_query, update_data, upsert=True)
+            
+            if result.upserted_id:
+                return {
+                    "status": "success",
+                    "operation": "created",
+                    "message": "Title created successfully"
+                }
+            else:
+                return {
+                    "status": "success",
+                    "operation": "updated",
+                    "message": "Title updated successfully",
+                    "matched_count": result.matched_count,
+                    "modified_count": result.modified_count
+                }
+        except Exception as e:
+            logging.error(f"Error in set_conversation_title: {e}")
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+
+    def get_conversation_title(self, workspace_id, user_id, session_id):
+        """Retrieve the conversation title from the context collection.
+        
+        Args:
+            workspace_id: The workspace identifier
+            user_id: The user identifier
+            session_id: The session identifier
+            
+        Returns:
+            str or None: The conversation title if found, None otherwise
+        """
+        try:
+            query = {
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "session_id": session_id
+            }
+            context_doc = self.context_collection.find_one(query)
+            if context_doc and "title" in context_doc:
+                return context_doc["title"]
+            return None
+        except Exception as e:
+            logging.error(f"Error in get_conversation_title for session {session_id}: {e}")
+            return None

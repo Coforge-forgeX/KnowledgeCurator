@@ -1,2 +1,0 @@
-[console_scripts]
-kb-server = agent_search.server.main:http_app
