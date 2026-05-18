@@ -5,6 +5,8 @@ Accepts both legacy JWTs and Azure AD SSO tokens.
 from .auth import verify_jwt_token as legacy_verify_jwt_token
 from .azure_sso import verify_microsoft_token
 
+from .constants import Role
+
 def verify_token(token: str):
     """
     Try to verify as legacy JWT first. If it fails, try as Azure AD SSO token.
@@ -30,10 +32,12 @@ def verify_token(token: str):
             from .auth import _fetch_user_by_email
             try:
                 user = _fetch_user_by_email(email)
+                role_id = user.get("role_id")
                 if user:
                     ms_claims["user_id"] = user["user_id"]
                     ms_claims["email"] = user["email_id"]
-                    ms_claims["is_admin"] = bool(user.get("is_admin", False))
+                    ms_claims["is_admin"] = True if (role_id == Role.ADMIN.id) else False
+                    ms_claims["role_id"] = role_id
             except Exception:
                 pass
 

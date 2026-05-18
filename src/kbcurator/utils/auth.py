@@ -165,7 +165,7 @@ import base64
 import ssl
 import logging
 from typing import Any, Dict, Optional, Tuple
-from functools import lru_cache
+from functools import lru_cache, wraps
 from datetime import datetime, timedelta, timezone
 import jwt
 import redis
@@ -176,6 +176,7 @@ import psycopg2.extras
 from .config import settings
 
 from .constants import Role
+from .request_context import request_var
 
 
 logger = logging.getLogger(__name__)
@@ -242,6 +243,86 @@ except Exception as e:
 
 # Redis key prefix for revoked tokens
 REVOKED_TOKEN_PREFIX = "revoked_token:"
+
+# =============================================================================
+# Authentication Decorator
+# =============================================================================
+def require_auth(func):
+    """
+    Decorator that validates JWT authentication via middleware-injected claims.
+    
+    Usage:
+        @require_auth
+        def my_tool_function(...):
+            ...
+    
+    The middleware extracts and validates the JWT, injecting claims into
+    request.state.jwt_claims. This decorator checks that claims exist,
+    meaning the token was valid and not expired.
+    
+    If authentication fails, returns an error dict:
+        {"error": "Unauthorized: <message>"}
+    
+    For async functions, use @require_auth_async instead.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        request = request_var.get(None)
+        if not request:
+            return {"error": "Unauthorized: No request context available"}
+        
+        claims = getattr(request.state, "jwt_claims", None)
+        if not claims:
+            return {"error": "Unauthorized: Invalid or expired token"}
+        
+        return func(*args, **kwargs)
+    return wrapper
+
+
+def require_auth_async(func):
+    """
+    Async version of require_auth decorator for async tool functions.
+    
+    Usage:
+        @require_auth_async
+        async def my_async_tool_function(...):
+            ...
+    """
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        request = request_var.get(None)
+        if not request:
+            return {"error": "Unauthorized: No request context available"}
+        
+        claims = getattr(request.state, "jwt_claims", None)
+        if not claims:
+            return {"error": "Unauthorized: Invalid or expired token"}
+        
+        return await func(*args, **kwargs)
+    return wrapper
+
+
+def get_current_user():
+    """
+    Helper to get current user claims from request context.
+    Returns (claims, user_id) tuple or (None, None) if not authenticated.
+    
+    Usage:
+        claims, user_id = get_current_user()
+        if not claims:
+            return {"error": "Unauthorized"}
+    """
+    request = request_var.get(None)
+    if not request:
+        return None, None
+    
+    claims = getattr(request.state, "jwt_claims", None)
+    if not claims:
+        return None, None
+    
+    user_id = claims.get("user_id") or claims.get("sub")
+    return claims, user_id
+
 
 def is_token_revoked(jti: Optional[str]) -> bool:
     """

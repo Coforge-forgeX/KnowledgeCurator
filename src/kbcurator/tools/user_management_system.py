@@ -20,13 +20,60 @@ from ..utils.auth import (
     _assign_user_to_workspace,
     revoke_token, 
     _fetch_user_by_email,
-    encode_for_transport
+    encode_for_transport,
+    require_auth,
+    require_auth_async,
+    get_current_user
 )
 
-from ..utils.constants import DefaulValue, Role
+from ..utils.constants import DefaultValue, Role, WorkspaceType
 
 
 @mcp.tool()
+@require_auth_async
+async def get_workspace_types_by_role():
+    """
+    Return workspace types allowed for the current platform role.
+
+    Rules:
+    - Platform Admin can create all workspace types, including KG.
+    - Non-admin users can create only Demo, Trial, and Product workspace types.
+    """
+    claims, _ = get_current_user()
+    jwt_role_id = claims.get("role_id")
+    if jwt_role_id is None:
+        return {"error": "Unauthorized: role_id not found in token claims"}
+
+    try:
+        normalized_role_id = int(jwt_role_id)
+    except (TypeError, ValueError):
+        return {"error": "Unauthorized: invalid role_id in token claims"}
+
+    is_admin = normalized_role_id == Role.ADMIN.id
+
+    if is_admin:
+        allowed = [
+            WorkspaceType.KG,
+            WorkspaceType.DM,
+            WorkspaceType.TR,
+            WorkspaceType.PR,
+        ]
+    else:
+        allowed = [WorkspaceType.DM, WorkspaceType.TR, WorkspaceType.PR]
+
+    return {
+        "is_admin": is_admin,
+        "role_id": normalized_role_id,
+        "workspace_types": [
+            {"code": workspace_type.name, "name": workspace_type.value}
+            for workspace_type in allowed
+        ],
+    }
+
+
+
+@mcp.tool()
+@require_auth
 def fetch_user_workflow_stage(user_id: int, workspace_id: int):
     """
     Fetch workflow stage for a user in a workspace based on active role mapping.
@@ -36,14 +83,7 @@ def fetch_user_workflow_stage(user_id: int, workspace_id: int):
     Returns:
         dict: { 'workflow_stage': 'ALL' or stage name, 'role_id': role_id }
     """
-    # Enforce JWT-based access: only allow if user_id matches JWT
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"error": "Unauthorized: user_id not found in token claims"}
+    _, jwt_user_id = get_current_user()
     if str(user_id) != str(jwt_user_id):
         return {"error": "You are not authorized to fetch this user's workflow stage."}
 
@@ -76,7 +116,9 @@ def fetch_user_workflow_stage(user_id: int, workspace_id: int):
     finally:
         session.close()
 
+
 @mcp.tool()
+@require_auth
 def update_user_kb_toggle(user_id: int, workspace_id: int, can_curate_kb: bool):
     """
     Update the can_curate_kb column for a user in a workspace (workspace_users_mapping).
@@ -87,15 +129,8 @@ def update_user_kb_toggle(user_id: int, workspace_id: int, can_curate_kb: bool):
     Returns:
         dict: Success or error message.
     """
-    # Enforce JWT-based access: only allow if user_id matches JWT
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
+    claims, jwt_user_id = get_current_user()
     is_admin = claims.get("is_admin", False)
-    if not jwt_user_id:
-        return {"error": "Unauthorized: user_id not found in token claims"}
     if str(user_id) != str(jwt_user_id) and not is_admin:
         return {"error": "You are not authorized to update this user."}
 
@@ -145,7 +180,7 @@ def login_user(email: str, password: str):
             password_matches = False
 
             if user_db_password is None:
-                if password == DefaulValue.PASSWORD.value:
+                if password == DefaultValue.PASSWORD.value:
                     password_matches = True
             elif user_db_password.startswith('$argon2'):
                 try:
@@ -530,6 +565,7 @@ def fetch_knowledge_base(
 #         finally:
 #             session.close()
 @mcp.tool()
+@require_auth
 def fetch_workspaces_list(user_id):
     """
     Returns a summary of all workspaces for the authenticated user, including workspace_id, workspace_name, workspace_desc,
@@ -547,14 +583,8 @@ def fetch_workspaces_list(user_id):
     try:
         session.rollback()
 
-        # Use JWT claims directly for authentication (faster, as in login_user)
-        request = request_var.get(None)
-        if not request or not hasattr(request.state, "jwt_claims"):
-            return {"error": "Unauthorized: JWT claims not found in request context"}
-        claims = request.state.jwt_claims
-        jwt_user_id = claims.get("user_id") or claims.get("sub")
-        if not jwt_user_id:
-            return {"error": "Unauthorized: user_id not found in token claims"}
+        # Use get_current_user() for authentication
+        claims, jwt_user_id = get_current_user()
 
         # --- DUMMY USER HANDLING ---
         # If the user is a dummy (not in DB), return dummy workspace from .env
@@ -686,6 +716,7 @@ def fetch_workspaces_list(user_id):
 
         
 @mcp.tool()
+@require_auth
 def create_workspace(payload):
     """
     Create a new workspace and map agents/tools/users as per the payload from frontend.
@@ -695,12 +726,8 @@ def create_workspace(payload):
         dict: {'response': 'workspace created'}
     """
     # RBAC: Only allow if JWT has is_admin True
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
+    claims, jwt_user_id = get_current_user()
     is_admin = claims.get("is_admin", False)
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
     # Allow if is_admin or user has Workspace Admin role
     has_access = False
     if is_admin:
@@ -858,6 +885,7 @@ def list_intent():
         session.close()
 
 @mcp.tool()
+@require_auth
 def fetch_tools_info(user_id=None,intent=None):
     """
     Fetch all tool details from the tools_details table.
@@ -871,12 +899,8 @@ def fetch_tools_info(user_id=None,intent=None):
     session = db.Session()
     try:
         session.rollback()
-        # Use JWT claims for authentication (faster, as in login_user)
-        request = request_var.get(None)
-        if not request or not hasattr(request.state, "jwt_claims"):
-            return {"error": "Unauthorized: JWT claims not found in request context"}
-        claims = request.state.jwt_claims
-        jwt_user_id = claims.get("user_id") or claims.get("sub")
+        # Use get_current_user() for authentication
+        claims, jwt_user_id = get_current_user()
 
         # --- DUMMY USER HANDLING ---
         email = claims.get("email") or claims.get("preferred_username") or claims.get("upn")
@@ -934,6 +958,7 @@ def fetch_tools_info(user_id=None,intent=None):
         session.close()
 
 @mcp.tool()
+@require_auth
 def fetch_intent_tools_info(user_id=None, intent=None):
     """
     Fetch all tool details from the tools_details table for a given intent/user.
@@ -946,12 +971,6 @@ def fetch_intent_tools_info(user_id=None, intent=None):
     session = db.Session()
     try:
         session.rollback()
-        # Use JWT claims for authentication (faster, as in login_user)
-        request = request_var.get(None)
-        if not request or not hasattr(request.state, "jwt_claims"):
-            return {"error": "Unauthorized: JWT claims not found in request context"}
-        claims = request.state.jwt_claims
-        jwt_user_id = claims.get("user_id") or claims.get("sub")
 
         # If intent is provided, filter tools by intent
         if intent:
@@ -980,6 +999,7 @@ def fetch_intent_tools_info(user_id=None, intent=None):
 
 
 @mcp.tool()
+@require_auth
 def fetch_agents_info(user_id=None, intent=None):
     """
     Fetch all agent details from the agents_details table.
@@ -991,12 +1011,8 @@ def fetch_agents_info(user_id=None, intent=None):
     session = db.Session()
     try:
         session.rollback()
-        # Use JWT claims for authentication (faster, as in login_user)
-        request = request_var.get(None)
-        if not request or not hasattr(request.state, "jwt_claims"):
-            return {"error": "Unauthorized: JWT claims not found in request context"}
-        claims = request.state.jwt_claims
-        jwt_user_id = claims.get("user_id") or claims.get("sub")
+        # Use get_current_user() for authentication
+        claims, jwt_user_id = get_current_user()
 
         # --- DUMMY USER HANDLING ---
         email = claims.get("email") or claims.get("preferred_username") or claims.get("upn")
@@ -1069,6 +1085,7 @@ def fetch_agents_info(user_id=None, intent=None):
         session.close()
 
 @mcp.tool()
+@require_auth
 def fetch_intent_agents_info(user_id=None, intent=None):
     """
     Fetch all agent details from the agents_details table for a given intent/user.
@@ -1081,10 +1098,6 @@ def fetch_intent_agents_info(user_id=None, intent=None):
     session = db.Session()
     try:
         session.rollback()
-        # Use JWT claims for authentication (faster, as in login_user)
-        request = request_var.get(None)
-        if not request or not hasattr(request.state, "jwt_claims"):
-            return {"error": "Unauthorized: JWT claims not found in request context"}
 
         # If intent is provided, filter agents by intent
         if intent:
@@ -1113,6 +1126,7 @@ def fetch_intent_agents_info(user_id=None, intent=None):
 
 
 @mcp.tool()
+@require_auth
 def update_workspace(payload):
     """
     Update workspace details (name, description, tools, agents) using a payload dict.
@@ -1123,12 +1137,8 @@ def update_workspace(payload):
         dict: Response or error message.
     """
     # RBAC: Only allow if JWT has is_admin True or user is Workspace Admin for this workspace
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
+    claims, jwt_user_id = get_current_user()
     is_admin = claims.get("is_admin", False)
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
     has_access = False
     session = db.Session()
     try:
@@ -1239,17 +1249,14 @@ def update_workspace(payload):
         session.close() 
 
 @mcp.tool()
+@require_auth
 def delete_workspace(workspace_id):
     '''
     Delete workspace: set is_active to False
     '''
     # RBAC: Only allow if JWT has is_admin True
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
+    claims, jwt_user_id = get_current_user()
     is_admin = claims.get("is_admin", False)
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
     has_access = False
     if is_admin:
         has_access = True
@@ -1286,6 +1293,7 @@ def delete_workspace(workspace_id):
         session.close()
 
 @mcp.tool()
+@require_auth
 def fetch_workspace_details(workspace_id):
     '''
     Fetch all information about a workspace, including master table, mappings, and all tool/agent/user details.
@@ -1297,14 +1305,8 @@ def fetch_workspace_details(workspace_id):
     session = db.Session()
     try:
         session.rollback()
-        # Use JWT claims directly for authentication (faster, as in login_user)
-        request = request_var.get(None)
-        if not request or not hasattr(request.state, "jwt_claims"):
-            return {"error": "Unauthorized: JWT claims not found in request context"}
-        claims = request.state.jwt_claims
-        jwt_user_id = claims.get("user_id") or claims.get("sub")
-        if not jwt_user_id:
-            return {"error": "Unauthorized: user_id not found in token claims"}
+        # Use get_current_user() for authentication
+        claims, jwt_user_id = get_current_user()
 
         # --- DUMMY USER HANDLING ---
         email = claims.get("email") or claims.get("preferred_username") or claims.get("upn")
@@ -1564,21 +1566,14 @@ def fetch_workspace_details(workspace_id):
 
 
 @mcp.tool()
+@require_auth
 def fetch_agents_tools_by_ids(workspace_id):
-    # Enforce JWT-based access: only allow if user is mapped to the workspace
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"error": "Unauthorized: user_id not found in token claims"}
-
     """
     Fetch all tools and agents for a given workspace_id, tagging each as 'tool' or 'agent'.
     Only returns mappings and entities where is_active == 'true'.
     Replaces agent_category/tool_category IDs with category names.
     """
+    claims, jwt_user_id = get_current_user()
     session = db.Session()
     try:
         session.rollback()
@@ -1634,6 +1629,7 @@ def fetch_agents_tools_by_ids(workspace_id):
         session.close()
 
 @mcp.tool()
+@require_auth
 def add_agent_tool_to_workspace(payload):
     """
     Add an agent or tool to a workspace.
@@ -1642,14 +1638,7 @@ def add_agent_tool_to_workspace(payload):
     Returns:
         dict: {"response": "Successfully Added to workspace"}
     """
-    # Enforce JWT-based access: only allow if user is mapped to the workspace
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"error": "Unauthorized: user_id not found in token claims"}
+    _, jwt_user_id = get_current_user()
 
     session = db.Session()
     try:
@@ -1697,6 +1686,7 @@ def add_agent_tool_to_workspace(payload):
         session.close()
 
 @mcp.tool()
+@require_auth
 def remove_workspace_agent_tool_mapping(workspace_id, agent_id=None, tool_id=None):
     """
     Remove mapping between workspace and agent/tool by setting is_active to 'false'.
@@ -1707,14 +1697,7 @@ def remove_workspace_agent_tool_mapping(workspace_id, agent_id=None, tool_id=Non
     Returns:
         dict: Success or error message.
     """
-    # Enforce JWT-based access: only allow if user is mapped to the workspace
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"error": "Unauthorized: user_id not found in token claims"}
+    _, jwt_user_id = get_current_user()
 
     session = db.Session()
     try:
@@ -1751,17 +1734,11 @@ def remove_workspace_agent_tool_mapping(workspace_id, agent_id=None, tool_id=Non
         session.close()
 
 @mcp.tool()
+@require_auth_async
 async def update_fav_agent(user_id, agent_id, workspace_id=0) -> dict:
-    # Enforce JWT-based access: only allow if user is mapped to the workspace and user_id matches JWT
     if user_id is None:
         return {"status": "error", "error": "user_id cannot be null"}
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"status": "error", "error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"status": "error", "error": "Unauthorized: user_id not found in token claims"}
+    _, jwt_user_id = get_current_user()
     if str(user_id) != str(jwt_user_id):
         return {"status": "error", "error": "Unauthorized: user_id in request does not match user in token"}
 
@@ -1806,17 +1783,11 @@ async def update_fav_agent(user_id, agent_id, workspace_id=0) -> dict:
         session.close()
 
 @mcp.tool()
+@require_auth_async
 async def update_fav_tool(user_id, tool_id, workspace_id=0) -> dict:
-    # Enforce JWT-based access: only allow if user is mapped to the workspace and user_id matches JWT
     if user_id is None:
         return {"status": "error", "error": "user_id cannot be null"}
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"status": "error", "error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"status": "error", "error": "Unauthorized: user_id not found in token claims"}
+    _, jwt_user_id = get_current_user()
     if str(user_id) != str(jwt_user_id):
         return {"status": "error", "error": "Unauthorized: user_id in request does not match user in token"}
 
@@ -1927,6 +1898,7 @@ async def update_fav_tool(user_id, tool_id, workspace_id=0) -> dict:
 #     finally:
 #         session.close()
 @mcp.tool()
+@require_auth
 def list_integrations_for_entity_prev(id, type):
     """
     List all integrations for a specific agent or tool.
@@ -1943,15 +1915,6 @@ def list_integrations_for_entity_prev(id, type):
             - connected (bool)
             - logo (str)
     """
-    # Enforce JWT presence; this is a generic listing but should require an authenticated context
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"error": "Unauthorized: user_id not found in token claims"}
-
     # Fixed catalog per frontend requirement (exact descriptions & logos)
     FIXED_CATALOG = [
         {
@@ -2090,6 +2053,7 @@ def list_integrations_for_entity_prev(id, type):
         session.close()
 
 @mcp.tool()
+@require_auth
 def list_integrations_for_entity(id, type, workspace_id=None, user_id=None):
     """
     List all integrations for a specific agent or tool, user-specific and workspace-specific.
@@ -2101,14 +2065,7 @@ def list_integrations_for_entity(id, type, workspace_id=None, user_id=None):
     Returns:
         dict: List of integrations with name, logo, and is_active flag.
     """
-    # Enforce JWT presence; this is a generic listing but should require an authenticated context
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"error": "Unauthorized: user_id not found in token claims"}
+    _, jwt_user_id = get_current_user()
 
     # Use provided user_id/workspace_id if given, else fallback to JWT
     user_id = user_id or jwt_user_id
@@ -2227,17 +2184,11 @@ def list_integrations_for_entity(id, type, workspace_id=None, user_id=None):
         session.close()
 
 @mcp.tool()
+@require_auth_async
 async def toggle_integration_connection(user_id, workspace_id ,integration_id, id , type) -> dict:
-    # Enforce JWT-based access: only allow if user is mapped to the workspace and user_id matches JWT
     if user_id is None:
         return {"status": "error", "error": "user_id cannot be null"}
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"status": "error", "error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"status": "error", "error": "Unauthorized: user_id not found in token claims"}
+    _, jwt_user_id = get_current_user()
     if str(user_id) != str(jwt_user_id):
         return {"status": "error", "error": "Unauthorized: user_id in request does not match user in token"}
 
@@ -2310,20 +2261,14 @@ async def toggle_integration_connection(user_id, workspace_id ,integration_id, i
         session.close()
 
 @mcp.tool()
+@require_auth_async
 async def fetch_specific_agent_info(user_id, agent_id, workspace_id=0) -> dict:
     """
     Fetches detailed information about a specific agent for a given user.
     """
     if user_id is None:
         return {"status": "error", "error": "user_id cannot be null"}
-    # Enforce JWT-based access: only allow if user is mapped to the workspace and user_id matches JWT
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"status": "error", "error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"status": "error", "error": "Unauthorized: user_id not found in token claims"}
+    _, jwt_user_id = get_current_user()
     if str(user_id) != str(jwt_user_id):
         return {"status": "error", "error": "Unauthorized: user_id in request does not match user in token"}
 
@@ -2422,20 +2367,14 @@ async def fetch_specific_agent_info(user_id, agent_id, workspace_id=0) -> dict:
         session.close()
 
 @mcp.tool()
+@require_auth_async
 async def fetch_specific_tool_info(user_id, tool_id, workspace_id=0) -> dict:
     """
     Fetches detailed information about a specific tool for a given user.
     """
     if user_id is None:
         return {"status": "error", "error": "user_id cannot be null"}
-    # Enforce JWT-based access like other tools
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"status": "error", "error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"status": "error", "error": "Unauthorized: user_id not found in token claims"}
+    _, jwt_user_id = get_current_user()
     if str(user_id) != str(jwt_user_id):
         return {"status": "error", "error": "Unauthorized: user_id in request does not match user in token"}
 
@@ -2525,6 +2464,7 @@ async def fetch_specific_tool_info(user_id, tool_id, workspace_id=0) -> dict:
         session.close()
 
 @mcp.tool()
+@require_auth
 def fetch_roles_list():
     """
     Fetch a list of roles (ids and name) from the role_master table.
@@ -2532,15 +2472,6 @@ def fetch_roles_list():
     Returns:
         dict: { 'response': [ { 'role_id': ..., 'role_name': ... }, ... ] }
     """
-    # Require JWT presence for consistency
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"error": "Unauthorized: user_id not found in token claims"}
-
     session = db.Session()
     try:
         session.rollback()
@@ -2576,6 +2507,7 @@ def fetch_roles_list():
 
 
 @mcp.tool()
+@require_auth
 def add_user_to_workspace(workspace_id: int, user_email: str, role_id: int, first_name: str = None, last_name: str = None):
     """
     Add a user to a workspace by email and assign a role by role_id.
@@ -2591,12 +2523,8 @@ def add_user_to_workspace(workspace_id: int, user_email: str, role_id: int, firs
     Returns:
         dict: Success or error message and notification
     """
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
+    claims, jwt_user_id = get_current_user()
     is_admin = claims.get("is_admin", False)
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
     has_access = False
     session = db.Session()
     try:
@@ -2696,16 +2624,8 @@ def add_user_to_workspace(workspace_id: int, user_email: str, role_id: int, firs
         session.close()
 
 @mcp.tool()
+@require_auth
 def list_workspace_users(workspace_id: int):
-    # Enforce JWT-based access: only allow if user is mapped to the workspace
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"error": "Unauthorized: user_id not found in token claims"}
-
     session = db.Session()
     try:
         session.rollback()
@@ -2745,6 +2665,7 @@ def list_workspace_users(workspace_id: int):
         session.close()
 
 @mcp.tool()
+@require_auth
 def remove_user_from_workspace(user_id: int, workspace_id: int, role_id: int):
     """
     Remove a user from a workspace (set is_active = False in mapping tables).
@@ -2758,12 +2679,8 @@ def remove_user_from_workspace(user_id: int, workspace_id: int, role_id: int):
     if user_id is None:
         return {"status": "error", "error": "user_id cannot be null"}
     # RBAC: Only allow if JWT has is_admin True or user has role_id==3 for this workspace
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
+    claims, jwt_user_id = get_current_user()
     is_admin = claims.get("is_admin", False)
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
     has_access = False
     session = db.Session()
     try:
@@ -2811,6 +2728,7 @@ def remove_user_from_workspace(user_id: int, workspace_id: int, role_id: int):
         session.close()
 
 @mcp.tool()
+@require_auth
 def update_workspace_user(user_id: int, workspace_id: int, role_id: int, first_name: str = None, last_name: str = None):
     """
     Update a user's role in a workspace by role_id.
@@ -2826,12 +2744,8 @@ def update_workspace_user(user_id: int, workspace_id: int, role_id: int, first_n
     if user_id is None:
         return {"status": "error", "error": "user_id cannot be null"}
     # RBAC: Only allow if JWT has is_admin True or user has role_id==3 for this workspace
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
+    claims, jwt_user_id = get_current_user()
     is_admin = claims.get("is_admin", False)
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
     has_access = False
     session = db.Session()
     try:
@@ -2907,6 +2821,7 @@ def update_workspace_user(user_id: int, workspace_id: int, role_id: int, first_n
         session.close()
 
 @mcp.tool()
+@require_auth
 def fetch_industry_info():
     """
     Fetch all industries and their subindustries.
@@ -2925,15 +2840,6 @@ def fetch_industry_info():
             ]
         }
     """
-    # Require JWT presence for consistency
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
-    if not jwt_user_id:
-        return {"error": "Unauthorized: user_id not found in token claims"}
-
     session = db.Session()
     try:
         session.rollback()
@@ -3082,6 +2988,7 @@ def logout_user(access_token: str | None = None, refresh_token: str | None = Non
     return response
 
 @mcp.tool()
+@require_auth
 def check_user_presence_by_email(user_email: str, workspace_id: int):
     """
     Check whether a user (by email) exists in the users table and whether they
@@ -3118,17 +3025,8 @@ def check_user_presence_by_email(user_email: str, workspace_id: int):
                     response: "The User is already present in User table and in this workspace."
                     is_flag: True
     """
-    # Require JWT presence for consistency with the rest of the file
-    request = request_var.get(None)
-    if not request or not hasattr(request.state, "jwt_claims"):
-        return {"error": "Unauthorized: JWT claims not found in request context"}
-
-    claims = request.state.jwt_claims
-    jwt_user_id = claims.get("user_id") or claims.get("sub")
+    claims, jwt_user_id = get_current_user()
     is_admin = claims.get("is_admin", False)
-
-    if not jwt_user_id:
-        return {"error": "Unauthorized: user_id not found in token claims"}
 
     session = db.Session()
     try:

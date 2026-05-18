@@ -29,7 +29,7 @@ class WorkspaceType(str, Enum):
     TR = "Trial"
     PR = "Product"
 
-class DefaulValue(str, Enum):
+class DefaultValue(str, Enum):
     PASSWORD = "forge-X@coforge"
 
 @dataclass(frozen=True)
