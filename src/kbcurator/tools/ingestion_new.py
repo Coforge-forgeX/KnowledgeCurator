@@ -11,7 +11,7 @@ from lightrag.llm.ollama import ollama_model_complete, ollama_embed
 from lightrag.llm.azure_openai import azure_openai_complete
 from lightrag.kg.shared_storage import initialize_share_data, initialize_pipeline_status
 import aiohttp
-from ..server.server import mcp
+from kbcurator.server.server import mcp
 import psycopg2
 from azure.storage.blob import BlobServiceClient
 from PyPDF2 import PdfReader

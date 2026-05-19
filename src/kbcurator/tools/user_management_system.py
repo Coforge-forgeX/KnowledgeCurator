@@ -1,5 +1,5 @@
 from kbcurator.utils.access_validation import validate_user_workspace_access
-from ..server.server import mcp
+from kbcurator.server.server import mcp
 import psycopg2
 from configparser import ConfigParser
 from sqlalchemy import func

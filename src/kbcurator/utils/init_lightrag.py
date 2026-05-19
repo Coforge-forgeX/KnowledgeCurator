@@ -10,7 +10,7 @@ from lightrag.llm.azure_openai import azure_openai_complete
 from lightrag.kg.shared_storage import initialize_share_data, initialize_pipeline_status
 import aiohttp
 from configparser import ConfigParser
-from ..server.server import mcp
+from kbcurator.server.server import mcp
 
 # nest_asyncio.apply()
 

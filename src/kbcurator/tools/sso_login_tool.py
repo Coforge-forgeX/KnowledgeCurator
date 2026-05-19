@@ -11,7 +11,7 @@ from kbcurator.utils.auth import (
     _serialize_user,
     ACCESS_TOKEN_EXPIRY,
 )
-from ..server.server import mcp
+from kbcurator.server.server import mcp
 import logging
 
 logger = logging.getLogger(__name__)
