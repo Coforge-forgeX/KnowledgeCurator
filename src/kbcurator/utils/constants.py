@@ -31,6 +31,7 @@ class WorkspaceType(str, Enum):
 
 class DefaultValue(str, Enum):
     PASSWORD = "forge-X@coforge"
+    EMAIL_ENDS_WITH_COFORGE = "@coforge.com"
 
 @dataclass(frozen=True)
 class RoleData:
