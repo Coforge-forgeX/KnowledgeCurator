@@ -28,12 +28,12 @@ mongo_client = get_mongodb_client()
 session = SessionHistoryManager(mongo_client)
 
 # --- Import tools so they are registered with MCP ---
-from ..tools import ingestion_new  # noqa: F401
-from ..tools import kb_adapter_tool  # noqa: F401
-from ..tools import kb_curator_chatbot  # noqa: F401
-from ..tools import user_management_system  # noqa: F401
-from ..tools import sso_login_tool  # noqa: F401
-from ..tools import account_status_tool  # noqa: F401
+from kbcurator.tools import ingestion_new  # noqa: F401
+from kbcurator.tools import kb_adapter_tool  # noqa: F401
+from kbcurator.tools import kb_curator_chatbot  # noqa: F401
+from kbcurator.tools import user_management_system  # noqa: F401
+from kbcurator.tools import sso_login_tool  # noqa: F401
+from kbcurator.tools import account_status_tool  # noqa: F401
 # ---------------------------
 # Middleware
 # ---------------------------
