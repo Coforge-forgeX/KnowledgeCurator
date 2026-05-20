@@ -34,6 +34,7 @@ from kbcurator.tools import kb_curator_chatbot  # noqa: F401
 from kbcurator.tools import user_management_system  # noqa: F401
 from kbcurator.tools import sso_login_tool  # noqa: F401
 from kbcurator.tools import account_status_tool  # noqa: F401
+from kbcurator.tools import llm_router_tool  # noqa: F401
 # ---------------------------
 # Middleware
 # ---------------------------
@@ -52,6 +53,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "refresh_jwt_token",
         "query_rag",
         "upload_and_index_tool",
+        "use_llm_provider",
+        "query_llm_router_status",
+        "test_llm_generation",
     ]
 
     async def dispatch(self, request: Request, call_next):
