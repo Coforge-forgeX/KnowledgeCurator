@@ -6,7 +6,7 @@ from typing import List, Optional
 import os
 from langchain_openai import AzureChatOpenAI
 # from langchain.schema import HumanMessage, AIMessage
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain.messages import HumanMessage, AIMessage
 from configparser import ConfigParser
 
 class AzureCustomLLM(LLM):
@@ -25,28 +25,42 @@ class AzureCustomLLM(LLM):
     ):
         super().__init__()
         config = ConfigParser()
-        config_path = os.path.abspath(os.path.join(os.getcwd(), 'config.ini'))
-        if config.read(config_path):
-            print(f"Loading config from: {config_path}")
-            os.environ["AZURE_OPENAI_API_KEY"] = config.get("Azure_OpenAI_llm_Model", "api_key")
-            os.environ["AZURE_OPENAI_ENDPOINT"] = config.get("Azure_OpenAI_llm_Model", "api_base")
-            os.environ["AZURE_OPENAI_DEPLOYMENT"] = config.get("Azure_OpenAI_llm_Model", "llm_model")
-            os.environ["OPENAI_API_VERSION"] = config.get("Azure_OpenAI_llm_Model", "api_version")
-        else:
-            # Fall back to environment variables (standard deployment path)
-            missing = [v for v in ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT")
-                       if not os.getenv(v)]
-            if missing:
-                raise EnvironmentError(
-                    f"config.ini not found at {config_path} and the following env vars are not set: "
-                    + ", ".join(missing)
+        config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config.ini'))
+        if os.path.exists(config_path) and config.read(config_path):
+            if config.has_section("Azure_OpenAI_llm_Model"):
+                os.environ.setdefault(
+                    "AZURE_OPENAI_API_KEY",
+                    config.get("Azure_OpenAI_llm_Model", "api_key", fallback=""),
                 )
+                os.environ.setdefault(
+                    "AZURE_OPENAI_ENDPOINT",
+                    config.get("Azure_OpenAI_llm_Model", "api_base", fallback=""),
+                )
+                os.environ.setdefault(
+                    "AZURE_OPENAI_DEPLOYMENT",
+                    config.get("Azure_OpenAI_llm_Model", "llm_model", fallback=""),
+                )
+                os.environ.setdefault(
+                    "OPENAI_API_VERSION",
+                    config.get("Azure_OpenAI_llm_Model", "api_version", fallback=""),
+                )
+
+        api_key = os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_LLM_MODEL_API_KEY")
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT") or os.getenv("AZURE_OPENAI_LLM_MODEL_API_BASE")
+        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT") or os.getenv("AZURE_OPENAI_LLM_MODEL_LLM_MODEL")
+        api_version = os.getenv("OPENAI_API_VERSION") or os.getenv("AZURE_OPENAI_LLM_MODEL_API_VERSION")
+
+        if not all([api_key, endpoint, deployment, api_version]):
+            raise ValueError(
+                "Missing Azure OpenAI settings. Set AZURE_OPENAI_API_KEY/AZURE_OPENAI_ENDPOINT/AZURE_OPENAI_DEPLOYMENT/OPENAI_API_VERSION "
+                "or their AZURE_OPENAI_LLM_MODEL_* equivalents."
+            )
         
         self._llm = AzureChatOpenAI(
-            api_key= os.environ["AZURE_OPENAI_API_KEY"],
-            api_version= os.environ["OPENAI_API_VERSION"],
-            azure_endpoint= os.environ["AZURE_OPENAI_ENDPOINT"],
-            azure_deployment= os.environ["AZURE_OPENAI_DEPLOYMENT"],
+            api_key=api_key,
+            api_version=api_version,
+            azure_endpoint=endpoint,
+            azure_deployment=deployment,
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,
