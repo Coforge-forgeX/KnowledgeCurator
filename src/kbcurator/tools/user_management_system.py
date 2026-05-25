@@ -1,5 +1,5 @@
 from kbcurator.utils.access_validation import validate_user_workspace_access
-from kbcurator.utils.permission import is_admin
+from kbcurator.utils.permission import is_admin, get_user_role_id
 from ..server.server import mcp
 import psycopg2
 from configparser import ConfigParser
@@ -136,9 +136,10 @@ def update_user_kb_toggle(user_id: int, workspace_id: int, can_curate_kb: bool):
     session = db.Session()
     try:
         session.rollback()
-        # Use is_admin to check if caller is workspace admin
-        if not is_admin(jwt_user_id, workspace_id):
-            return {"error": "Only Workspace Admin can update can_curate_kb for users in this workspace."}
+  
+        user_role_id = get_user_role_id(jwt_user_id, workspace_id)
+        if user_role_id != Role.WS_ADMIN.id and user_role_id != Role.WS_MANAGER.id:
+            return {"error": "Only Workspace Admin or Manager can update can_curate_kb for users in this workspace."}
 
         user_map = session.query(db.UserMap).filter(
             db.UserMap.user_id == user_id,
