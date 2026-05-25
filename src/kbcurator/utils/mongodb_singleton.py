@@ -48,7 +48,8 @@ class MongoDBSingleton:
     def _initialize_connection(self):
         """Initialize MongoDB connection with connection pooling."""
         try:
-            mongodb_uri = os.getenv("MONGODB_DATABASE_URI")
+            from urllib.parse import quote_plus
+            mongodb_uri = quote_plus(os.getenv("MONGODB_DATABASE_URI"))
             if not mongodb_uri:
                 raise ValueError("MONGODB_DATABASE_URI environment variable is required")
             
