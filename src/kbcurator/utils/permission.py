@@ -63,7 +63,13 @@ def is_admin(user_id: int, workspace_id: Optional[int] = None) -> bool:
 	- If workspace_id is provided, checks workspace admin role from mapping.
 	- If workspace_id is not provided, checks platform admin role.
 	"""
-	role_id = get_user_role_id(user_id=user_id, workspace_id=workspace_id)
+	try:
+		normalized_user_id = int(user_id)
+		normalized_workspace_id = int(workspace_id)
+	except (TypeError, ValueError):
+		return False
+	
+	role_id = get_user_role_id(user_id=normalized_user_id, workspace_id=normalized_workspace_id)
 	if workspace_id is not None:
 		return role_id == Role.WS_ADMIN.id
 	return role_id == Role.ADMIN.id

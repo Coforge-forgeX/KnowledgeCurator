@@ -1,4 +1,5 @@
 from kbcurator.utils.access_validation import validate_user_workspace_access
+from kbcurator.utils.permission import is_admin
 from ..server.server import mcp
 import psycopg2
 from configparser import ConfigParser
@@ -26,6 +27,7 @@ from kbcurator.utils.auth import (
     get_current_user
 )
 
+from datetime import datetime, timezone
 from kbcurator.utils.constants import DefaultValue, Role, WorkspaceType
 
 
@@ -135,7 +137,7 @@ def update_user_kb_toggle(user_id: int, workspace_id: int, can_curate_kb: bool):
     try:
         session.rollback()
         # Use is_admin to check if caller is workspace admin
-        if not validate_admin(jwt_user_id, workspace_id):
+        if not is_admin(jwt_user_id, workspace_id):
             return {"error": "Only Workspace Admin can update can_curate_kb for users in this workspace."}
 
         user_map = session.query(db.UserMap).filter(
@@ -1280,7 +1282,7 @@ def update_workspace(payload):
         workspace_id = int(workspace_id)
         
         # RBAC: Only Workspace Admin can update
-        if not validate_admin(jwt_user_id, workspace_id):
+        if not is_admin(jwt_user_id, workspace_id):
             return {"error": "You are not authorized to update this workspace. Only Workspace Admin can update workspaces."}
 
         ws = session.query(db.Workspace).filter(
@@ -1397,7 +1399,7 @@ def delete_workspace(workspace_id):
         workspace_id = int(workspace_id)
         session.rollback()
         # Check if user has Workspace Admin role for this workspace
-        if not validate_admin(jwt_user_id, workspace_id):
+        if not is_admin(jwt_user_id, workspace_id):
             return {"error": "You are not authorized to delete a workspace. Only Workspace Admin can delete workspaces."}
 
         ws = session.query(db.Workspace).filter(db.Workspace.workspace_id==workspace_id, db.Workspace.is_active==True).first()
