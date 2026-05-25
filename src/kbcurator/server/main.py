@@ -34,6 +34,8 @@ from kbcurator.tools import user_management_system  # noqa: F401
 from kbcurator.tools import sso_login_tool  # noqa: F401
 from kbcurator.tools import account_status_tool  # noqa: F401
 from kbcurator.tools import llm_router_tool  # noqa: F401
+from kbcurator.tools import sharepoint_agent 
+from kbcurator.tools import config
 # ---------------------------
 # Middleware
 # ---------------------------
