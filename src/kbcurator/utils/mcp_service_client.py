@@ -135,7 +135,7 @@ class MCPServiceClient:
         # Initialize kb_name
         kb_name = self.sub_industry
         
-        knowledge_bases = []
+        #knowledge_bases = []
 
         # if str(role_id) == "34":
         #     print(f"SME query")
@@ -153,26 +153,26 @@ class MCPServiceClient:
         #     elif c.isdigit():
         #         result.append(digit_map[c])
         # workspace_id_alpha = ''.join(result)
-        role_id_str = str(role_id) if role_id is not None else ""
-        if role_id_str == "34":
-            # SME: keep original cross-KB behavior
-            knowledge_bases = self.knowledge_bases.copy()
-        else:
-            # Workspace users: query only their workspace KB to avoid cross-scope contamination.
-            if workspace_id:
-                digit_map = {
-                    '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
-                    '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
-                }
-                result = []
-                for c in str(workspace_id):
-                    if c.isalpha():
-                        result.append(c)
-                    elif c.isdigit():
-                        result.append(digit_map[c])
-                workspace_id_alpha = ''.join(result)
-                if workspace_id_alpha:
-                    knowledge_bases = [workspace_id_alpha]
+        # role_id_str = str(role_id) if role_id is not None else ""
+        # if role_id_str == "34":
+        #     # SME: keep original cross-KB behavior
+        #     knowledge_bases = self.knowledge_bases.copy()
+        # else:
+        #     # Workspace users: query only their workspace KB to avoid cross-scope contamination.
+        #     if workspace_id:
+        #         digit_map = {
+        #             '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+        #             '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
+        #         }
+        #         result = []
+        #         for c in str(workspace_id):
+        #             if c.isalpha():
+        #                 result.append(c)
+        #             elif c.isdigit():
+        #                 result.append(digit_map[c])
+        #         workspace_id_alpha = ''.join(result)
+        #         if workspace_id_alpha:
+        #             knowledge_bases = [workspace_id_alpha]
        # knowledge_bases.append(workspace_id_alpha)
             
         # Modified kb_name for workspace isolation
@@ -184,7 +184,7 @@ class MCPServiceClient:
                 "kb_name": kb_name,
                 "question": user_message,
                 "history": history,
-                "knowledge_bases": knowledge_bases,
+                "knowledge_bases": self.knowledge_bases,
                 "user_prompt": "",
                 "mode": "mix",
                 "workspace_id": workspace_id,  # ADD THIS
