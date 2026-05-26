@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 # Replace with git URL in real usage:
 # common-adapters @ git+ssh://git@github.com/YOUR_ORG/common-adapters.git@v1.0.1
 dependencies = [
-  "common-adapters @ git+https://github.com/Coforge-forgeX/forgexpackages.git@sharepoint_pkg",
+  "common-adapters @ git+https://github.com/Coforge-forgeX/forgexpackages.git@main",
   "pandas>=2.3.0",
   "pyarrow>=20.0.0",
   "streamlit",

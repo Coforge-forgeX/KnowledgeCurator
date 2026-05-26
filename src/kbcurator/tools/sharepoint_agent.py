@@ -10,11 +10,11 @@ from common_adapters.sharepoint import (
 import asyncio
 from typing import Any, Optional
 import logging
+from dateutil.parser import parse as parse_date
+from dateutil.tz import UTC
 
 logger = logging.getLogger("sharepoint_agent")
-# Check if services are available
-if server.sharepoint_client_manager is None:
-    logger.error("SharePoint service is currently unavailable. Please try again later.")
+
         
 @mcp.tool()
 async def test_sharepoint_connection(
@@ -72,6 +72,7 @@ async def extract_sharepoint_data(
     created_before: Optional[str] = None,
     modified_after: Optional[str] = None,
     modified_before: Optional[str] = None,
+    tags: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """
     Extract text and metadata from SharePoint documents using Azure Document Intelligence.
@@ -88,8 +89,15 @@ async def extract_sharepoint_data(
         created_before: ISO 8601 datetime string; only include files created before this time.
         modified_after: ISO 8601 datetime string; only include files modified after this time.
         modified_before: ISO 8601 datetime string; only include files modified before this time.
+        tags: Optional dict mapping SharePoint internal column names to required values. Value can be a string (exact match, case-insensitive) or a list (any-of match).
+            Example:
+                tags={
+                    "Status": "Approved",          # exact match (case-insensitive)
+                    "Category": ["Win", "Success"], # any-of match
+                }
     Returns:
         dict with "documents" list (each item has id, name, text, metadata) and "count".
+        Each document's metadata includes a "tags" dict with all SharePoint column values.
     """
     try:
         client = await server.sharepoint_client_manager.get_client(
@@ -117,6 +125,8 @@ async def extract_sharepoint_data(
             metadata_map["modified_after"] = modified_after
         if modified_before:
             metadata_map["modified_before"] = modified_before
+        if tags:
+            metadata_map["tags"] = tags
 
         loop = asyncio.get_event_loop()
         service = SharePointService(client)
@@ -127,7 +137,34 @@ async def extract_sharepoint_data(
                 metadata_map=metadata_map or None,
             ),
         )
-        return {"documents": documents, "count": len(documents)}
+        # Sort documents by modification date descending (latest first)
+        def get_mod_date(doc):
+            # Prefer 'modified_at' at top level, then check metadata and other common fields
+            if 'modified_at' in doc and doc['modified_at']:
+                return doc['modified_at']
+            meta = doc.get('metadata', {})
+            return meta.get('modified_at') or meta.get('modified') or meta.get('modified_date') or meta.get('lastModified')
+
+        def parse_mod_date(doc):
+            date_str = get_mod_date(doc)
+            logger.debug(f"Document: {doc.get('source', doc.get('name', 'unknown'))}, modified_at: {date_str}")
+            if date_str:
+                try:
+                    dt = parse_date(date_str)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=UTC)
+                    return dt
+                except Exception as ex:
+                    logger.warning(f"Failed to parse date '{date_str}' for document {doc.get('source', doc.get('name', 'unknown'))}: {ex}")
+                    return None
+            return None
+
+        documents_sorted = sorted(
+            documents,
+            key=lambda doc: parse_mod_date(doc) or '',
+            reverse=True
+        )
+        return {"documents": documents_sorted, "count": len(documents_sorted)}
     except Exception as e:
         logger.error(f"extract_sharepoint_data failed: {e}")
         return {"error": str(e), "documents": [], "count": 0}
