@@ -1307,14 +1307,6 @@ def update_workspace(payload):
             else:
                 return {"error": "Workspace type cannot be updated."}
 
-        # Industry and sub-industry are immutable after workspace creation.
-        if 'industry' in payload and payload.get('industry') is not None:
-            return {"error": "Industry cannot be updated."}
-        if 'subIndustry' in payload and payload.get('subIndustry') is not None:
-            return {"error": "Sub-industry cannot be updated."}
-        if 'intent' in payload and payload.get('intent') is not None:
-            return {"error": "Intent cannot be updated."}
-
         # Get current mapping context for KB updates.
         current_wiim = None
         if db.WorkspaceIndustrySubIndustryMap:
@@ -1325,28 +1317,36 @@ def update_workspace(payload):
 
         existing_workspace_type = (getattr(ws, 'keywords', None) or '').strip().upper()
 
-        # KG workspace KB mapping is immutable.
-        if existing_workspace_type == WorkspaceType.KG.name and 'kb_ids' in payload and payload.get('kb_ids') is not None:
-            return {"error": "Knowledge base cannot be updated for KG workspaces."}
+        
+        # Update WIIM mappings for KBs using existing industry/sub-industry context.
+        effective_intent = getattr(current_wiim, 'intent_id', None) if current_wiim else None
+        effective_industry = getattr(current_wiim, 'industry_id', None) if current_wiim else None
+        effective_sub_industry = getattr(current_wiim, 'subindustry_id', None) if current_wiim else None
 
-        kb_ids = fields.get('kb_ids')
-        if kb_ids is None:
-            kb_ids = []
-        if kb_ids and not isinstance(kb_ids, list):
-            return {'error': "KB Ids must be a list"}
-        if kb_ids:
-            try:
-                kb_ids = [int(kb_id) for kb_id in kb_ids]
-            except (TypeError, ValueError):
-                return {'error': "Invalid KB Ids"}
+        # Industry, sub-industry, and intent are immutable after workspace creation.
+        # Ignore these fields from update payload and always rely on existing mapping context.
+        
+        should_update_kb_mappings = existing_workspace_type != WorkspaceType.KG.name and 'kb_ids' in payload
+        kb_ids = None
+        if should_update_kb_mappings:
+            kb_ids = fields.get('kb_ids')
+            if kb_ids is None:
+                kb_ids = []
+            if kb_ids and not isinstance(kb_ids, list):
+                return {'error': "KB Ids must be a list"}
+            if kb_ids:
+                try:
+                    kb_ids = [int(kb_id) for kb_id in kb_ids]
+                except (TypeError, ValueError):
+                    return {'error': "Invalid KB Ids"}
 
-            valid_count = (
-                session.query(db.KnowledgeBase.id)
-                .filter(db.KnowledgeBase.id.in_(kb_ids), db.KnowledgeBase.is_active.is_(True))
-                .count()
-            )
-            if valid_count != len(kb_ids):
-                return {'error': "Invalid kb_ids."}
+                valid_count = (
+                    session.query(db.KnowledgeBase.id)
+                    .filter(db.KnowledgeBase.id.in_(kb_ids), db.KnowledgeBase.is_active.is_(True))
+                    .count()
+                )
+                if valid_count != len(kb_ids):
+                    return {'error': "Invalid KB selected."}
 
         # Update workspace master fields
         if fields.get('workspace_name'):
@@ -1357,12 +1357,7 @@ def update_workspace(payload):
             ws.namespace = fields['namespace']
         ws.last_updated = datetime.now(timezone.utc)
 
-        # Update WIIM mappings for KBs using existing industry/sub-industry context.
-        effective_intent = getattr(current_wiim, 'intent_id', None) if current_wiim else None
-        effective_industry = getattr(current_wiim, 'industry_id', None) if current_wiim else None
-        effective_sub_industry = getattr(current_wiim, 'subindustry_id', None) if current_wiim else None
-
-        if db.WorkspaceIndustrySubIndustryMap and effective_industry and effective_sub_industry and effective_intent and 'kb_ids' in payload and kb_ids is not None:
+        if db.WorkspaceIndustrySubIndustryMap and effective_industry and effective_sub_industry and effective_intent and should_update_kb_mappings:
             session.query(db.WorkspaceIndustrySubIndustryMap).filter(
                 db.WorkspaceIndustrySubIndustryMap.workspace_id == workspace_id,
                 db.WorkspaceIndustrySubIndustryMap.industry_id == effective_industry,
