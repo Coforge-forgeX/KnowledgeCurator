@@ -20,7 +20,10 @@ import difflib
 from kbcurator.utils.chatbot_context import ChatbotContext
 import re
 from urllib.parse import urlparse
-from kbcurator.utils.access_validation import validate_user_workspace_access
+from kbcurator.utils.access_validation import (
+    validate_user_workspace_access,
+    validate_chatbot_request_scope,
+)
 from kbcurator.utils.request_context import request_var
 # from tools.userManagementSystem import Session, UserMap
 from kbcurator.utils.db import db
@@ -241,7 +244,18 @@ class Chatbot:
     def get_or_create_context(self, session_id: str) -> ChatbotContext:
         context = self.session.load_context(session_id)
         if context:
-            return context
+            if isinstance(context, ChatbotContext):
+                return context
+            if isinstance(context, dict):
+                try:
+                    return ChatbotContext.from_dict(context)
+                except Exception:
+                    return ChatbotContext(
+                        session_id=session_id,
+                        conversation_history=context.get("conversation_history", []) if isinstance(context, dict) else [],
+                        pending_confirmation=context.get("pending_confirmation") if isinstance(context, dict) else None,
+                        last_intent=context.get("last_intent") if isinstance(context, dict) else None,
+                    )
         context = ChatbotContext(session_id=session_id)
         self.session.save_context(context)
         return context
@@ -837,12 +851,6 @@ async def message_gpt(
 ) -> dict:
     # --- JWT-based authentication and workspace-user mapping check (copied from ingestion_new.py tools) ---
 
-    # Validate workspace_id presence
-    if user_id is None:
-        return {"status": "error", "error": "user_id cannot be null"}
-    if not workspace_id:
-        return {"error": "workspace_id is required for authentication."}
-
     # Validate user access to workspace
     valid, err = validate_user_workspace_access(
         user_id=user_id,
@@ -851,28 +859,17 @@ async def message_gpt(
     if not valid:
         return {"error": err}
 
-
-    # Enforce JWT-based access: only allow if user is mapped to the workspace and user_id matches JWT
-    # request = request_var.get()
-    # if not request or not hasattr(request.state, "jwt_claims"):
-    #     return {"error": "Unauthorized: JWT claims not found in request context"}
-    # claims = request.state.jwt_claims
-    # jwt_user_id = claims.get("user_id") or claims.get("sub")
-    # if not jwt_user_id:
-    #     return {"error": "Unauthorized: user_id not found in token claims"}
-    # if str(user_id) != str(jwt_user_id):
-    #     return {"error": "Unauthorized: user_id in request does not match user in token"}
-
-    # Check if user is mapped to this workspace
-    session = db.Session()
-    try:
-        user_map = session.query(db.UserMap).filter_by(workspace_id=workspace_id, user_id=user_id, is_active=True).first()
-        if not user_map:
-            return {"error": "You are not authorized to access this workspace."}
-    except Exception as e:
-        return {"error": str(e)}
-    finally:
-        session.close()
+    # Reusable payload integrity check to reject tampered/corrupted inputs.
+    valid_scope, scope_err = validate_chatbot_request_scope(
+        user_id=user_id,
+        workspace_id=workspace_id,
+        role_id=role_id,
+        industry=industry,
+        sub_industry=sub_industry,
+        knowledge_bases=knowledge_bases,
+    )
+    if not valid_scope:
+        return {"error": scope_err}
 
     try:
         token = get_http_headers(include_all=True).get('authorization',"") or get_http_headers().get('Authorization',"")

@@ -2,10 +2,14 @@ import socket
 from ..client.mcp_client import MCPClient
 import json
 import asyncio
+from threading import RLock
+from time import monotonic
 from dotenv import load_dotenv
 import os
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from kbcurator.utils.db import db
+from kbcurator.utils.constants import WorkspaceType
 
 # Load .env file if it exists (for local development)
 env_path = os.path.abspath(os.path.join(os.getcwd(), '.env'))
@@ -13,6 +17,9 @@ if os.path.exists(env_path):
     load_dotenv(env_path)
 
 class MCPServiceClient:
+    _WORKSPACE_TYPE_CACHE_TTL_SECONDS = 600
+    _workspace_type_cache = {}
+    _workspace_type_cache_lock = RLock()
 
     # def __init__(self, host, port, industry, sub_industry):
     def __init__(self, server_url, industry, sub_industry, knowledge_bases, token: str | None = None):
@@ -30,6 +37,73 @@ class MCPServiceClient:
             
         self.obj = MCPClient(server_url=self.server_url, token=token)
         self._token = token
+
+    def _workspace_id_to_alpha(self, workspace_id) -> str:
+        digit_map = {
+            '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+            '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
+        }
+        result = []
+        for c in str(workspace_id or ""):
+            if c.isalpha():
+                result.append(c)
+            elif c.isdigit():
+                result.append(digit_map[c])
+        return ''.join(result)
+
+    def _fetch_workspace_type(self, workspace_id) -> str | None:
+        if not workspace_id:
+            return None
+
+        session = db.Session()
+        try:
+            ws = session.query(db.Workspace).filter(
+                db.Workspace.workspace_id == workspace_id,
+                db.Workspace.is_active == True
+            ).first()
+            if not ws:
+                return None
+
+            keyword = (getattr(ws, "keywords", None) or "").strip()
+            if not keyword:
+                return None
+
+            # Keywords are persisted as codes like KG/DM/TR/PR.
+            return keyword.split(",")[0].strip().upper() or None
+        finally:
+            session.close()
+
+    def _get_workspace_type(self, workspace_id) -> str | None:
+        if not workspace_id:
+            return None
+
+        cache_key = str(workspace_id)
+        now = monotonic()
+        with self._workspace_type_cache_lock:
+            cached = self._workspace_type_cache.get(cache_key)
+            if cached and cached.get("expires_at", 0) > now:
+                return cached.get("value")
+
+        workspace_type = self._fetch_workspace_type(workspace_id)
+        with self._workspace_type_cache_lock:
+            self._workspace_type_cache[cache_key] = {
+                "value": workspace_type,
+                "expires_at": now + self._WORKSPACE_TYPE_CACHE_TTL_SECONDS,
+            }
+        return workspace_type
+
+    def _is_kg_workspace(self, workspace_id) -> bool:
+        return self._get_workspace_type(workspace_id) == WorkspaceType.KG.name
+
+    def _get_primary_knowledge_base(self) -> str | None:
+        """Return first non-empty knowledge base token supplied in request context."""
+        if not isinstance(self.knowledge_bases, list):
+            return None
+        for kb in self.knowledge_bases:
+            text = (str(kb).strip() if kb is not None else "")
+            if text:
+                return text
+        return None
 
     # def set_token(self, token: str | None):
     #     """Update bearer token to be used for subsequent connections."""
@@ -239,27 +313,17 @@ class MCPServiceClient:
             """
             print(f"Calling MCP upload_and_index_tool for intent: {intent}")
 
-            role_id_str = str(role_id) if role_id is not None else ""
-
-            if role_id_str == "34":
+            if self._is_kg_workspace(workspace_id):
+                primary_kb = self._get_primary_knowledge_base()
                 container_name = os.getenv('AZURE_BLOB_STORAGE_CONTAINER_NAME')
-                upload_path = f"{self.industry}/{self.sub_industry}"
-                kb_name = self.sub_industry
+                if primary_kb:
+                    upload_path = f"{self.industry}/{self.sub_industry}/{primary_kb}"
+                    kb_name = f"{self.sub_industry}/{primary_kb}"
+
             else:
                 container_name = "workspace"
                 upload_path = f"{self.industry}/{self.sub_industry}/{workspace_id}"
-                digit_map = {
-                    '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
-                    '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
-                }
-                result = []
-                for c in str(workspace_id):
-                    if c.isalpha():
-                        result.append(c)
-                    elif c.isdigit():
-                        result.append(digit_map[c])
-                    # skip non-alphanumeric characters
-                workspace_id_alpha = ''.join(result)
+                workspace_id_alpha = self._workspace_id_to_alpha(workspace_id)
                 kb_name = f"{self.sub_industry}/{workspace_id_alpha}"
 
             try:

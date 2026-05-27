@@ -1226,7 +1226,7 @@ async def lightrag_indexing_tool(
                 content = result.content
             except Exception as e:
                 return {"error": f"Failed to process PDF with Document Intelligence: {e}"}
-        elif ext in ['docx']:
+        elif ext == 'docx':
             # Ensure blob data represents raw DOCX/DOC bytes (not base64 text)
             def _ensure_doc_bytes(data: bytes | str) -> bytes:
                 try:

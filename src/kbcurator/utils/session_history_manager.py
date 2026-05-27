@@ -35,7 +35,7 @@ class SessionHistoryManager:
         doc = self.context_collection.find_one({"session_id": session_id})
         if doc:
             try:
-                from utils.chatbot_context import ChatbotContext  # if you want to avoid circular import, or import at top if safe
+                from kbcurator.utils.chatbot_context import ChatbotContext
                 return ChatbotContext.from_dict(doc)
             except Exception:
                 return doc

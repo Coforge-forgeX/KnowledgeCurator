@@ -1293,13 +1293,60 @@ def update_workspace(payload):
         if not ws:
             return {"error": "Workspace not found or inactive"}
 
-        # Extract and validate payload
+        # Extract payload
         fields = _extract_workspace_payload(payload)
-        
-        # Validate workspace type and KBs (validates keywords and kb_ids)
-        normalized_keyword, kb_ids, validation_error = _validate_workspace_type_and_kbs(session, claims, fields)
-        if validation_error:
-            return validation_error
+
+        # Workspace type is immutable after creation.
+        if 'keywords' in payload and payload.get('keywords') is not None:
+            requested_keywords = payload.get('keywords')
+            if isinstance(requested_keywords, list) and len(requested_keywords) == 1:
+                requested_workspace_type = str(requested_keywords[0]).strip().upper()
+                existing_workspace_type = (getattr(ws, 'keywords', None) or '').strip().upper()
+                if requested_workspace_type != existing_workspace_type:
+                    return {"error": "Workspace type cannot be updated."}
+            else:
+                return {"error": "Workspace type cannot be updated."}
+
+        # Industry and sub-industry are immutable after workspace creation.
+        if 'industry' in payload and payload.get('industry') is not None:
+            return {"error": "Industry cannot be updated."}
+        if 'subIndustry' in payload and payload.get('subIndustry') is not None:
+            return {"error": "Sub-industry cannot be updated."}
+        if 'intent' in payload and payload.get('intent') is not None:
+            return {"error": "Intent cannot be updated."}
+
+        # Get current mapping context for KB updates.
+        current_wiim = None
+        if db.WorkspaceIndustrySubIndustryMap:
+            current_wiim = session.query(db.WorkspaceIndustrySubIndustryMap).filter(
+                db.WorkspaceIndustrySubIndustryMap.workspace_id == workspace_id,
+                db.WorkspaceIndustrySubIndustryMap.is_active == True
+            ).first()
+
+        existing_workspace_type = (getattr(ws, 'keywords', None) or '').strip().upper()
+
+        # KG workspace KB mapping is immutable.
+        if existing_workspace_type == WorkspaceType.KG.name and 'kb_ids' in payload and payload.get('kb_ids') is not None:
+            return {"error": "Knowledge base cannot be updated for KG workspaces."}
+
+        kb_ids = fields.get('kb_ids')
+        if kb_ids is None:
+            kb_ids = []
+        if kb_ids and not isinstance(kb_ids, list):
+            return {'error': "KB Ids must be a list"}
+        if kb_ids:
+            try:
+                kb_ids = [int(kb_id) for kb_id in kb_ids]
+            except (TypeError, ValueError):
+                return {'error': "Invalid KB Ids"}
+
+            valid_count = (
+                session.query(db.KnowledgeBase.id)
+                .filter(db.KnowledgeBase.id.in_(kb_ids), db.KnowledgeBase.is_active.is_(True))
+                .count()
+            )
+            if valid_count != len(kb_ids):
+                return {'error': "Invalid kb_ids."}
 
         # Update workspace master fields
         if fields.get('workspace_name'):
@@ -1308,27 +1355,26 @@ def update_workspace(payload):
             ws.workspace_desc = fields['workspace_desc']
         if fields.get('namespace'):
             ws.namespace = fields['namespace']
-        if normalized_keyword:
-            ws.keywords = normalized_keyword
         ws.last_updated = datetime.now(timezone.utc)
 
-        # Update WIIM mappings for KBs
-        industry = fields.get('industry')
-        sub_industry = fields.get('sub_industry')
-        intent = fields.get('intent')
-        if db.WorkspaceIndustrySubIndustryMap and industry and sub_industry and intent and kb_ids is not None:
+        # Update WIIM mappings for KBs using existing industry/sub-industry context.
+        effective_intent = getattr(current_wiim, 'intent_id', None) if current_wiim else None
+        effective_industry = getattr(current_wiim, 'industry_id', None) if current_wiim else None
+        effective_sub_industry = getattr(current_wiim, 'subindustry_id', None) if current_wiim else None
+
+        if db.WorkspaceIndustrySubIndustryMap and effective_industry and effective_sub_industry and effective_intent and 'kb_ids' in payload and kb_ids is not None:
             session.query(db.WorkspaceIndustrySubIndustryMap).filter(
                 db.WorkspaceIndustrySubIndustryMap.workspace_id == workspace_id,
-                db.WorkspaceIndustrySubIndustryMap.industry_id == industry,
-                db.WorkspaceIndustrySubIndustryMap.subindustry_id == sub_industry,
-                db.WorkspaceIndustrySubIndustryMap.intent_id == intent
+                db.WorkspaceIndustrySubIndustryMap.industry_id == effective_industry,
+                db.WorkspaceIndustrySubIndustryMap.subindustry_id == effective_sub_industry,
+                db.WorkspaceIndustrySubIndustryMap.intent_id == effective_intent
             ).delete(synchronize_session=False)
             for kb_id in kb_ids:
                 session.add(db.WorkspaceIndustrySubIndustryMap(
                     workspace_id=workspace_id,
-                    industry_id=industry,
-                    subindustry_id=sub_industry,
-                    intent_id=intent,
+                    industry_id=effective_industry,
+                    subindustry_id=effective_sub_industry,
+                    intent_id=effective_intent,
                     kb_id=kb_id,
                     is_active=True
                 ))
