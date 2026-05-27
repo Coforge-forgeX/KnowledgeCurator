@@ -1,7 +1,7 @@
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta 
 import certifi
 from dotenv import load_dotenv
 from pymongo import MongoClient
@@ -9,7 +9,10 @@ from pymongo.server_api import ServerApi
 from bson.objectid import ObjectId
 from configparser import ConfigParser
 
-load_dotenv(os.path.abspath(os.path.join(os.getcwd(),'.env')))
+# Load .env file if it exists (for local development)
+env_path = os.path.abspath(os.path.join(os.getcwd(), '.env'))
+if os.path.exists(env_path):
+    load_dotenv(env_path)
 
 class SessionHistoryManager:
     def __init__(self, mongo_client):
@@ -32,7 +35,7 @@ class SessionHistoryManager:
         doc = self.context_collection.find_one({"session_id": session_id})
         if doc:
             try:
-                from utils.chatbot_context import ChatbotContext  # if you want to avoid circular import, or import at top if safe
+                from kbcurator.utils.chatbot_context import ChatbotContext
                 return ChatbotContext.from_dict(doc)
             except Exception:
                 return doc
@@ -85,6 +88,30 @@ class SessionHistoryManager:
         except Exception as e:
             logging.error(f"Error in append_message: {e}")
             return None
+    def get_recent_sessions_by_ttl(self, workspace_id, user_id, current_time: datetime, ttl_seconds: float = 900):
+        # Compute cutoff time
+        cutoff_time = current_time - timedelta(seconds=ttl_seconds)
+        
+        pipeline = [
+            {"$match": {
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "timestamp": {"$gte": cutoff_time}
+            }},
+            {"$group": {
+                "_id": "$session_id",
+                "latest_timestamp": {"$max": "$timestamp"}
+            }},
+            {"$sort": {"latest_timestamp": -1}}
+        ]
+
+        try:
+            sessions = list(self.chat_collection.aggregate(pipeline))
+            # print(sessions)
+            return [str(s["_id"]) for s in sessions]
+        except Exception as e:
+            logging.error(f"Error in get_recent_sessions_by_ttl: {e}")
+            raise
 
     def get_recent_sessions(self, workspace_id, user_id, limit=5):
         try:
@@ -207,3 +234,69 @@ class SessionHistoryManager:
         except Exception as e:
             logging.error(f"Error in get_conversation_title for session {session_id}: {e}")
             return None
+
+
+class UserConfigManager:
+    def __init__(self, mongo_client):
+        """
+        Initialize UserConfigManager with a MongoDB client.
+        
+        Args:
+            mongo_client: MongoDBSingleton instance from mongodb_singleton.py
+        """
+        try:
+            self.config_collection = mongo_client.chatbot_db["kb_user_config"]
+        except Exception as e:
+            logging.error(f"Error in MongoDB connection: {e}")
+            raise
+
+    def set_config(self, workspace_id: str, user_id: str, config: dict):
+        """
+        update existing fields or create new fields for a user config in the workspace. 
+        config fields:
+       {}
+        """ 
+        
+        # Build filter to match user and workspace
+        filter = {"workspace_id": workspace_id, "user_id": user_id}
+        update = {"$set": config}
+        
+        try:
+            result = self.config_collection.update_one(filter, update, upsert=True)
+            if result.upserted_id:
+                return {
+                    "status": "success",
+                    "operation": "created",
+                    "upserted_id": str(result.upserted_id)
+                }
+            else:
+                return {
+                    "status": "success",
+                    "operation": "updated",
+                    "matched_count": result.matched_count,
+                    "modified_count": result.modified_count
+                }
+        except Exception as e:
+            logging.error(f"Error in set_config: {e}")
+            raise
+    
+    def get_config(self, workspace_id, user_id, fields: list = None):
+        try:
+            query = {"workspace_id": workspace_id, "user_id": user_id}
+            config_doc = self.config_collection.find_one(query)
+            if config_doc:
+                # Remove MongoDB internal _id field
+                config_doc.pop("_id", None)
+                if fields is None:
+                    return config_doc
+                else:
+                    return {field: config_doc.get(field) for field in fields}
+            else:
+                # Return structure with None values if fields are specified
+                if fields is not None:
+                    return {field: None for field in fields}
+                else:
+                    return {}
+        except Exception as e:
+            logging.error(f"Error in get_config: {e}")
+            raise 

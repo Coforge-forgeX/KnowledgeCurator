@@ -90,6 +90,7 @@ dependencies = [
   "pillow>=11.3.0",
   "gunicorn>=22.0.0",
   "nest-asyncio>=1.6.0",
+  "msal>=1.36.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -97,3 +98,4 @@ where = ["src"]
 
 [project.scripts]
 kb-server = "kbcurator.server.main:http_app"
+

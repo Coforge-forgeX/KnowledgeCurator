@@ -232,10 +232,10 @@ try:
     
     # Test connection
     redis_client.ping()
-    print(f"[INFO] ✓ Successfully connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
+    print(f"[INFO] Successfully connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
     REDIS_AVAILABLE = True
 except Exception as e:
-    print(f"[ERROR] ✗ Failed to connect to Redis at {REDIS_HOST}:{REDIS_PORT}: {e}")
+    print(f"[ERROR] Failed to connect to Redis at {REDIS_HOST}:{REDIS_PORT}: {e}")
     print("[WARNING] Token revocation will not work properly without Redis!")
     print("[WARNING] SECURITY RISK: Logout will not properly revoke tokens!")
     redis_client = None
@@ -603,7 +603,7 @@ def _fetch_user_roles(user_id: int) -> list:
                     urm.workspace_id,
                     urm.role_id,
                     rm.role_name AS workflow_stage
-                FROM public.user_role_mapping urm
+                FROM public.workspace_users_mapping urm
                 JOIN public.role_master rm ON rm.role_id = urm.role_id
                 WHERE urm.user_id = %s AND urm.is_active = TRUE
                 ORDER BY urm.workspace_id

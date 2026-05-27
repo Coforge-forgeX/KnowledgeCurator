@@ -1,0 +1,2 @@
+[console_scripts]
+kb-server = kbcurator.server.main:http_app

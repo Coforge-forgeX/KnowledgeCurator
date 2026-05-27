@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 from typing import List, Optional
-
 import uvicorn
 from kbcurator.server.server import mcp
 from starlette.middleware import Middleware
@@ -34,6 +33,9 @@ from kbcurator.tools import kb_curator_chatbot  # noqa: F401
 from kbcurator.tools import user_management_system  # noqa: F401
 from kbcurator.tools import sso_login_tool  # noqa: F401
 from kbcurator.tools import account_status_tool  # noqa: F401
+from kbcurator.tools import llm_router_tool  # noqa: F401
+from kbcurator.tools import sharepoint_agent 
+from kbcurator.tools import config
 # ---------------------------
 # Middleware
 # ---------------------------
@@ -52,6 +54,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "refresh_jwt_token",
         "query_rag",
         "upload_and_index_tool",
+        "use_llm_provider",
+        "query_llm_router_status",
+        "test_llm_generation",
     ]
 
     async def dispatch(self, request: Request, call_next):
@@ -130,7 +135,11 @@ class SecurityAndCORSMiddleware(BaseHTTPMiddleware):
         raw = os.getenv("ALLOWED_ORIGINS", "").strip()
         if not raw:
             return None
-        return [o.strip() for o in raw.split(",") if o.strip()]
+        return [self._normalize_origin(o) for o in raw.split(",") if o.strip()]
+
+    def _normalize_origin(self, origin: str) -> str:
+        # Browsers send Origin without trailing slash. Normalize env/config values.
+        return origin.strip().rstrip("/").lower()
 
     def _bool_env(self, name: str, default: bool = False) -> bool:
         val = os.getenv(name, str(default)).strip().lower()
@@ -166,14 +175,24 @@ class SecurityAndCORSMiddleware(BaseHTTPMiddleware):
         allowed_origins = self._parse_allowed_origins()  # None => not set
         allow_credentials = self._bool_env("ALLOW_CREDENTIALS", default=False)
 
-        request_origin = request.headers.get("origin", "*")
+        request_origin_raw = request.headers.get("origin")
+
+        request_origin = (
+            self._normalize_origin(request_origin_raw)
+            if request_origin_raw and request_origin_raw != "*"
+            else None
+        )
         if allowed_origins:
             # Strict allowlist
-            if request_origin and request_origin in allowed_origins:
-                response.headers["Access-Control-Allow-Origin"] = (
-                    request_origin
-                )
+            if request_origin and (
+                request_origin in allowed_origins or "*" in allowed_origins
+            ):
+                response.headers["Access-Control-Allow-Origin"] = request_origin_raw
                 response.headers["Vary"] = "Origin"
+                if allow_credentials:
+                    response.headers["Access-Control-Allow-Credentials"] = "true"
+                else:
+                    response.headers["Access-Control-Allow-Credentials"] = "false"
             # else: no ACAO header, browser will block
         else:
             # No explicit allow list set:
@@ -181,22 +200,19 @@ class SecurityAndCORSMiddleware(BaseHTTPMiddleware):
             # - If not, allow any origin without credentials.
             if request_origin and allow_credentials:
                 response.headers["Access-Control-Allow-Origin"] = (
-                    request_origin
+                    request_origin_raw
                 )
                 response.headers["Vary"] = "Origin"
+                response.headers["Access-Control-Allow-Credentials"] = "true"
             else:
                 response.headers["Access-Control-Allow-Origin"] = "*"
-
-        if allow_credentials and request_origin:
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-        else:
-            response.headers["Access-Control-Allow-Credentials"] = "false"
+                response.headers["Access-Control-Allow-Credentials"] = "false"
 
         response.headers["Access-Control-Allow-Methods"] = (
             "GET, POST, PUT, DELETE, OPTIONS, PATCH"
         )
         response.headers["Access-Control-Allow-Headers"] = (
-            "Authorization, Content-Type, Accept, X-Requested-With"
+            "Authorization, Content-Type, Accept, X-Requested-With, mcp-protocol-version"
         )
         response.headers["Access-Control-Expose-Headers"] = (
             "Authorization, Content-Type, Set-Cookie"
@@ -405,3 +421,17 @@ class CookieWrapperApp:
 
 # Wrap the MCP app with the cookie layer
 http_app = CookieWrapperApp(base_app)
+
+
+# ---------------------------
+# Server startup
+# ---------------------------
+if __name__ == "__main__":
+    uvicorn.run(
+        "kbcurator.server.main:http_app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_dirs=["D:/forgex-backend/KnowledgeCurator/KnowledgeCurator/src"],
+        log_level="info"
+    )

@@ -46,7 +46,10 @@ from kbcurator.utils.request_context import request_var
 from kbcurator.utils.db import db
 # from tools.userManagementSystem import Session,UserMap
  
-load_dotenv(os.path.abspath(os.path.join(os.getcwd(),'.env')))
+# Load .env file if it exists (for local development)
+env_path = os.path.abspath(os.path.join(os.getcwd(), '.env'))
+if os.path.exists(env_path):
+    load_dotenv(env_path)
  
 azure_llm_api_key = os.getenv('AZURE_OPENAI_LLM_MODEL_API_KEY')
 azure_llm_api_base = os.getenv('AZURE_OPENAI_LLM_MODEL_API_BASE')
@@ -372,6 +375,9 @@ async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = 
             graph_storage="Neo4JStorage",
             workspace = lightrag_database,
             vector_storage="PGVectorStorage",
+            vector_db_storage_cls_kwargs={
+                "cosine_better_than_threshold": 0.0,  # LOWERED from 0.2 - was filtering all results
+            },
             chunk_token_size=1000,
             chunk_overlap_token_size=200,
         )
@@ -1285,7 +1291,7 @@ async def lightrag_indexing_tool(
                 content = result.content
             except Exception as e:
                 return {"error": f"Failed to process PDF with Document Intelligence: {e}"}
-        elif ext in ['docx']:
+        elif ext == 'docx':
             # Ensure blob data represents raw DOCX/DOC bytes (not base64 text)
             def _ensure_doc_bytes(data: bytes | str) -> bytes:
                 try:
