@@ -188,6 +188,10 @@ class SecurityAndCORSMiddleware(BaseHTTPMiddleware):
             ):
                 response.headers["Access-Control-Allow-Origin"] = request_origin_raw
                 response.headers["Vary"] = "Origin"
+                if allow_credentials:
+                    response.headers["Access-Control-Allow-Credentials"] = "true"
+                else:
+                    response.headers["Access-Control-Allow-Credentials"] = "false"
             # else: no ACAO header, browser will block
         else:
             # No explicit allow list set:
@@ -198,19 +202,16 @@ class SecurityAndCORSMiddleware(BaseHTTPMiddleware):
                     request_origin_raw
                 )
                 response.headers["Vary"] = "Origin"
+                response.headers["Access-Control-Allow-Credentials"] = "true"
             else:
                 response.headers["Access-Control-Allow-Origin"] = "*"
-
-        if allow_credentials and request_origin:
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-        else:
-            response.headers["Access-Control-Allow-Credentials"] = "false"
+                response.headers["Access-Control-Allow-Credentials"] = "false"
 
         response.headers["Access-Control-Allow-Methods"] = (
             "GET, POST, PUT, DELETE, OPTIONS, PATCH"
         )
         response.headers["Access-Control-Allow-Headers"] = (
-            "Authorization, Content-Type, Accept, X-Requested-With"
+            "Authorization, Content-Type, Accept, X-Requested-With, mcp-protocol-version"
         )
         response.headers["Access-Control-Expose-Headers"] = (
             "Authorization, Content-Type, Set-Cookie"
@@ -419,3 +420,17 @@ class CookieWrapperApp:
 
 # Wrap the MCP app with the cookie layer
 http_app = CookieWrapperApp(base_app)
+
+
+# ---------------------------
+# Server startup
+# ---------------------------
+if __name__ == "__main__":
+    uvicorn.run(
+        "kbcurator.server.main:http_app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_dirs=["D:/forgex-backend/KnowledgeCurator/KnowledgeCurator/src"],
+        log_level="info"
+    )

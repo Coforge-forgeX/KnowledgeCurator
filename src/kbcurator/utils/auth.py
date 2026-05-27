@@ -232,10 +232,10 @@ try:
     
     # Test connection
     redis_client.ping()
-    print(f"[INFO] ✓ Successfully connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
+    print(f"[INFO] Successfully connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
     REDIS_AVAILABLE = True
 except Exception as e:
-    print(f"[ERROR] ✗ Failed to connect to Redis at {REDIS_HOST}:{REDIS_PORT}: {e}")
+    print(f"[ERROR] Failed to connect to Redis at {REDIS_HOST}:{REDIS_PORT}: {e}")
     print("[WARNING] Token revocation will not work properly without Redis!")
     print("[WARNING] SECURITY RISK: Logout will not properly revoke tokens!")
     redis_client = None
