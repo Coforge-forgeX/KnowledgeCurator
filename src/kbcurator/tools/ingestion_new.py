@@ -296,11 +296,71 @@ def generate_download_url_for_file(
     except Exception as e:
         print(f"Error generating download URL for {file_path}: {e}")
         return None
+async def _check_neo4j_reachable(timeout: float = 5.0) -> tuple[bool, str]:
+    """Quick bolt-handshake probe — returns (reachable, message)."""
+    import socket as _socket
+    neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+    # parse host:port from any scheme (bolt://, neo4j://, etc.)
+    uri_no_scheme = neo4j_uri.split("://")[-1].split("/")[0]
+    host, _, port_str = uri_no_scheme.partition(":")
+    port = int(port_str) if port_str else 7687
+    try:
+        loop = asyncio.get_event_loop()
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        await loop.run_in_executor(None, s.connect, (host, port))
+        # send bolt magic + version offer (5.4, 5.3, 5.0, 4.4)
+        s.sendall(b'\x60\x60\xb0\x17\x00\x05\x05\x04\x00\x02\x05\x04\x00\x00\x05\x00\x00\x00\x04\x04')
+        resp = await asyncio.wait_for(loop.run_in_executor(None, s.recv, 4), timeout=timeout)
+        s.close()
+        if resp and resp != b'\x00\x00\x00\x00':
+            return True, f"Neo4J at {host}:{port} TCP/bolt OK (negotiated bolt {resp[3]}.{resp[2]})"
+        return False, f"Neo4J at {host}:{port} rejected bolt version negotiation"
+    except Exception as e:
+        return False, f"Neo4J at {host}:{port} TCP unreachable: {type(e).__name__}: {e}"
+
+async def _ping_neo4j_query(timeout: float = 10.0) -> tuple[bool, str]:
+    """Execute 'RETURN 1' via the driver — confirms query engine is alive."""
+    from neo4j import AsyncGraphDatabase as _AGraphDB
+    neo4j_uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+    neo4j_user = os.environ.get("NEO4J_USERNAME", "")
+    neo4j_password = os.environ.get("NEO4J_PASSWORD", "")
+    neo4j_db = os.environ.get("NEO4J_DATABASE", "neo4j")
+    driver = None
+    try:
+        driver = _AGraphDB.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+        async with driver.session(database=neo4j_db) as session:
+            result = await asyncio.wait_for(
+                session.run("RETURN 1 AS n"), timeout=timeout
+            )
+            record = await asyncio.wait_for(result.single(), timeout=timeout)
+        return True, f"Neo4J query engine OK (RETURN 1 = {record['n']})"
+    except asyncio.TimeoutError:
+        return False, f"Neo4J query engine unresponsive — 'RETURN 1' timed out after {timeout}s (JVM frozen/GC?)"
+    except Exception as e:
+        return False, f"Neo4J query failed: {type(e).__name__}: {e}"
+    finally:
+        if driver:
+            await driver.close()
+
 async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = None) -> LightRAG:
     data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
     lightrag_database = ''.join(char for char in f"{domain}{kb_name}" if char.isalpha())
-    os.environ['NEO4J_DATABASE'] = lightrag_database
-    print(''.join(char for char in f"{domain}{kb_name}" if char.isalpha()))
+    os.environ['NEO4J_DATABASE'] = os.getenv('NEO4J_DATABASE_NAME', 'neo4j')
+    neo4j_uri = os.environ.get("NEO4J_URI", "not set")
+    neo4j_db  = os.environ.get("NEO4J_DATABASE", "not set")
+    print(f"[initialize_rag] workspace={lightrag_database} | NEO4J_URI={neo4j_uri} | NEO4J_DATABASE={neo4j_db}")
+
+    reachable, msg = await _check_neo4j_reachable(timeout=5.0)
+    print(f"[Neo4J pre-check TCP] {msg}")
+    if not reachable:
+        raise RuntimeError(f"Neo4J TCP/bolt check failed — {msg}")
+
+    query_ok, qmsg = await _ping_neo4j_query(timeout=10.0)
+    print(f"[Neo4J pre-check query] {qmsg}")
+    if not query_ok:
+        raise RuntimeError(f"Neo4J query engine not ready — {qmsg}")
+
     rag = LightRAG(
             working_dir=data_dir,
             llm_model_func=llm_model_func,
@@ -315,7 +375,12 @@ async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = 
             chunk_token_size=1000,
             chunk_overlap_token_size=200,
         )
-    await rag.initialize_storages()
+    try:
+        print(f"[initialize_rag] Calling rag.initialize_storages() ...")
+        await asyncio.wait_for(rag.initialize_storages(), timeout=45.0)
+        print(f"[initialize_rag] rag.initialize_storages() completed successfully")
+    except asyncio.TimeoutError:
+        raise RuntimeError("Neo4J initialize_storages() timed out after 45s — server is not responding to queries")
     initialize_share_data()
     await initialize_pipeline_status()
     return rag
@@ -2620,15 +2685,30 @@ async def insert_edge_to_kg(
  
 @mcp.tool()
 async def delete_entity_from_kg(
-    domain: Optional[str] = None,
-    kb_name: Optional[str] = None,
+    domain: Optional[str] = None,       # Other
+    kb_name: Optional[str] = None,      # Demo Instances/
+    knowledge_bases: Optional[list] = None,  # [Cards, Payments]
+    workspace_id: Optional[str] = None, # 753
     entity_name: Optional[str] = None,
 ):
     try:
-        rag = await initialize_rag(domain=domain, kb_name=kb_name)
-        return await rag.adelete_by_entity(
-            entity_name=entity_name,
-        )
+        knowledge_bases = list(knowledge_bases) if knowledge_bases else []
+        if workspace_id:
+            digit_map = {
+                '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+                '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
+            }
+            workspace_id_alpha = ''.join(
+                c if c.isalpha() else digit_map[c]
+                for c in str(workspace_id) if c.isalpha() or c.isdigit()
+            )
+            knowledge_bases.append(workspace_id_alpha)
+
+        results = {}
+        for kg in knowledge_bases:
+            rag = await initialize_rag(domain=domain, kb_name=kb_name + kg)
+            results[kg] = await rag.adelete_by_entity(entity_name=entity_name)
+        return results
     except Exception as e:
         return {"error": str(e)}
    
@@ -2652,12 +2732,13 @@ async def delete_relation_from_kg(
 async def edit_entity_in_kg(
     domain: Optional[str] = None,       # Other
     kb_name: Optional[str] = None,      # Demo Instances/
-    knowledge_bases: Optional[list] = [],  # [Cards, Payments]
+    knowledge_bases: Optional[list] = None,  # [Cards, Payments]
     workspace_id: Optional[str] = None, # 753
     entity_name: Optional[str] = None,
     updated_data: Optional[dict] = None,
 ):
     try:
+        knowledge_bases = list(knowledge_bases) if knowledge_bases else []
         if workspace_id:
             digit_map = {
                 '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
@@ -2677,7 +2758,7 @@ async def edit_entity_in_kg(
                 entity_name=entity_name,
                 updated_data=updated_data,
                 allow_rename=True,
-            )
+                )
         return results
     except Exception as e:
         return {"error": str(e)}
