@@ -1,4 +1,3 @@
-
 from sqlalchemy import create_engine, MetaData
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.automap import automap_base
@@ -67,6 +66,10 @@ class Database:
 		self.UserRoleMap = self.Base.classes.user_role_mapping
 		self.TMUIntegrationMapping = self.Base.classes.tool_workspace_user_integration_mapping
 		self.AMUIntegrationMapping = self.Base.classes.agent_workspace_user_integration_mapping
+		
+		# Agent LLM Configuration table (new)
+		self.AgentLLMConfiguration = getattr(self.Base.classes, 'agent_llm_configuration', None)
+		
 		# Optionals
 		self.ToolSubIndustryMap = getattr(self.Base.classes, 'tool_subindustry_mapping', None)
 		self.ToolCMSIntegrationMap = getattr(self.Base.classes, 'tool_cms_integration_mapping', None)

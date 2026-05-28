@@ -10,6 +10,7 @@ import sys
 from kbcurator.utils.auth import create_jwt_token, verify_jwt_token, create_refresh_token, verify_refresh_token
 from kbcurator.utils.request_context import request_var
 from sqlalchemy import select, func as sql_func
+from datetime import datetime, timezone
 
 # --- New Import for Password Hashing ---
 from passlib.hash import argon2
@@ -29,6 +30,7 @@ from kbcurator.utils.auth import (
 
 from datetime import datetime, timezone
 from kbcurator.utils.constants import DefaultValue, Role, WorkspaceType
+from kbcurator.services.agent_llm_configuration_service import agent_llm_config_service
 
 
 @mcp.tool()
@@ -985,6 +987,23 @@ def create_workspace(payload):
             raise Exception(f"Failed to add workspace mappings: {str(mapping_error)}")
 
         session.commit()
+        
+        # Create LLM configurations for all selected agents only (after commit)
+        agent_ids = fields.get('agent_ids') or []
+        if agent_ids:
+            try:
+                created_configs = agent_llm_config_service.bulk_create_agent_configurations(
+                    workspace_id=workspace_id,
+                    agent_ids=agent_ids,
+                    configured_providers=['azure'],
+                    current_provider='azure',
+                    user_id=creator_id
+                )
+                print(f"[Post-commit] Created LLM configurations for {len(created_configs)} agents in workspace {workspace_id}")
+            except Exception as agent_llm_config_error:
+                print(f"[Post-commit] Failed to create agent LLM configurations: {agent_llm_config_error}")
+                # Don't fail workspace creation if LLM config fails, just log it
+            
         return {'response': 'Workspace Created'}
     except Exception as e:
         session.rollback()
@@ -1449,6 +1468,18 @@ def delete_workspace(workspace_id):
             return {"error": "Workspace not found or already inactive"}
         ws.is_active = False
         session.commit()
+        
+        # Delete all LLM configurations for this workspace (after commit)
+        try:
+            deleted_count = agent_llm_config_service.delete_workspace_configurations(
+                workspace_id=workspace_id,
+                user_id=jwt_user_id
+            )
+            print(f"[Post-commit] Deleted {deleted_count} LLM configurations for workspace {workspace_id}")
+        except Exception as llm_config_error:
+            print(f"[Post-commit] Failed to delete LLM configurations: {llm_config_error}")
+            # Don't fail workspace deletion if LLM config cleanup fails, just log it
+        
         return {"response": "Workspace deleted (set inactive)"}
     except Exception as e:
         session.rollback()

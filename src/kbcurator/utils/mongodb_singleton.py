@@ -1,11 +1,16 @@
+import os
+from urllib.parse import quote_plus
 import threading
 import logging
 import certifi
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 from typing import Optional
+<<<<<<< HEAD
 from urllib.parse import quote_plus
 import os
+=======
+>>>>>>> df749853f968e111a4cdbf3c2f4b1f6996dae1ec
 from dotenv import load_dotenv
 
 load_dotenv()
