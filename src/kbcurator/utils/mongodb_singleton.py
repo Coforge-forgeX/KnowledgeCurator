@@ -4,6 +4,7 @@ import certifi
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 from typing import Optional
+from urllib.parse import quote_plus
 import os
 from dotenv import load_dotenv
 
@@ -48,7 +49,7 @@ class MongoDBSingleton:
     def _initialize_connection(self):
         """Initialize MongoDB connection with connection pooling."""
         try:
-            mongodb_uri = os.getenv("MONGODB_DATABASE_URI")
+            mongodb_uri = quote_plus(os.getenv("MONGODB_DATABASE_URI"))
             if not mongodb_uri:
                 raise ValueError("MONGODB_DATABASE_URI environment variable is required")
             
