@@ -1,11 +1,9 @@
 """
-LLM Router Tool for testing ConfigurableAI common adapter.
+LLM Router Tool with Database Persistence.
 
-This tool provides a single MCP endpoint to test the LLM routing functionality
-similar to test_azure_production.py, allowing users to:
-- Configure and switch LLM providers (auto-fallback from env to manual)
-- Query current provider status
-- Test text generation with different providers
+This tool provides MCP endpoints for managing LLM provider configurations
+with persistent database storage. It stores only provider selection and current provider,
+with all credentials coming from environment variables.
 """
 
 import asyncio
@@ -16,7 +14,9 @@ from typing import Any, Dict, List, Optional
 
 from kbcurator.server.server import mcp
 from kbcurator.utils.request_context import request_var
-from common_adapters.configurableAI import ConfigurableAIManager
+from kbcurator.services.agent_llm_configuration_service import agent_llm_config_service
+from kbcurator.utils.auth import require_auth_async
+from common_adapters.configurableAI import ConfigurableAIManager, get_ai_manager, clear_ai_manager_cache, get_cached_manager_count
 from common_adapters.configurableAI.config import (
     OpenAIConfig, 
     AzureOpenAIConfig, 
@@ -26,491 +26,567 @@ from common_adapters.configurableAI.config import (
 
 logger = logging.getLogger(__name__)
 
-# Global AI manager instance for testing
-_ai_manager: Optional[ConfigurableAIManager] = None
-
-
-def get_ai_manager() -> ConfigurableAIManager:
-    """Get or create the global AI manager instance with Azure as default provider."""
-    global _ai_manager
-    if _ai_manager is None:
-        _ai_manager = ConfigurableAIManager()
-        
-        # Auto-configure Azure as default provider if environment variables are available
-        try:
-            _ai_manager.configure_from_env("azure")
-            logger.info("Successfully auto-configured Azure as default provider")
-        except Exception as e:
-            logger.warning(f"Failed to auto-configure Azure from environment: {e}")
-            # Try manual configuration as fallback
-            try:
-                manual_config = _get_manual_config("azure")
-                if manual_config:
-                    _ai_manager.configure_provider("azure", manual_config)
-                    logger.info("Successfully configured Azure with manual fallback as default")
-                else:
-                    logger.warning("Azure environment variables not found, no default provider configured")
-            except Exception as manual_error:
-                logger.error(f"Failed to configure Azure manually: {manual_error}")
-    
-    return _ai_manager
-
-
-@mcp.tool()
-def use_llm_provider(provider_name: str) -> Dict[str, Any]:
-    """
-    Configure and switch to an LLM provider. Auto-fallback from env to manual configuration.
-    
-    Args:
-        provider_name: Name of the provider ('openai', 'azure', 'gcp', 'quasar')
-    
-    Returns:
-        Configuration and switch result with status and details
-    """
+def _save_configuration_to_db(workspace_id: int, agent_id: Optional[int], provider: str, set_as_current: bool = False, user_id: Optional[int] = None):
+    """Save provider configuration to database."""
     try:
-        manager = get_ai_manager()
-        provider_name = provider_name.lower()
+        if set_as_current:
+            agent_llm_config_service.switch_provider(
+                workspace_id=workspace_id,
+                provider=provider,
+                agent_id=agent_id,
+                user_id=user_id
+            )
+        else:
+            agent_llm_config_service.add_provider(
+                workspace_id=workspace_id,
+                provider=provider,
+                agent_id=agent_id,
+                set_as_current=False,
+                user_id=user_id
+            )
+        logger.info(f"Saved provider {provider} configuration to database")
+    except Exception as e:
+        logger.error(f"Failed to save configuration to database: {e}")
+
+
+def _extract_workspace_and_agent_ids() -> tuple[int, Optional[int]]:
+    """Extract workspace_id and agent_id from request context."""
+    try:
+        request = request_var.get()
         
-        # Check if provider is already configured
-        configured_providers = manager.list_configured_providers()
-        
-        if provider_name in configured_providers:
-            # Provider already configured, just switch to it
-            previous_provider = manager.get_current_provider()
-            manager.set_current_provider(provider_name)
+        # For public tools, try to get from JWT claims if available
+        if hasattr(request, 'state') and hasattr(request.state, 'jwt_claims'):
+            claims = request.state.jwt_claims
+            workspace_id = claims.get("workspace_id")
+            agent_id = claims.get("agent_id")
             
-            return {
-                "status": "success",
-                "action": "switched",
-                "message": f"Switched to existing provider '{provider_name}'",
-                "provider": provider_name,
-                "previous_provider": previous_provider,
-                "current_provider": manager.get_current_provider(),
-                "configured_providers": manager.list_configured_providers()
-            }
+            if workspace_id is not None:
+                return int(workspace_id), int(agent_id) if agent_id is not None else None
         
-        # Provider not configured, try to configure it
-        configuration_method = None
-        configuration_error = None
-        
-        # First try: configure from environment variables (like test_configure_from_env)
-        try:
-            manager.configure_from_env(provider_name)
-            configuration_method = "environment"
-            logger.info(f"Successfully configured {provider_name} from environment")
+        # If no JWT claims or no workspace_id in claims, check if it's a dict context
+        if hasattr(request, 'get'):
+            workspace_id = request.get("workspace_id")
+            agent_id = request.get("agent_id")
             
-        except Exception as env_error:
-            configuration_error = str(env_error)
-            logger.warning(f"Failed to configure {provider_name} from environment: {env_error}")
-            
-            # Second try: manual configuration with default values (like test_manual_configuration)
-            try:
-                manual_config = _get_manual_config(provider_name)
-                if manual_config:
-                    manager.configure_provider(provider_name, manual_config)
-                    configuration_method = "manual_fallback"
-                    logger.info(f"Successfully configured {provider_name} with manual fallback")
-                else:
-                    raise ValueError(f"No manual configuration available for {provider_name}")
-                    
-            except Exception as manual_error:
-                error_result = {
-                    "status": "error",
-                    "action": "configuration_failed",
-                    "message": f"Failed to configure {provider_name}",
-                    "provider": provider_name,
-                    "errors": {
-                        "environment_config": configuration_error,
-                        "manual_config": str(manual_error)
-                    },
-                    "required_env_vars": _get_required_env_vars(provider_name)
-                }
-                # Raise exception to set isError: true in MCP response
-                raise ValueError(f"Configuration failed for {provider_name}: {error_result['message']}")
+            if workspace_id is not None:
+                return int(workspace_id), int(agent_id) if agent_id is not None else None
         
-        # Configuration successful, provider is now active
-        result = {
-            "status": "success",
-            "action": "configured_and_switched",
-            "message": f"Successfully configured and switched to {provider_name}",
-            "provider": provider_name,
-            "configuration_method": configuration_method,
-            "current_provider": manager.get_current_provider(),
-            "configured_providers": manager.list_configured_providers()
-        }
-        
-        logger.info(f"LLM provider use result: {result}")
-        return result
+        # Fallback: return default values for testing/public tools
+        logger.warning("No workspace_id found in request context, using default values")
+        return 1, None
         
     except Exception as e:
-        error_result = {
-            "status": "error",
-            "action": "unexpected_error",
-            "message": f"Unexpected error using {provider_name}: {str(e)}",
-            "provider": provider_name,
-            "error_type": type(e).__name__
-        }
-        logger.error(f"LLM provider use error: {error_result}")
-        # Re-raise to ensure isError: true in MCP response
-        raise
-
-
-def _get_manual_config(provider_name: str) -> Optional[Dict[str, Any]]:
-    """Get manual configuration for a provider using environment variables."""
-    if provider_name == "openai":
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            return None
-        return {
-            "api_key": api_key,
-            "model": "gpt-3.5-turbo",
-            "organization": os.getenv("OPENAI_ORGANIZATION")
-        }
-    
-    elif provider_name == "azure":
-        api_key = os.getenv("AZURE_OPENAI_LLM_MODEL_API_KEY")
-        endpoint = os.getenv("AZURE_OPENAI_LLM_MODEL_API_BASE")
-        deployment = os.getenv("AZURE_OPENAI_LLM_MODEL_LLM_MODEL")
-        api_version = os.getenv("AZURE_OPENAI_LLM_MODEL_API_VERSION")
-        
-        if not all([api_key, endpoint, deployment, api_version]):
-            return None
-        
-        return {
-            "api_key": api_key,
-            "endpoint": endpoint,
-            "deployment_name": deployment,
-            "api_version": api_version,
-            "model": deployment
-        }
-    
-    elif provider_name == "gcp":
-        project_id = os.getenv("GCP_PROJECT_ID")
-        credentials = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        
-        if not all([project_id, credentials]):
-            return None
-            
-        return {
-            "project_id": project_id,
-            "credentials_path": credentials
-        }
-    
-    elif provider_name == "quasar":
-        endpoint_url = os.getenv("QUASAR_ENDPOINT_URL")
-        api_key = os.getenv("QUASAR_API_KEY")
-        model = os.getenv("QUASAR_MODEL", "claude-sonnet-4")
-        
-        if not all([endpoint_url, api_key]):
-            return None
-            
-        return {
-            "endpoint_url": endpoint_url,
-            "api_key": api_key,
-            "model": model
-        }
-    
-    return None
+        logger.error(f"Failed to extract workspace/agent IDs from context: {e}")
+        # Fallback to default values for testing
+        return 1, None
 
 
 @mcp.tool()
-def query_llm_router_status() -> Dict[str, Any]:
+async def use_llm_provider(
+    provider: str,
+    workspace_id: Optional[int] = None,
+    agent_id: Optional[int] = None,
+    set_as_current: bool = True
+) -> Dict[str, Any]:
+    """
+    Configure and optionally switch to an LLM provider with persistent storage.
+    
+    This tool configures an LLM provider using environment variables and saves
+    the provider selection to the database for persistence across service restarts.
+    
+    Args:
+        provider: Provider name ('azure', 'openai', 'gcp', 'quasar')
+        workspace_id: Workspace ID (extracted from context if not provided)
+        agent_id: Agent ID (None for workspace default, extracted from context if not provided)
+        set_as_current: Whether to set as the current active provider
+    
+    Returns:
+        Dictionary with configuration status and result
+    """
+    try:
+        # Handle empty string parameters by converting them to None
+        if agent_id == '' or agent_id == 'None':
+            agent_id = None
+        if workspace_id == '' or workspace_id == 'None':
+            workspace_id = None
+            
+        # Convert string numbers to integers if needed
+        if isinstance(agent_id, str) and agent_id.isdigit():
+            agent_id = int(agent_id)
+        if isinstance(workspace_id, str) and workspace_id.isdigit():
+            workspace_id = int(workspace_id)
+            
+        # Extract workspace and agent IDs from context if not provided
+        if workspace_id is None or agent_id is None:
+            context_workspace_id, context_agent_id = _extract_workspace_and_agent_ids()
+            workspace_id = workspace_id or context_workspace_id
+            agent_id = agent_id if agent_id is not None else context_agent_id
+        
+        # Get AI manager with persistence
+        ai_manager = get_ai_manager(workspace_id=workspace_id, agent_id=agent_id)
+        
+        # Try to configure provider from environment variables
+        # Load environment variables from KnowledgeCurator side and pass to common package
+        import os
+        from dotenv import load_dotenv
+        load_dotenv()  # Ensure .env is loaded from KnowledgeCurator
+        
+        # Create config dict with environment variables from this service
+        if provider.lower() == "azure":
+            config_dict = {
+                "provider_name": "azure",
+                "api_key": os.getenv("AZURE_OPENAI_LLM_MODEL_API_KEY"),
+                "endpoint": os.getenv("AZURE_OPENAI_LLM_MODEL_API_BASE"),
+                "model": os.getenv("AZURE_OPENAI_LLM_MODEL_LLM_MODEL"),
+                "deployment_name": os.getenv("AZURE_OPENAI_LLM_MODEL_LLM_MODEL"),
+                "api_version": os.getenv("AZURE_OPENAI_LLM_MODEL_API_VERSION", "2023-12-01-preview"),
+                "extra_params": {}
+            }
+        elif provider.lower() == "quasar":
+            config_dict = {
+                "provider_name": "quasar",
+                "api_key": os.getenv("QUASAR_API_KEY"),
+                "endpoint": os.getenv("QUASAR_ENDPOINT_URL"),
+                "model": os.getenv("QUASAR_MODEL", "claude-sonnet-4"),
+                "extra_params": {}
+            }
+        elif provider.lower() == "openai":
+            config_dict = {
+                "provider_name": "openai",
+                "api_key": os.getenv("OPENAI_API_KEY"),
+                "endpoint": os.getenv("OPENAI_ENDPOINT", "https://api.openai.com/v1"),
+                "model": os.getenv("OPENAI_MODEL", "gpt-4"),
+                "organization": os.getenv("OPENAI_ORGANIZATION"),
+                "extra_params": {}
+            }
+        elif provider.lower() == "gcp":
+            config_dict = {
+                "provider_name": "gcp",
+                "api_key": os.getenv("GCP_API_KEY"),
+                "endpoint": os.getenv("GCP_ENDPOINT"),
+                "model": os.getenv("GCP_MODEL"),
+                "project_id": os.getenv("GCP_PROJECT_ID"),
+                "extra_params": {}
+            }
+        else:
+            # Fallback for unknown providers
+            prefix = provider.upper()
+            config_dict = {
+                "provider_name": provider,
+                "api_key": os.getenv(f"{prefix}_API_KEY"),
+                "endpoint": os.getenv(f"{prefix}_ENDPOINT"),
+                "model": os.getenv(f"{prefix}_MODEL"),
+                "extra_params": {}
+            }
+        
+        # Validate required fields
+        if not config_dict.get("api_key"):
+            logger.error(f"Missing API key for {provider} provider")
+            success = False
+        elif not config_dict.get("endpoint"):
+            logger.error(f"Missing endpoint for {provider} provider")
+            success = False
+        elif not config_dict.get("model"):
+            logger.error(f"Missing model for {provider} provider")
+            success = False
+        else:
+            # Configure provider with the config dict
+            try:
+                ai_manager.configure_provider(provider, config_dict)
+                success = True
+                logger.info(f"Successfully configured {provider} provider from environment variables")
+            except Exception as e:
+                logger.error(f"Failed to configure {provider} provider: {e}")
+                success = False
+        
+        if not success:
+            return {
+                "success": False,
+                "error": f"Failed to configure {provider} from environment variables. Please check your environment configuration."
+            }
+        
+        # Save to database
+        _save_configuration_to_db(workspace_id, agent_id, provider, set_as_current)
+        
+        # Set as current provider if requested
+        if set_as_current:
+            ai_manager.set_current_provider(provider)
+        
+        # Get current status
+        try:
+            status = ai_manager.get_configuration_status()
+        except AttributeError:
+            # Fallback if method doesn't exist
+            status = {
+                "current_provider": ai_manager.get_current_provider(),
+                "configured_providers": ai_manager.list_configured_providers(),
+                "available_providers": ["azure", "openai", "gcp", "quasar"]
+            }
+        
+        return {
+            "success": True,
+            "message": f"Successfully configured {provider} from environment variables" + 
+                      (f" and set as current provider" if set_as_current else ""),
+            "provider": provider,
+            "workspace_id": workspace_id,
+            "agent_id": agent_id,
+            "config_source": "environment",
+            "current_provider": status.get("current_provider"),
+            "configured_providers": status.get("configured_providers"),
+            "persistence_enabled": True
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to configure provider {provider}: {e}")
+        return {
+            "success": False,
+            "error": f"Configuration failed: {str(e)}"
+        }
+
+
+@mcp.tool()
+async def query_llm_router_status(
+    workspace_id: Optional[int] = None,
+    agent_id: Optional[int] = None
+) -> Dict[str, Any]:
     """
     Query the current status of the LLM router.
     
+    Args:
+        workspace_id: Workspace ID (extracted from context if not provided)
+        agent_id: Agent ID (extracted from context if not provided)
+    
     Returns:
-        Current router status including providers and configuration
+        Dictionary with current router status and configuration
     """
     try:
-        manager = get_ai_manager()
+        # Handle empty string parameters by converting them to None
+        if agent_id == '' or agent_id == 'None':
+            agent_id = None
+        if workspace_id == '' or workspace_id == 'None':
+            workspace_id = None
+            
+        # Convert string numbers to integers if needed
+        if isinstance(agent_id, str) and agent_id.isdigit():
+            agent_id = int(agent_id)
+        if isinstance(workspace_id, str) and workspace_id.isdigit():
+            workspace_id = int(workspace_id)
+            
+        # Extract workspace and agent IDs from context if not provided
+        if workspace_id is None or agent_id is None:
+            context_workspace_id, context_agent_id = _extract_workspace_and_agent_ids()
+            workspace_id = workspace_id or context_workspace_id
+            agent_id = agent_id if agent_id is not None else context_agent_id
         
-        # Get environment variable status for debugging
-        env_vars = {}
-        for provider in ["openai", "azure", "gcp", "quasar"]:
-            if provider == "openai":
-                env_vars["openai"] = {
-                    "api_key": "found" if os.getenv("OPENAI_API_KEY") else "missing",
-                    "organization": "found" if os.getenv("OPENAI_ORGANIZATION") else "missing"
-                }
-            elif provider == "azure":
-                env_vars["azure"] = {
-                    "api_key": "found" if os.getenv("AZURE_OPENAI_LLM_MODEL_API_KEY") else "missing",
-                    "endpoint": "found" if os.getenv("AZURE_OPENAI_LLM_MODEL_API_BASE") else "missing",
-                    "deployment": "found" if os.getenv("AZURE_OPENAI_LLM_MODEL_LLM_MODEL") else "missing",
-                    "api_version": "found" if os.getenv("AZURE_OPENAI_LLM_MODEL_API_VERSION") else "missing"
-                }
-            elif provider == "gcp":
-                env_vars["gcp"] = {
-                    "project_id": "found" if os.getenv("GCP_PROJECT_ID") else "missing",
-                    "credentials": "found" if os.getenv("GOOGLE_APPLICATION_CREDENTIALS") else "missing"
-                }
-            elif provider == "quasar":
-                env_vars["quasar"] = {
-                    "endpoint_url": "found" if os.getenv("QUASAR_ENDPOINT_URL") else "missing",
-                    "api_key": "found" if os.getenv("QUASAR_API_KEY") else "missing",
-                    "model": "found" if os.getenv("QUASAR_MODEL") else "missing"
-                }
+        # Get AI manager with persistence
+        ai_manager = get_ai_manager(workspace_id=workspace_id, agent_id=agent_id)
         
-        result = {
-            "status": "success",
-            "current_provider": manager.get_current_provider(),
-            "configured_providers": manager.list_configured_providers(),
-            "available_providers": manager.list_available_providers(),
-            "environment_variables": env_vars,
-            "total_configured": len(manager.list_configured_providers()),
-            "has_active_provider": manager.get_current_provider() is not None
+        # Get configuration status
+        try:
+            status = ai_manager.get_configuration_status()
+        except AttributeError:
+            # Fallback if method doesn't exist
+            status = {
+                "current_provider": ai_manager.get_current_provider(),
+                "configured_providers": ai_manager.list_configured_providers(),
+                "available_providers": ["azure", "openai", "gcp", "quasar"]
+            }
+        
+        # Get database configuration
+        db_config = agent_llm_config_service.get_effective_configuration(workspace_id, agent_id)
+        
+        return {
+            "success": True,
+            "workspace_id": workspace_id,
+            "agent_id": agent_id,
+            "current_provider": status.get("current_provider"),
+            "configured_providers": status.get("configured_providers", []),
+            "available_providers": ["azure", "openai", "gcp", "quasar"]
         }
-        
-        logger.info(f"LLM router status query result: {result}")
-        return result
         
     except Exception as e:
-        error_result = {
-            "status": "error",
-            "message": f"Failed to query router status: {str(e)}",
-            "error_type": type(e).__name__
+        logger.error(f"Failed to query router status: {e}")
+        return {
+            "success": False,
+            "error": f"Status query failed: {str(e)}"
         }
-        logger.error(f"LLM router status query error: {error_result}")
-        return error_result
 
 
 @mcp.tool()
-def list_llm_providers() -> Dict[str, Any]:
+@require_auth_async
+async def switch_llm_provider(
+    provider: str,
+    workspace_id: Optional[int] = None,
+    agent_id: Optional[int] = None
+) -> Dict[str, Any]:
     """
-    List all available and configured LLM providers.
+    Switch to a different LLM provider (must be already configured).
+    
+    Args:
+        provider: Provider name to switch to
+        workspace_id: Workspace ID (extracted from context if not provided)
+        agent_id: Agent ID (extracted from context if not provided)
     
     Returns:
-        Detailed information about providers
+        Dictionary with switch result
     """
     try:
-        manager = get_ai_manager()
+        # Handle empty string parameters by converting them to None
+        if agent_id == '' or agent_id == 'None':
+            agent_id = None
+        if workspace_id == '' or workspace_id == 'None':
+            workspace_id = None
+            
+        # Convert string numbers to integers if needed
+        if isinstance(agent_id, str) and agent_id.isdigit():
+            agent_id = int(agent_id)
+        if isinstance(workspace_id, str) and workspace_id.isdigit():
+            workspace_id = int(workspace_id)
+            
+        # Extract workspace and agent IDs from context if not provided
+        if workspace_id is None or agent_id is None:
+            context_workspace_id, context_agent_id = _extract_workspace_and_agent_ids()
+            workspace_id = workspace_id or context_workspace_id
+            agent_id = agent_id if agent_id is not None else context_agent_id
         
-        available_providers = manager.list_available_providers()
-        configured_providers = manager.list_configured_providers()
-        current_provider = manager.get_current_provider()
+        # Get AI manager with persistence
+        ai_manager = get_ai_manager(workspace_id=workspace_id, agent_id=agent_id)
         
-        # Create detailed provider info
-        provider_details = {}
-        for provider in available_providers:
-            provider_details[provider] = {
-                "available": True,
-                "configured": provider in configured_providers,
-                "is_current": provider == current_provider,
-                "required_env_vars": _get_required_env_vars(provider)
+        # Check if provider is configured
+        configured_providers = ai_manager.list_configured_providers()
+        if provider not in configured_providers:
+            return {
+                "success": False,
+                "error": f"Provider {provider} is not configured. Configured providers: {configured_providers}"
             }
         
-        result = {
-            "status": "success",
-            "available_providers": available_providers,
-            "configured_providers": configured_providers,
-            "current_provider": current_provider,
-            "provider_details": provider_details,
-            "summary": {
-                "total_available": len(available_providers),
-                "total_configured": len(configured_providers),
-                "has_current": current_provider is not None
-            }
+        # Switch provider
+        ai_manager.set_current_provider(provider)
+        
+        # Save to database
+        agent_llm_config_service.switch_provider(
+            workspace_id=workspace_id,
+            provider=provider,
+            agent_id=agent_id
+        )
+        
+        return {
+            "success": True,
+            "message": f"Successfully switched to provider: {provider}",
+            "current_provider": provider,
+            "workspace_id": workspace_id,
+            "agent_id": agent_id,
+            "configured_providers": configured_providers
         }
-        
-        logger.info(f"LLM providers list result: {result}")
-        return result
         
     except Exception as e:
-        error_result = {
-            "status": "error",
-            "message": f"Failed to list providers: {str(e)}",
-            "error_type": type(e).__name__
+        logger.error(f"Failed to switch provider to {provider}: {e}")
+        return {
+            "success": False,
+            "error": f"Provider switch failed: {str(e)}"
         }
-        logger.error(f"LLM providers list error: {error_result}")
-        return error_result
 
 
 @mcp.tool()
 async def test_llm_generation(
-    prompt: str = "Explain what artificial intelligence is in one sentence.",
-    provider: Optional[str] = None,
-    max_tokens: int = 100,
-    temperature: float = 0.7
+    prompt: str = "Hello, how are you?",
+    workspace_id: Optional[int] = None,
+    agent_id: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Test text generation with the current or specified LLM provider.
+    Test text generation with the LLM router using the current provider.
     
     Args:
-        prompt: Text prompt for generation
-        provider: Specific provider to use (optional, uses current if not specified)
-        max_tokens: Maximum tokens to generate
-        temperature: Generation temperature
-        
+        prompt: Text prompt to generate response for
+        workspace_id: Workspace ID (extracted from context if not provided)
+        agent_id: Agent ID (extracted from context if not provided)
+    
     Returns:
-        Generation result with response and metadata
+        Dictionary with generation result
     """
     try:
-        manager = get_ai_manager()
+        # Handle empty string parameters by converting them to None
+        if agent_id == '' or agent_id == 'None':
+            agent_id = None
+        if workspace_id == '' or workspace_id == 'None':
+            workspace_id = None
+            
+        # Convert string numbers to integers if needed
+        if isinstance(agent_id, str) and agent_id.isdigit():
+            agent_id = int(agent_id)
+        if isinstance(workspace_id, str) and workspace_id.isdigit():
+            workspace_id = int(workspace_id)
+            
+        # Extract workspace and agent IDs from context if not provided
+        if workspace_id is None or agent_id is None:
+            context_workspace_id, context_agent_id = _extract_workspace_and_agent_ids()
+            workspace_id = workspace_id or context_workspace_id
+            agent_id = agent_id if agent_id is not None else context_agent_id
         
-        # Determine which provider to use
-        test_provider = provider or manager.get_current_provider()
+        # Get AI manager with persistence
+        ai_manager = get_ai_manager(workspace_id=workspace_id, agent_id=agent_id)
         
-        if not test_provider:
+        # Use current provider only
+        current_provider = ai_manager.get_current_provider()
+        if not current_provider:
             return {
-                "status": "error",
-                "message": "No provider specified and no current provider set",
-                "configured_providers": manager.list_configured_providers()
+                "success": False,
+                "error": "No provider is currently set. Please configure and set a provider first."
             }
         
-        if test_provider not in manager.list_configured_providers():
-            return {
-                "status": "error",
-                "message": f"Provider '{test_provider}' is not configured",
-                "configured_providers": manager.list_configured_providers()
-            }
+        # Generate text using current provider
+        response = ai_manager.generate_text(prompt)
         
-        # Generate text
-        start_time = asyncio.get_event_loop().time()
-        response = await manager.generate_text_async(
-            prompt,
-            provider=test_provider,
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
-        end_time = asyncio.get_event_loop().time()
-        
-        result = {
-            "status": "success",
-            "provider": test_provider,
+        return {
+            "success": True,
             "prompt": prompt,
             "response": response,
-            "parameters": {
-                "max_tokens": max_tokens,
-                "temperature": temperature
-            },
-            "metadata": {
-                "response_time_seconds": round(end_time - start_time, 3),
-                "response_length": len(response) if response else 0
-            }
+            "provider_used": current_provider,
+            "workspace_id": workspace_id,
+            "agent_id": agent_id,
+            "response_length": len(response) if response else 0
         }
-        
-        logger.info(f"LLM generation test result: {result}")
-        return result
         
     except Exception as e:
-        error_result = {
-            "status": "error",
-            "message": f"Failed to generate text: {str(e)}",
-            "provider": provider,
-            "prompt": prompt,
-            "error_type": type(e).__name__
+        logger.error(f"Failed to generate text: {e}")
+        return {
+            "success": False,
+            "error": f"Text generation failed: {str(e)}"
         }
-        logger.error(f"LLM generation test error: {error_result}")
-        return error_result
 
 
 @mcp.tool()
-def reset_llm_router() -> Dict[str, Any]:
+@require_auth_async
+async def list_llm_providers(
+    workspace_id: Optional[int] = None,
+    agent_id: Optional[int] = None
+) -> Dict[str, Any]:
     """
-    Reset the LLM router, clearing all configurations.
+    List all available and configured LLM providers.
+    
+    Args:
+        workspace_id: Workspace ID (extracted from context if not provided)
+        agent_id: Agent ID (extracted from context if not provided)
     
     Returns:
-        Reset operation result
+        Dictionary with provider information
     """
     try:
-        global _ai_manager
+        # Handle empty string parameters by converting them to None
+        if agent_id == '' or agent_id == 'None':
+            agent_id = None
+        if workspace_id == '' or workspace_id == 'None':
+            workspace_id = None
+            
+        # Convert string numbers to integers if needed
+        if isinstance(agent_id, str) and agent_id.isdigit():
+            agent_id = int(agent_id)
+        if isinstance(workspace_id, str) and workspace_id.isdigit():
+            workspace_id = int(workspace_id)
         
-        # Store previous state for logging
-        previous_state = {}
-        if _ai_manager:
-            previous_state = {
-                "current_provider": _ai_manager.get_current_provider(),
-                "configured_providers": _ai_manager.list_configured_providers()
-            }
+        # Extract workspace and agent IDs from context if not provided
+        if workspace_id is None or agent_id is None:
+            context_workspace_id, context_agent_id = _extract_workspace_and_agent_ids()
+            workspace_id = workspace_id or context_workspace_id
+            agent_id = agent_id if agent_id is not None else context_agent_id
         
-        # Reset by creating new instance
-        _ai_manager = ConfigurableAIManager()
+        # Get AI manager with persistence
+        ai_manager = get_ai_manager(workspace_id=workspace_id, agent_id=agent_id)
         
-        result = {
-            "status": "success",
-            "message": "LLM router reset successfully",
-            "previous_state": previous_state,
-            "current_state": {
-                "current_provider": _ai_manager.get_current_provider(),
-                "configured_providers": _ai_manager.list_configured_providers()
-            }
-        }
+        configured_providers = ai_manager.list_configured_providers()
+        current_provider = ai_manager.get_current_provider()
         
-        logger.info(f"LLM router reset result: {result}")
-        return result
+        # Get database configuration info
+        db_configs = agent_llm_config_service.get_workspace_configurations(workspace_id)
         
-    except Exception as e:
-        error_result = {
-            "status": "error",
-            "message": f"Failed to reset router: {str(e)}",
-            "error_type": type(e).__name__
-        }
-        logger.error(f"LLM router reset error: {error_result}")
-        return error_result
-
-
-@mcp.tool()
-def check_default_azure_config() -> Dict[str, Any]:
-    """
-    Check if Azure is properly configured as the default provider.
-    
-    Returns:
-        Status of Azure default configuration
-    """
-    try:
-        manager = get_ai_manager()
-        
-        # Check if Azure is configured
-        configured_providers = manager.list_configured_providers()
-        current_provider = manager.get_current_provider()
-        
-        # Check Azure environment variables
-        azure_env_vars = {
-            "AZURE_OPENAI_LLM_MODEL_API_KEY": "found" if os.getenv("AZURE_OPENAI_LLM_MODEL_API_KEY") else "missing",
-            "AZURE_OPENAI_LLM_MODEL_API_BASE": "found" if os.getenv("AZURE_OPENAI_LLM_MODEL_API_BASE") else "missing",
-            "AZURE_OPENAI_LLM_MODEL_LLM_MODEL": "found" if os.getenv("AZURE_OPENAI_LLM_MODEL_LLM_MODEL") else "missing",
-            "AZURE_OPENAI_LLM_MODEL_API_VERSION": "found" if os.getenv("AZURE_OPENAI_LLM_MODEL_API_VERSION") else "missing"
-        }
-        
-        azure_configured = "azure" in configured_providers
-        azure_is_current = current_provider == "azure"
-        all_env_vars_present = all(status == "found" for status in azure_env_vars.values())
-        
-        result = {
-            "status": "success",
-            "azure_configured": azure_configured,
-            "azure_is_current_provider": azure_is_current,
-            "azure_environment_variables": azure_env_vars,
-            "all_azure_env_vars_present": all_env_vars_present,
-            "current_provider": current_provider,
+        return {
+            "success": True,
+            "workspace_id": workspace_id,
+            "agent_id": agent_id,
+            "available_providers": ["azure", "openai", "gcp", "quasar"],
             "configured_providers": configured_providers,
-            "default_setup_successful": azure_configured and azure_is_current
+            "current_provider": current_provider,
+            "database_configurations": [
+                {
+                    "id": config['id'],
+                    "agent_id": config['agent_id'],
+                    "current_provider": config['current_provider'],
+                    "configured_providers": config['configured_providers'],
+                    "is_workspace_default": config['agent_id'] is None
+                }
+                for config in db_configs
+            ]
         }
-        
-        logger.info(f"Azure default config check result: {result}")
-        return result
         
     except Exception as e:
-        error_result = {
-            "status": "error",
-            "message": f"Failed to check Azure default config: {str(e)}",
-            "error_type": type(e).__name__
+        logger.error(f"Failed to list providers: {e}")
+        return {
+            "success": False,
+            "error": f"Provider listing failed: {str(e)}"
         }
-        logger.error(f"Azure default config check error: {error_result}")
-        return error_result
 
 
-def _get_required_env_vars(provider: str) -> List[str]:
-    """Get required environment variables for a provider."""
-    env_vars = {
-        "openai": ["OPENAI_API_KEY"],
-        "azure": [
-            "AZURE_OPENAI_LLM_MODEL_API_KEY",
-            "AZURE_OPENAI_LLM_MODEL_API_BASE", 
-            "AZURE_OPENAI_LLM_MODEL_LLM_MODEL",
-            "AZURE_OPENAI_LLM_MODEL_API_VERSION"
-        ],
-        "gcp": ["GCP_PROJECT_ID", "GOOGLE_APPLICATION_CREDENTIALS"],
-        "quasar": ["QUASAR_ENDPOINT_URL", "QUASAR_API_KEY", "QUASAR_MODEL"]
-    }
-    return env_vars.get(provider, [])
+@mcp.tool()
+@require_auth_async
+async def reset_llm_router(
+    workspace_id: Optional[int] = None,
+    agent_id: Optional[int] = None,
+    delete_from_database: bool = False
+) -> Dict[str, Any]:
+    """
+    Reset the LLM router configuration.
+    
+    Args:
+        workspace_id: Workspace ID (extracted from context if not provided)
+        agent_id: Agent ID (extracted from context if not provided)
+        delete_from_database: Whether to delete configuration from database
+    
+    Returns:
+        Dictionary with reset result
+    """
+    try:
+        # Handle empty string parameters by converting them to None
+        if agent_id == '' or agent_id == 'None':
+            agent_id = None
+        if workspace_id == '' or workspace_id == 'None':
+            workspace_id = None
+            
+        # Convert string numbers to integers if needed
+        if isinstance(agent_id, str) and agent_id.isdigit():
+            agent_id = int(agent_id)
+        if isinstance(workspace_id, str) and workspace_id.isdigit():
+            workspace_id = int(workspace_id)
+            
+        # Extract workspace and agent IDs from context if not provided
+        if workspace_id is None or agent_id is None:
+            context_workspace_id, context_agent_id = _extract_workspace_and_agent_ids()
+            workspace_id = workspace_id or context_workspace_id
+            agent_id = agent_id if agent_id is not None else context_agent_id
+        
+        # Clear cache using common package function
+        from common_adapters.configurableAI import clear_ai_manager_cache
+        clear_ai_manager_cache(workspace_id, agent_id)
+        # Clear cache functionality not available in current version
+        logger.info(f"Cache clearing requested for workspace_id={workspace_id}, agent_id={agent_id} (function not available)")
+        
+        # Delete from database if requested
+        if delete_from_database:
+            success = agent_llm_config_service.delete_configuration(workspace_id, agent_id)
+            message = "Reset router and deleted configuration from database" if success else "Reset router (no database configuration found)"
+        else:
+            message = "Reset router configuration (database configuration preserved)"
+        
+        return {
+            "success": True,
+            "message": message,
+            "workspace_id": workspace_id,
+            "agent_id": agent_id,
+            "deleted_from_database": delete_from_database
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to reset router: {e}")
+        return {
+            "success": False,
+            "error": f"Router reset failed: {str(e)}"
+        }
