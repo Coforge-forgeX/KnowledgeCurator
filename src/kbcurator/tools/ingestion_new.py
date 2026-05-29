@@ -2698,7 +2698,7 @@ async def edit_entity_in_kg(
                 updated_data=updated_data,
                 allow_rename=True,
                 )
-        return results
+        return {"response":f"{entity_name} updated successfully", "details": results}
     except Exception as e:
         return {"error": str(e)}
  
