@@ -293,6 +293,71 @@ async def admin_remove_llm_provider(
 
 @mcp.tool()
 @require_auth_async
+async def list_available_llm_providers(
+    workspace_id: int,
+    agent_id: int,
+) -> Dict[str, Any]:
+    """
+    List all LLM providers that have been configured by an admin for a specific
+    workspace-agent, along with which provider is currently active.
+
+    Regular users call this to discover available LLMs before calling
+    switch_llm_provider.
+
+    Args:
+        workspace_id: Workspace ID.
+        agent_id:     Agent ID.
+
+    Returns:
+        Dict with configured providers list, current provider, and switch hint.
+    """
+    try:
+        config = agent_llm_config_service.get_effective_configuration(workspace_id, agent_id)
+        if not config:
+            return {
+                "success": True,
+                "workspace_id": workspace_id,
+                "agent_id": agent_id,
+                "configured_providers": [],
+                "current_provider": None,
+                "message": "No LLM providers have been configured for this workspace-agent yet. Contact an admin.",
+            }
+
+        configured_providers: List[str] = config.get("configured_providers") or []
+        current_provider: Optional[str] = config.get("current_provider")
+
+        # Enrich with lightweight public metadata (model name, endpoint host) from credentials
+        provider_details = []
+        for provider in configured_providers:
+            creds = workspace_provider_credentials_service.get_provider_credentials(workspace_id, provider)
+            provider_details.append({
+                "provider": provider,
+                "model": creds["model"] if creds else None,
+                "endpoint_host": (
+                    creds["endpoint"].split("/")[2] if creds and creds.get("endpoint") else None
+                ),
+                "is_current": provider == current_provider,
+            })
+
+        return {
+            "success": True,
+            "workspace_id": workspace_id,
+            "agent_id": agent_id,
+            "configured_providers": provider_details,
+            "current_provider": current_provider,
+            "can_switch": len(configured_providers) > 1,
+            "switch_hint": (
+                "Use switch_llm_provider with provider=<name> to change the active LLM."
+                if len(configured_providers) > 1 else None
+            ),
+        }
+    except Exception as e:
+        logger.error(f"list_available_llm_providers error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
+@require_auth_async
 async def switch_llm_provider(
     provider: str,
     workspace_id: int,

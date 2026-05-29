@@ -584,7 +584,108 @@ class LLMRouterTester:
             self.record("Invalid provider rejected", False, f"Unexpected exception type {type(e).__name__}: {e}")
 
     # ------------------------------------------------------------------
-    # TEST 16: Deactivate provider credentials
+    # TEST 16: User — list_available_llm_providers (service-layer)
+    # ------------------------------------------------------------------
+    def test_list_available_providers_service(self):
+        """
+        Verifies that the service-layer data required by list_available_llm_providers
+        is correct: get_effective_configuration returns configured_providers and
+        current_provider, and credentials are accessible (no admin role needed
+        for reading this data — auth is enforced at the tool layer by require_auth_async).
+        """
+        logger.info("\n" + "=" * 60)
+        logger.info("TEST 16: User list_available_llm_providers (service layer)")
+        logger.info("=" * 60)
+
+        if not SERVICES_AVAILABLE:
+            self.record("list_available_providers service", False, "Services not available — skipped")
+            return
+
+        # Ensure a known state: add both providers so there is something to list
+        for provider in ("azure", "quasar"):
+            try:
+                agent_llm_config_service.add_provider(
+                    workspace_id=TEST_WORKSPACE_ID,
+                    agent_id=TEST_AGENT_ID,
+                    provider=provider,
+                    set_as_current=(provider == "azure"),
+                    user_id=TEST_USER_ID,
+                )
+            except Exception:
+                pass
+
+        try:
+            config = agent_llm_config_service.get_effective_configuration(
+                TEST_WORKSPACE_ID, TEST_AGENT_ID
+            )
+            ok = (
+                isinstance(config, dict)
+                and isinstance(config.get("configured_providers"), list)
+                and len(config.get("configured_providers") or []) >= 1
+            )
+            configured = config.get("configured_providers") if config else []
+            current = config.get("current_provider") if config else None
+            self.record(
+                "get_effective_configuration has providers",
+                ok,
+                f"configured_providers={configured}, current_provider={current}",
+            )
+        except Exception as e:
+            self.record("get_effective_configuration", False, f"Exception: {e}")
+            return
+
+        # Verify credentials are readable (needed for per-provider metadata in the tool)
+        try:
+            config = agent_llm_config_service.get_effective_configuration(
+                TEST_WORKSPACE_ID, TEST_AGENT_ID
+            )
+            configured_providers = config.get("configured_providers") or [] if config else []
+            current_provider = config.get("current_provider") if config else None
+
+            provider_details = []
+            for provider in configured_providers:
+                creds = workspace_provider_credentials_service.get_provider_credentials(
+                    TEST_WORKSPACE_ID, provider
+                )
+                provider_details.append({
+                    "provider": provider,
+                    "model": creds["model"] if creds else None,
+                    "is_current": provider == current_provider,
+                    "has_credentials": creds is not None,
+                })
+
+            ok = isinstance(provider_details, list) and len(provider_details) >= 1
+            can_switch = len(configured_providers) > 1
+            self.record(
+                "list_available_llm_providers data assembled",
+                ok,
+                f"providers={[d['provider'] for d in provider_details]}, can_switch={can_switch}",
+                {
+                    "provider_details": provider_details,
+                    "current_provider": current_provider,
+                    "can_switch": can_switch,
+                },
+            )
+        except Exception as e:
+            self.record("list_available_providers data", False, f"Exception: {e}")
+
+        # Edge case: workspace/agent with no configuration
+        try:
+            config_empty = agent_llm_config_service.get_effective_configuration(
+                workspace_id=999999999,
+                agent_id=999999999,
+            )
+            ok = config_empty is None
+            self.record(
+                "list_available_providers (no config) returns None",
+                ok,
+                f"Result: {config_empty}",
+            )
+        except Exception as e:
+            self.record("list_available_providers (no config)", False, f"Exception: {e}")
+
+    # ------------------------------------------------------------------
+    # TEST 17: Deactivate provider credentials
     # ------------------------------------------------------------------
     def test_deactivate_credentials(self):
         logger.info("\n" + "=" * 60)
@@ -672,6 +773,7 @@ class LLMRouterTester:
         self.test_switch_provider()
         self.test_build_manager_from_db()
         self.test_invalid_provider_rejected()
+        self.test_list_available_providers_service()
         self.test_deactivate_credentials()
 
         # Async (live) test
