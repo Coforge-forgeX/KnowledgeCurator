@@ -31,6 +31,7 @@ from kbcurator.utils.auth import (
 from datetime import datetime, timezone
 from kbcurator.utils.constants import DefaultValue, Role, WorkspaceType
 from kbcurator.services.agent_llm_configuration_service import agent_llm_config_service
+from kbcurator.services.workspace_provider_credentials_service import workspace_provider_credentials_service
 
 
 @mcp.tool()
@@ -987,8 +988,52 @@ def create_workspace(payload):
             raise Exception(f"Failed to add workspace mappings: {str(mapping_error)}")
 
         session.commit()
+
+        # Seed workspace-level Azure credentials from environment if present.
+        # This ensures switch_llm_provider can succeed for default Azure setups.
+        try:
+            azure_api_key = getenv("AZURE_OPENAI_LLM_MODEL_API_KEY")
+            azure_endpoint = getenv("AZURE_OPENAI_LLM_MODEL_API_BASE")
+            azure_model = getenv("AZURE_OPENAI_LLM_MODEL_LLM_MODEL")
+            azure_api_version = getenv("AZURE_OPENAI_LLM_MODEL_API_VERSION")
+
+            if azure_api_key and azure_endpoint and azure_model:
+                workspace_provider_credentials_service.upsert_provider_credentials(
+                    workspace_id=workspace_id,
+                    provider_name='azure',
+                    api_key=azure_api_key,
+                    endpoint=azure_endpoint,
+                    model=azure_model,
+                    api_version=azure_api_version,
+                    deployment_name=azure_model,
+                    user_id=creator_id,
+                )
+                print(f"[Post-commit] Seeded workspace Azure credentials for workspace {workspace_id}")
+            else:
+                print(
+                    "[Post-commit] Azure credentials not seeded for workspace "
+                    f"{workspace_id}: one or more AZURE_OPENAI_LLM_MODEL_* env vars missing"
+                )
+        except Exception as workspace_azure_seed_error:
+            print(f"[Post-commit] Failed to seed workspace Azure credentials: {workspace_azure_seed_error}")
+            # Don't fail workspace creation if credential seeding fails, just log it
         
-        # Create LLM configurations for all selected agents only (after commit)
+        # Always create a workspace-level default Azure configuration (after commit).
+        # This guarantees every new workspace has a usable default provider selection.
+        try:
+            agent_llm_config_service.create_or_update_configuration(
+                workspace_id=workspace_id,
+                agent_id=None,
+                configured_providers=['azure'],
+                current_provider='azure',
+                user_id=creator_id,
+            )
+            print(f"[Post-commit] Created workspace default Azure LLM configuration for workspace {workspace_id}")
+        except Exception as workspace_llm_config_error:
+            print(f"[Post-commit] Failed to create workspace default LLM configuration: {workspace_llm_config_error}")
+            # Don't fail workspace creation if LLM config fails, just log it
+
+        # Create LLM configurations for all selected agents (after commit)
         agent_ids = fields.get('agent_ids') or []
         if agent_ids:
             try:
@@ -2251,7 +2296,7 @@ def list_integrations_for_entity_prev(id, type):
 
 @mcp.tool()
 @require_auth
-def list_integrations_for_entity(id, type, workspace_id=None, user_id=None):
+def list_integrations_for_entity(id: int, type: str, workspace_id: int = None, user_id: str = None):
     """
     List all integrations for a specific agent or tool, user-specific and workspace-specific.
     Args:

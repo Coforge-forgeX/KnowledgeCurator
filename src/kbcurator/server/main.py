@@ -55,7 +55,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "query_rag",
         "upload_and_index_tool",
         "use_llm_provider",
-        "query_llm_router_status",
         "test_llm_generation",
     ]
 
