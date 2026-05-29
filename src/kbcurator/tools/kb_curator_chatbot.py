@@ -13,8 +13,8 @@ from kbcurator.utils.prompt_builder import PromptBuilder
 from kbcurator.utils.azurecustomllm import AzureCustomLLM
 from kbcurator.utils.classifier import classifier
 from kbcurator.utils.mcp_service_client import MCPServiceClient
-from ..server.server import mcp
-from ..server.main import session
+from kbcurator.server.server import mcp
+from kbcurator.server.main import session
 from kbcurator.utils.helpers import evaluate_user_input
 import difflib
 from kbcurator.utils.chatbot_context import ChatbotContext
