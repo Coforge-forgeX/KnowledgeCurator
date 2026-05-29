@@ -160,7 +160,7 @@ class SecurityAndCORSMiddleware(BaseHTTPMiddleware):
             "font-src 'self'; "
             "img-src 'self' data: https:; "
             "object-src 'none'; "
-            "frame-ancestors 'none';"
+            "frame-ancestors 'self';"
         )
         # HTTP Strict Transport Security
         response.headers["Strict-Transport-Security"] = (
