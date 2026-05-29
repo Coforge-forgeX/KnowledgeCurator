@@ -199,7 +199,71 @@ Soft-deactivate an LLM provider from a workspace. The credential record is marke
 
 Any user with a valid JWT can call these tools. They read from MongoDB config documents but do not modify credentials.
 
-#### 4. `switch_llm_provider`
+#### 4. `list_available_llm_providers`
+
+List all LLM providers that an admin has configured for a specific workspace-agent, along with which provider is currently active. Call this first to discover available options before calling `switch_llm_provider`.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `workspace_id` | int | Yes | Workspace ID |
+| `agent_id` | int | Yes | Agent ID |
+
+**Example:**
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "list_available_llm_providers",
+    "arguments": { "workspace_id": 782, "agent_id": 1 }
+  }
+}
+```
+
+**Success Response (multiple providers configured):**
+```json
+{
+  "success": true,
+  "workspace_id": 782,
+  "agent_id": 1,
+  "configured_providers": [
+    {
+      "provider": "azure",
+      "model": "gpt-4.1",
+      "endpoint_host": "my-resource.openai.azure.com",
+      "is_current": true
+    },
+    {
+      "provider": "quasar",
+      "model": "claude-sonnet-4",
+      "endpoint_host": "quasarmarket.coforge.com",
+      "is_current": false
+    }
+  ],
+  "current_provider": "azure",
+  "can_switch": true,
+  "switch_hint": "Use switch_llm_provider with provider=<name> to change the active LLM."
+}
+```
+
+**Success Response (no providers configured yet):**
+```json
+{
+  "success": true,
+  "workspace_id": 782,
+  "agent_id": 1,
+  "configured_providers": [],
+  "current_provider": null,
+  "message": "No LLM providers have been configured for this workspace-agent yet. Contact an admin."
+}
+```
+
+> **Note:** `endpoint_host` is only the hostname portion of the endpoint URL (no scheme, path, or credentials). API keys are never returned to regular users.
+
+---
+
+#### 5. `switch_llm_provider`
 
 Toggle the active LLM provider for an agent. The provider must have been admin-configured for the workspace **and** enabled for the specific agent. This call only updates `current_provider` — it never stores credentials.
 
@@ -248,7 +312,7 @@ Toggle the active LLM provider for an agent. The provider must have been admin-c
 
 ---
 
-#### 5. `query_llm_router_status`
+#### 6. `query_llm_router_status`
 
 Return the current LLM router state for a workspace/agent, including which providers have credentials and which is active.
 
@@ -289,7 +353,7 @@ Return the current LLM router state for a workspace/agent, including which provi
 
 ---
 
-#### 6. `test_llm_generation`
+#### 7. `test_llm_generation`
 
 Smoke-test the currently active provider for an agent by sending a prompt and returning the response.
 
@@ -422,11 +486,15 @@ Admin                                          User
   │   agent_ids=[1], set_as_current=false       │
   │                                             │
   │                          ┌──────────────────┤
-  │                          │ query_llm_router_status
+  │                          │ list_available_llm_providers
   │                          │   workspace_id=782, agent_id=1
+  │                          │   → [azure (current), quasar]
   │                          │
   │                          │ switch_llm_provider
   │                          │   provider=quasar, workspace_id=782, agent_id=1
+  │                          │
+  │                          │ list_available_llm_providers
+  │                          │   → [azure, quasar (current)]
   │                          │
   │                          │ test_llm_generation
   │                          │   prompt="Hello!", workspace_id=782, agent_id=1
@@ -547,6 +615,7 @@ The admin tools (`admin_configure_llm_provider`, `admin_remove_llm_provider`, `s
 | Caller not admin | Any admin tool | `{"success": false, "error": "Forbidden: ..."}` |
 | Unsupported provider | `admin_configure_llm_provider` | `{"success": false, "error": "Unsupported provider '...'"}` |
 | Missing credentials | `admin_configure_llm_provider` | `{"success": false, "error": "api_key, endpoint and model are all required."}` |
+| No config for workspace-agent | `list_available_llm_providers` | `{"success": true, "configured_providers": [], "message": "No LLM providers have been configured..."}` |
 | Provider not in workspace | `switch_llm_provider` | `{"success": false, "error": "Provider '...' has not been configured..."}` |
 | Provider not enabled for agent | `switch_llm_provider` | `{"success": false, "error": "Provider '...' is not enabled for agent..."}` |
 | No active provider | `test_llm_generation` | `{"success": false, "error": "No provider is currently configured..."}` |
@@ -591,7 +660,7 @@ Note: provider selection defaults are created automatically, but credentials mus
 
 ---
 
-**Version**: 3.0.1
+**Version**: 3.1.0
 **Last Updated**: 2026-05-29
 **Credential Source**: `llm_configs.workspace_configs` collection (MongoDB config documents)
 **Security Model**: JWT required for all tools; admin role_id (0 or 3) required for credential management
