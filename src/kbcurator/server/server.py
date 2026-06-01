@@ -8,7 +8,7 @@ load_dotenv()
 from common_adapters.langfuse_instrumentation import flush as langfuse_flush
 from common_adapters.sharepoint import SharePointClientManagerAsync
 from common_adapters.cache import CacheFactory
-from ..utils.session_history_manager import (
+from kbcurator.utils.session_history_manager import (
     SessionHistoryManager, 
     UserConfigManager
 )

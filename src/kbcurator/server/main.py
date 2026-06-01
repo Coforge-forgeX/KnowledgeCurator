@@ -55,7 +55,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "query_rag",
         "upload_and_index_tool",
         "use_llm_provider",
-        "query_llm_router_status",
         "test_llm_generation",
     ]
 
@@ -161,7 +160,7 @@ class SecurityAndCORSMiddleware(BaseHTTPMiddleware):
             "font-src 'self'; "
             "img-src 'self' data: https:; "
             "object-src 'none'; "
-            "frame-ancestors 'none';"
+            "frame-ancestors 'self';"
         )
         # HTTP Strict Transport Security
         response.headers["Strict-Transport-Security"] = (

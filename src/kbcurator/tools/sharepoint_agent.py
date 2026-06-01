@@ -1,7 +1,7 @@
-from ..server.main import os
+from kbcurator.server.main import os
 import sys
-from ..server import server
-from ..server.server import mcp
+from kbcurator.server import server
+from kbcurator.server.server import mcp
 from common_adapters.sharepoint import (
     test_sharepoint_connection as test_sp_connection,
     toggle_sharepoint_connection as toggle_sp_connection,

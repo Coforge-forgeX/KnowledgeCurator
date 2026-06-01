@@ -1,14 +1,14 @@
-from ..server.main import os
+from kbcurator.server.main import os
 import sys
 
 # # Add forgex root to Python path to import from packages/
 # forgex_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 # if forgex_root not in sys.path:
 #     sys.path.insert(0, forgex_root)
-from ..server import server
+from kbcurator.server import server
 from datetime import datetime , timezone
 import json
-from ..server.server import mcp
+from kbcurator.server.server import mcp
 import logging
 from common_adapters.sharepoint import sharepoint_update_config
 # from utils.azure_devops_update_config import azure_devops_update_config

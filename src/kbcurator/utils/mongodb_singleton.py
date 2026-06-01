@@ -1,12 +1,11 @@
 import os
-from urllib.parse import quote_plus
+from urllib.parse import unquote
 import threading
 import logging
 import certifi
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 from typing import Optional
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -50,9 +49,13 @@ class MongoDBSingleton:
     def _initialize_connection(self):
         """Initialize MongoDB connection with connection pooling."""
         try:
-            mongodb_uri = quote_plus(os.getenv("MONGODB_DATABASE_URI"))
+            mongodb_uri = os.getenv("MONGODB_DATABASE_URI", "").strip()
             if not mongodb_uri:
                 raise ValueError("MONGODB_DATABASE_URI environment variable is required")
+
+            # If an encoded URI is provided, decode it once so MongoClient gets a valid URI.
+            if "%" in mongodb_uri and "://" not in mongodb_uri:
+                mongodb_uri = unquote(mongodb_uri)
             
             self._client = MongoClient(
                 mongodb_uri,
@@ -63,7 +66,7 @@ class MongoDBSingleton:
                 maxIdleTimeMS=45000,
                 waitQueueTimeoutMS=10000,
                 serverSelectionTimeoutMS=10000,  # 10 seconds
-                connectTimeoutMS=10000,          # 2 seconds
+                connectTimeoutMS=10000,          # 10 seconds
                 socketTimeoutMS=10000
             )
             
