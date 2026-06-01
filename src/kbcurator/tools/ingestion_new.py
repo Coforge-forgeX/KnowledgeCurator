@@ -2704,19 +2704,36 @@ async def edit_entity_in_kg(
  
 @mcp.tool()
 async def edit_relation_in_kg(
-    domain: Optional[str] = None,
-    kb_name: Optional[str] = None,
+    domain: Optional[str] = None,           # Other
+    kb_name: Optional[str] = None,          # Demo Instances/
+    knowledge_bases: Optional[list] = None, # [Cards, Payments]
+    workspace_id: Optional[str] = None,     # 753
     source_entity_name: Optional[str] = None,
     target_entity_name: Optional[str] = None,
     updated_data: Optional[dict] = None,
 ):
     try:
-        rag = await initialize_rag(domain=domain, kb_name=kb_name)
-        return await rag.aedit_relation(
-            source_entity=source_entity_name,
-            target_entity=target_entity_name,
-            updated_data=updated_data,
-        )
+        knowledge_bases = list(knowledge_bases) if knowledge_bases else []
+        if workspace_id:
+            digit_map = {
+                '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+                '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
+            }
+            workspace_id_alpha = ''.join(
+                c if c.isalpha() else digit_map[c]
+                for c in str(workspace_id) if c.isalpha() or c.isdigit()
+            )
+            knowledge_bases.append(workspace_id_alpha)
+
+        results = {}
+        for kg in knowledge_bases:
+            rag = await initialize_rag(domain=domain, kb_name=kb_name + kg)
+            results[kg] = await rag.aedit_relation(
+                source_entity=source_entity_name,
+                target_entity=target_entity_name,
+                updated_data=updated_data,
+            )
+        return results
     except Exception as e:
         return {"error": str(e)}
    
