@@ -67,11 +67,6 @@ class Database:
 		self.TMUIntegrationMapping = self.Base.classes.tool_workspace_user_integration_mapping
 		self.AMUIntegrationMapping = self.Base.classes.agent_workspace_user_integration_mapping
 		
-		# Agent LLM Configuration table
-		self.AgentLLMConfiguration = getattr(self.Base.classes, 'agent_llm_configuration', None)
-		# Admin-managed LLM provider credentials per workspace
-		self.WorkspaceProviderCredentials = getattr(self.Base.classes, 'workspace_provider_credentials', None)
-		
 		# Optionals
 		self.ToolSubIndustryMap = getattr(self.Base.classes, 'tool_subindustry_mapping', None)
 		self.ToolCMSIntegrationMap = getattr(self.Base.classes, 'tool_cms_integration_mapping', None)
