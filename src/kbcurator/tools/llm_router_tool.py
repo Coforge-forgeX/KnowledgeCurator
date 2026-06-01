@@ -26,6 +26,7 @@ from kbcurator.services.workspace_provider_credentials_service import (
 from kbcurator.utils.auth import require_auth_async, get_current_user
 from kbcurator.utils.constants import Role
 from common_adapters.configurableAI import ConfigurableAIManager, clear_ai_manager_cache
+from fastmcp.exceptions import ToolError, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -74,35 +75,96 @@ def _build_manager_from_db(workspace_id: int, agent_id: Optional[int]) -> Config
 # ADMIN TOOLS
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
-@require_auth_async
-async def admin_configure_llm_provider(
+async def _validate_llm_credentials(
     provider: str,
     api_key: str,
     endpoint: str,
     model: str,
-    agent_ids: List[int],
+    api_version: Optional[str] = None,
+    deployment_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Test LLM credentials by attempting a simple generation request.
+    
+    Returns:
+        Dict with success flag and validation details.
+    """
+    try:
+        # Create a temporary ConfigurableAI manager to test the credentials
+        manager = ConfigurableAIManager()
+        
+        # Build config dict for the provider
+        config_dict = {
+            "api_key": api_key,
+            "endpoint": endpoint,
+            "model": model,
+        }
+        
+        if provider == "azure":
+            config_dict["api_version"] = api_version or "2024-12-01-preview"
+            if deployment_name:
+                config_dict["deployment_name"] = deployment_name
+        
+        # Configure the provider temporarily
+        manager.configure_provider(provider, config_dict)
+        manager.set_current_provider(provider)
+        
+        # Test with a simple prompt
+        test_prompt = "Hello, respond with just 'OK' to confirm connection."
+        response = await manager.generate_text_async(test_prompt)
+        
+        return {
+            "success": True,
+            "message": "LLM credentials validated successfully.",
+            "test_response": response[:100] if response else "No response",
+        }
+        
+    except Exception as e:
+        logger.error(f"LLM credential validation failed for provider '{provider}': {e}")
+        return {
+            "success": False,
+            "error": f"LLM credential validation failed: {str(e)}",
+            "details": "Please check your API key, endpoint, model name, and ensure the service is accessible.",
+        }
+
+
+@mcp.tool()
+@require_auth_async
+async def admin_configure_llm_provider(
+    provider: str,
     workspace_id: int,
+    agent_ids: Optional[List[int]] = None,
+    api_key: Optional[str] = None,
+    endpoint: Optional[str] = None,
+    model: Optional[str] = None,
     api_version: Optional[str] = None,
     deployment_name: Optional[str] = None,
     set_as_current: bool = False,
+    skip_validation: bool = False,
 ) -> Dict[str, Any]:
     """
-    [ADMIN ONLY] Store LLM provider credentials for a workspace and enable the
-    provider for the specified agents.
+    [ADMIN ONLY] Configure or update LLM provider for a workspace. This unified tool can:
+    1. Create new provider configuration (when provider doesn't exist)
+    2. Update existing provider configuration (when provider exists)
+    3. Add/manage agents for the provider
+    
+    For NEW providers: api_key, endpoint, and model are required.
+    For EXISTING providers: only provide the fields you want to update.
 
     Args:
         provider:         Provider name — 'azure' or 'quasar'.
-        api_key:          API key for the provider.
-        endpoint:         API endpoint URL.
-        model:            Model / deployment name.
-        agent_ids:        List of agent IDs (from agents_details table) that
-                          should be able to use this provider.
         workspace_id:     Workspace to configure.
+        agent_ids:        List of agent IDs to enable/add for this provider (optional).
+        api_key:          API key for the provider (required for new, optional for updates).
+        endpoint:         API endpoint URL (required for new, optional for updates).
+        model:            Model / deployment name (required for new, optional for updates).
         api_version:      (Azure only) API version, e.g. '2024-12-01-preview'.
         deployment_name:  (Azure only) Deployment name if different from model.
-        set_as_current:   If True, immediately set this provider as active for
-                          all listed agents.
+        set_as_current:   If True, set this provider as active for all listed agents.
+        skip_validation:  If True, skip credential validation (use with caution).
+        
+    Note: When agent_ids is provided, it replaces the entire agent list for this provider.
+    Agents not in the list will have this provider removed from their configuration.
 
     Returns:
         Summary dict with success flag and details.
@@ -111,63 +173,245 @@ async def admin_configure_llm_provider(
     caller_role = int(claims.get("role_id", -1))
 
     if not _is_admin_role(caller_role):
-        return {
-            "success": False,
-            "error": "Forbidden: only Workspace Admins or Platform Admins can configure LLM providers.",
-        }
+        raise ToolError("Forbidden: only Workspace Admins or Platform Admins can configure LLM providers.")
 
     provider = provider.lower().strip()
     if provider not in SUPPORTED_PROVIDERS:
-        return {
-            "success": False,
-            "error": f"Unsupported provider '{provider}'. Supported: {SUPPORTED_PROVIDERS}",
+        raise ValidationError(f"Unsupported provider '{provider}'. Supported: {SUPPORTED_PROVIDERS}")
+
+    # Check if provider already exists
+    existing_creds = workspace_provider_credentials_service.get_provider_credentials(workspace_id, provider)
+    is_new_provider = existing_creds is None
+    
+    # Determine operation mode and validate inputs
+    if is_new_provider:
+        # Creating new provider - require essential credentials
+        if not api_key or not endpoint or not model:
+            raise ValidationError(
+                f"For new provider configuration, api_key, endpoint, and model are all required. "
+                f"Provider '{provider}' does not exist in workspace {workspace_id}."
+            )
+        operation_mode = "create"
+        config_to_use = {
+            "api_key": api_key,
+            "endpoint": endpoint,
+            "model": model,
+            "api_version": api_version,
+            "deployment_name": deployment_name,
+        }
+    else:
+        # Updating existing provider - merge with existing config
+        operation_mode = "update"
+        config_to_use = {
+            "api_key": api_key if api_key is not None else existing_creds["api_key"],
+            "endpoint": endpoint if endpoint is not None else existing_creds["endpoint"],
+            "model": model if model is not None else existing_creds["model"],
+            "api_version": api_version if api_version is not None else existing_creds.get("api_version"),
+            "deployment_name": deployment_name if deployment_name is not None else existing_creds.get("deployment_name"),
         }
 
-    if not api_key or not endpoint or not model:
-        return {
-            "success": False,
-            "error": "api_key, endpoint and model are all required.",
-        }
+    # Track what configuration fields are being changed
+    config_changes = []
+    if is_new_provider:
+        config_changes = ["api_key", "endpoint", "model"]
+        if api_version:
+            config_changes.append("api_version")
+        if deployment_name:
+            config_changes.append("deployment_name")
+    else:
+        if api_key is not None:
+            config_changes.append("api_key")
+        if endpoint is not None:
+            config_changes.append("endpoint")
+        if model is not None:
+            config_changes.append("model")
+        if api_version is not None:
+            config_changes.append("api_version")
+        if deployment_name is not None:
+            config_changes.append("deployment_name")
+
+    # Validate credentials if configuration is being changed
+    credentials_validated = False
+    if not skip_validation and (is_new_provider or any([api_key, endpoint, model])):
+        logger.info(f"Validating LLM credentials for provider '{provider}'...")
+        validation_result = await _validate_llm_credentials(
+            provider=provider,
+            api_key=config_to_use["api_key"],
+            endpoint=config_to_use["endpoint"],
+            model=config_to_use["model"],
+            api_version=config_to_use["api_version"],
+            deployment_name=config_to_use["deployment_name"],
+        )
+        
+        if not validation_result["success"]:
+            raise ValidationError(
+                f"LLM credential validation failed: {validation_result['error']}. "
+                f"{validation_result.get('details', '')}"
+            )
+        
+        logger.info(f"LLM credentials validated successfully for provider '{provider}'")
+        credentials_validated = True
 
     try:
-        workspace_provider_credentials_service.upsert_provider_credentials(
-            workspace_id=workspace_id,
-            provider_name=provider,
-            api_key=api_key,
-            endpoint=endpoint,
-            model=model,
-            api_version=api_version,
-            deployment_name=deployment_name,
-            user_id=user_id,
-        )
-        logger.info(f"Admin {user_id} saved credentials for provider '{provider}' in workspace {workspace_id}")
-
+        operations_performed = []
         enabled_agents = []
-        for agent_id in agent_ids:
-            try:
-                agent_llm_config_service.add_provider(
-                    workspace_id=workspace_id,
-                    agent_id=agent_id,
-                    provider=provider,
-                    set_as_current=set_as_current,
-                    user_id=user_id,
-                )
-                enabled_agents.append(agent_id)
-            except Exception as e:
-                logger.error(f"Failed to enable provider '{provider}' for agent {agent_id}: {e}")
+        skipped_agents = []
 
+        # Update/create provider credentials if any config changes
+        if config_changes:
+            workspace_provider_credentials_service.upsert_provider_credentials(
+                workspace_id=workspace_id,
+                provider_name=provider,
+                api_key=config_to_use["api_key"],
+                endpoint=config_to_use["endpoint"],
+                model=config_to_use["model"],
+                api_version=config_to_use["api_version"],
+                deployment_name=config_to_use["deployment_name"],
+                user_id=user_id,
+            )
+            operations_performed.append(f"credentials_{operation_mode}d")
+            logger.info(f"Admin {user_id} {operation_mode}d provider '{provider}' credentials in workspace {workspace_id}")
+
+        # Handle agent configuration if agent_ids provided
+        if agent_ids is not None:  # Allow empty list to remove all agents
+            removed_agents = []
+            
+            # Always replace agents when agent_ids is provided for existing providers
+            if not is_new_provider:
+                # Get all agents currently configured with this provider
+                all_workspace_configs = agent_llm_config_service.get_workspace_configurations(workspace_id)
+                current_agents_with_provider = []
+                
+                for config in all_workspace_configs:
+                    if config.get("agent_id") is not None:  # Skip workspace default
+                        configured_providers = config.get("configured_providers", [])
+                        if provider in configured_providers:
+                            current_agents_with_provider.append(config["agent_id"])
+                
+                # Remove provider from agents not in the new agent_ids list
+                agents_to_remove = [aid for aid in current_agents_with_provider if aid not in agent_ids]
+                for agent_id in agents_to_remove:
+                    try:
+                        # Get current config for this agent
+                        config = agent_llm_config_service.get_effective_configuration(workspace_id, agent_id)
+                        if config:
+                            current_providers = config.get("configured_providers", [])
+                            if provider in current_providers:
+                                # Remove this provider from the agent's configured providers
+                                updated_providers = [p for p in current_providers if p != provider]
+                                current_provider = config.get("current_provider")
+                                
+                                # If this was the current provider, switch to another or clear
+                                new_current = None
+                                if current_provider == provider:
+                                    if updated_providers:
+                                        new_current = updated_providers[0]  # Switch to first available
+                                else:
+                                    new_current = current_provider  # Keep existing current
+                                
+                                agent_llm_config_service.create_or_update_configuration(
+                                    workspace_id=workspace_id,
+                                    agent_id=agent_id,
+                                    configured_providers=updated_providers,
+                                    current_provider=new_current,
+                                    user_id=user_id,
+                                )
+                                removed_agents.append(agent_id)
+                                logger.info(f"Removed provider '{provider}' from agent {agent_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to remove provider '{provider}' from agent {agent_id}: {e}")
+            
+            # Now handle the agents in the provided agent_ids list
+            for agent_id in agent_ids:
+                try:
+                    # Check if agent already has this provider
+                    config = agent_llm_config_service.get_effective_configuration(workspace_id, agent_id)
+                    existing_providers = config.get("configured_providers", []) if config else []
+                    
+                    if provider in existing_providers:
+                        # Agent already has provider, but check if we need to set as current
+                        if set_as_current:
+                            current_provider = config.get("current_provider") if config else None
+                            if current_provider != provider:
+                                # Switch to this provider as current
+                                agent_llm_config_service.switch_provider(
+                                    workspace_id=workspace_id,
+                                    provider=provider,
+                                    agent_id=agent_id,
+                                    user_id=user_id,
+                                )
+                                enabled_agents.append(agent_id)
+                                logger.info(f"Agent {agent_id} switched to provider '{provider}' as current")
+                            else:
+                                skipped_agents.append(agent_id)
+                                logger.info(f"Agent {agent_id} already has provider '{provider}' as current")
+                        else:
+                            skipped_agents.append(agent_id)
+                            logger.info(f"Agent {agent_id} already has provider '{provider}' configured")
+                        continue
+                    
+                    # Agent doesn't have this provider, add it
+                    agent_llm_config_service.add_provider(
+                        workspace_id=workspace_id,
+                        agent_id=agent_id,
+                        provider=provider,
+                        set_as_current=set_as_current,
+                        user_id=user_id,
+                    )
+                    enabled_agents.append(agent_id)
+                    logger.info(f"Agent {agent_id} added provider '{provider}'" + (f" as current" if set_as_current else ""))
+                    
+                except Exception as e:
+                    logger.error(f"Failed to enable provider '{provider}' for agent {agent_id}: {e}")
+                    skipped_agents.append(agent_id)
+            
+            operations_performed.append("agents_managed")
+            
+            # Add removed agents info to the response if any were removed
+            if removed_agents:
+                operations_performed.append("agents_removed")
+
+        # Clear cache to ensure new configuration is used
         clear_ai_manager_cache(workspace_id=workspace_id)
+
+        # Build success message
+        messages = []
+        if config_changes:
+            if is_new_provider:
+                messages.append(f"Provider '{provider}' created for workspace {workspace_id}")
+            else:
+                messages.append(f"Provider '{provider}' updated (fields: {', '.join(config_changes)})")
+            
+            if credentials_validated:
+                messages.append("credentials validated successfully")
+        
+        if agent_ids is not None:
+            agent_messages = []
+            if enabled_agents:
+                agent_messages.append(f"processed {len(enabled_agents)} agent(s)")
+            if skipped_agents:
+                agent_messages.append(f"{len(skipped_agents)} already configured/current")
+            if removed_agents:
+                agent_messages.append(f"removed {len(removed_agents)} agent(s)")
+            
+            if agent_messages:
+                messages.append(", ".join(agent_messages))
+
+        success_message = ". ".join(messages).capitalize() + "."
 
         return {
             "success": True,
-            "message": (
-                f"Provider '{provider}' configured for workspace {workspace_id} "
-                f"and enabled for {len(enabled_agents)}/{len(agent_ids)} agent(s)."
-            ),
+            "message": success_message,
             "provider": provider,
             "workspace_id": workspace_id,
+            "operation_mode": operation_mode,
+            "operations_performed": operations_performed,
+            "config_changes": config_changes,
             "enabled_agent_ids": enabled_agents,
+            "skipped_agent_ids": skipped_agents,
+            "removed_agent_ids": removed_agents,
             "set_as_current": set_as_current,
+            "credentials_validated": credentials_validated,
         }
 
     except Exception as e:
@@ -194,10 +438,7 @@ async def admin_list_llm_providers(
     caller_role = int(claims.get("role_id", -1))
 
     if not _is_admin_role(caller_role):
-        return {
-            "success": False,
-            "error": "Forbidden: only Workspace Admins or Platform Admins can view LLM provider configuration.",
-        }
+        raise ToolError("Forbidden: only Workspace Admins or Platform Admins can view LLM provider configuration.")
 
     try:
         credential_records = workspace_provider_credentials_service.list_workspace_providers(workspace_id)
@@ -236,6 +477,9 @@ async def admin_list_llm_providers(
         return {"success": False, "error": str(e)}
 
 
+
+
+
 @mcp.tool()
 @require_auth_async
 async def admin_remove_llm_provider(
@@ -256,10 +500,7 @@ async def admin_remove_llm_provider(
     caller_role = int(claims.get("role_id", -1))
 
     if not _is_admin_role(caller_role):
-        return {
-            "success": False,
-            "error": "Forbidden: only Workspace Admins or Platform Admins can remove LLM providers.",
-        }
+        raise ToolError("Forbidden: only Workspace Admins or Platform Admins can remove LLM providers.")
 
     provider = provider.lower().strip()
     try:
@@ -269,10 +510,7 @@ async def admin_remove_llm_provider(
             user_id=user_id,
         )
         if not removed:
-            return {
-                "success": False,
-                "error": f"Provider '{provider}' was not found or is already inactive.",
-            }
+            raise ValidationError(f"Provider '{provider}' was not found or is already inactive.")
 
         clear_ai_manager_cache(workspace_id=workspace_id)
 
@@ -330,12 +568,24 @@ async def list_available_llm_providers(
         provider_details = []
         for provider in configured_providers:
             creds = workspace_provider_credentials_service.get_provider_credentials(workspace_id, provider)
+            
+            # Safely extract endpoint host
+            endpoint_host = None
+            if creds and creds.get("endpoint"):
+                try:
+                    endpoint_parts = creds["endpoint"].split("/")
+                    if len(endpoint_parts) >= 3:
+                        endpoint_host = endpoint_parts[2]
+                    else:
+                        endpoint_host = creds["endpoint"]  # Use full endpoint if splitting fails
+                except Exception as e:
+                    logger.warning(f"Failed to parse endpoint for provider '{provider}': {e}")
+                    endpoint_host = creds["endpoint"]
+            
             provider_details.append({
                 "provider": provider,
                 "model": creds["model"] if creds else None,
-                "endpoint_host": (
-                    creds["endpoint"].split("/")[2] if creds and creds.get("endpoint") else None
-                ),
+                "endpoint_host": endpoint_host,
                 "is_current": provider == current_provider,
             })
 
@@ -383,23 +633,17 @@ async def switch_llm_provider(
 
     creds = workspace_provider_credentials_service.get_provider_credentials(workspace_id, provider)
     if not creds:
-        return {
-            "success": False,
-            "error": (
-                f"Provider '{provider}' has not been configured for workspace {workspace_id}. "
-                "An admin must configure it first via admin_configure_llm_provider."
-            ),
-        }
+        raise ValidationError(
+            f"Provider '{provider}' has not been configured for workspace {workspace_id}. "
+            "An admin must configure it first via admin_configure_llm_provider."
+        )
 
     config = agent_llm_config_service.get_effective_configuration(workspace_id, agent_id)
     if not config or provider not in (config.get("configured_providers") or []):
-        return {
-            "success": False,
-            "error": (
-                f"Provider '{provider}' is not enabled for agent {agent_id} "
-                f"in workspace {workspace_id}. An admin must enable it first."
-            ),
-        }
+        raise ValidationError(
+            f"Provider '{provider}' is not enabled for agent {agent_id} "
+            f"in workspace {workspace_id}. An admin must enable it first."
+        )
 
     updated = agent_llm_config_service.switch_provider(
         workspace_id=workspace_id,
@@ -442,10 +686,7 @@ async def test_llm_generation(
         current = manager.get_current_provider()
 
         if not current:
-            return {
-                "success": False,
-                "error": "No provider is currently configured. Ask an admin to run admin_configure_llm_provider.",
-            }
+            raise ValidationError("No provider is currently configured. Ask an admin to run admin_configure_llm_provider.")
 
         response = await manager.generate_text_async(prompt)
         return {
