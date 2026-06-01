@@ -1,5 +1,5 @@
 import os
-from urllib.parse import unquote
+from urllib.parse import quote_plus
 import threading
 import logging
 import certifi
@@ -53,10 +53,8 @@ class MongoDBSingleton:
             if not mongodb_uri:
                 raise ValueError("MONGODB_DATABASE_URI environment variable is required")
 
-            # If an encoded URI is provided, decode it once so MongoClient gets a valid URI.
-            if "%" in mongodb_uri and "://" not in mongodb_uri:
-                mongodb_uri = unquote(mongodb_uri)
-            
+            mongodb_uri = quote_plus(mongodb_uri)
+
             self._client = MongoClient(
                 mongodb_uri,
                 server_api=ServerApi('1'),
@@ -79,7 +77,7 @@ class MongoDBSingleton:
         except Exception as e:
             logging.error(f"❌ Error initializing MongoDB connection: {e}")
             raise
-    
+
     @property
     def client(self) -> MongoClient:
         """Get the MongoDB client instance."""
