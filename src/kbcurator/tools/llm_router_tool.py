@@ -102,8 +102,7 @@ async def _validate_llm_credentials(
         
         if provider == "azure":
             config_dict["api_version"] = api_version or "2024-12-01-preview"
-            if deployment_name:
-                config_dict["deployment_name"] = deployment_name
+            config_dict["deployment_name"] = deployment_name or model
         
         # Configure the provider temporarily
         manager.configure_provider(provider, config_dict)
@@ -503,14 +502,35 @@ async def admin_remove_llm_provider(
         raise ToolError("Forbidden: only Workspace Admins or Platform Admins can remove LLM providers.")
 
     provider = provider.lower().strip()
+
+    # Protect the default azure provider — it must never be removed
+    if provider == "azure":
+        raise ToolError(
+            "Cannot remove the default Azure (gpt-4.1) provider. "
+            "This is the system default and must always remain configured."
+        )
+
     try:
+        # Prevent removing the last configured provider — at least one must remain
+        active_providers = workspace_provider_credentials_service.list_workspace_providers(workspace_id)
+        active_provider_names = [p["provider_name"] for p in active_providers if p.get("is_active", True)]
+
+        if provider not in active_provider_names:
+            raise ToolError(f"Provider '{provider}' was not found or is already inactive.")
+
+        if len(active_provider_names) <= 1:
+            raise ToolError(
+                f"Cannot remove provider '{provider}' — it is the only configured provider for this workspace. "
+                "At least one LLM provider must always remain configured."
+            )
+
         removed = workspace_provider_credentials_service.deactivate_provider_credentials(
             workspace_id=workspace_id,
             provider_name=provider,
             user_id=user_id,
         )
         if not removed:
-            raise ValidationError(f"Provider '{provider}' was not found or is already inactive.")
+            raise ToolError(f"Provider '{provider}' was not found or could not be deactivated.")
 
         clear_ai_manager_cache(workspace_id=workspace_id)
 
@@ -520,9 +540,11 @@ async def admin_remove_llm_provider(
             "provider": provider,
             "workspace_id": workspace_id,
         }
+    except ToolError:
+        raise
     except Exception as e:
         logger.error(f"admin_remove_llm_provider error: {e}")
-        return {"success": False, "error": str(e)}
+        raise ToolError(f"Failed to remove provider '{provider}': {str(e)}")
 
 
 # ---------------------------------------------------------------------------
