@@ -102,8 +102,7 @@ async def _validate_llm_credentials(
         
         if provider == "azure":
             config_dict["api_version"] = api_version or "2024-12-01-preview"
-            if deployment_name:
-                config_dict["deployment_name"] = deployment_name
+            config_dict["deployment_name"] = deployment_name or model
         
         # Configure the provider temporarily
         manager.configure_provider(provider, config_dict)
@@ -504,6 +503,19 @@ async def admin_remove_llm_provider(
 
     provider = provider.lower().strip()
     try:
+        # Prevent removing the last configured provider — at least one must remain
+        active_providers = workspace_provider_credentials_service.list_workspace_providers(workspace_id)
+        active_provider_names = [p["provider_name"] for p in active_providers if p.get("is_active", True)]
+
+        if provider not in active_provider_names:
+            raise ValidationError(f"Provider '{provider}' was not found or is already inactive.")
+
+        if len(active_provider_names) <= 1:
+            raise ValidationError(
+                f"Cannot remove provider '{provider}' — it is the only configured provider for this workspace. "
+                "At least one LLM provider (gpt-4.1) must always remain configured."
+            )
+
         removed = workspace_provider_credentials_service.deactivate_provider_credentials(
             workspace_id=workspace_id,
             provider_name=provider,
