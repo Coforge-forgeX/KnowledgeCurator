@@ -11,6 +11,11 @@ The LLM Router Tool provides a unified, admin-managed interface for configuring 
 - **Workspace/Agent Isolation**: Each workspace stores one credential set per provider. Each agent independently tracks which providers are enabled and which is currently active.
 - **Credential Inheritance**: If an agent has no specific configuration, it falls back to the workspace-level default.
 - **In-memory Manager Cache**: `ConfigurableAIManager` instances are cached per workspace/agent and invalidated whenever credentials change.
+- **Credential Validation**: LLM credentials are tested before storage to ensure they work correctly.
+- **Unified Management**: Single tool (`admin_configure_llm_provider`) handles both creating new and updating existing provider configurations.
+- **Smart Operation Detection**: Automatically detects whether to create new or update existing provider based on current state.
+- **Flexible Updates**: Can update configuration, manage agents, or do both operations in a single call.
+- **Agent List Replacement**: When agent_ids is provided for existing providers, it replaces the entire agent list automatically.
 
 ## Supported Providers
 
@@ -41,23 +46,30 @@ These tools store or remove LLM provider credentials. Callers without an admin r
 
 #### 1. `admin_configure_llm_provider`
 
-Store LLM provider credentials for a workspace and enable the provider for a set of agents. Credentials are upserted (create or update) in `llm_configs.workspace_configs.provider_credentials`. Each listed agent ID gets the provider appended to its `configured_providers` list in `agent_configs` within the same workspace document.
+**Unified tool** to configure or update LLM provider for a workspace. **Automatically detects** whether to create new or update existing provider configuration. **Validates credentials before storing** by testing a simple generation request.
+
+**Operation Modes:**
+- **NEW Provider**: When provider doesn't exist - requires `api_key`, `endpoint`, and `model`
+- **EXISTING Provider**: When provider exists - only updates provided fields
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `provider` | string | Yes | `"azure"` or `"quasar"` |
-| `api_key` | string | Yes | API key for the provider |
-| `endpoint` | string | Yes | API endpoint URL |
-| `model` | string | Yes | Model / deployment name |
-| `agent_ids` | list[int] | Yes | Agent IDs to enable this provider for |
 | `workspace_id` | int | Yes | Workspace to configure |
+| `agent_ids` | list[int] | No | Agent IDs to enable/add for this provider (optional) |
+| `api_key` | string | Conditional | API key (required for new providers, optional for updates) |
+| `endpoint` | string | Conditional | API endpoint URL (required for new providers, optional for updates) |
+| `model` | string | Conditional | Model / deployment name (required for new providers, optional for updates) |
 | `api_version` | string | No | Azure only — e.g. `"2024-12-01-preview"` |
 | `deployment_name` | string | No | Azure only — defaults to `model` if omitted |
-| `set_as_current` | bool | No | If `true`, immediately activate this provider for all listed agents (default: `false`) |
+| `set_as_current` | bool | No | If `true`, set this provider as active for all listed agents (default: `false`) |
+| `skip_validation` | bool | No | If `true`, skip credential validation (use with caution, default: `false`) |
 
-**Example:**
+**Important**: When `agent_ids` is provided for existing providers, it **replaces** the entire agent list. Agents not in the list will have this provider removed from their configuration.
+
+**Example 1 - Create new provider:**
 ```json
 {
   "method": "tools/call",
@@ -65,27 +77,134 @@ Store LLM provider credentials for a workspace and enable the provider for a set
     "name": "admin_configure_llm_provider",
     "arguments": {
       "provider": "azure",
+      "workspace_id": 782,
       "api_key": "sk-...",
       "endpoint": "https://my-resource.openai.azure.com/",
-      "model": "gpt-4.1",
+      "model": "gpt-4",
       "api_version": "2024-12-01-preview",
       "agent_ids": [1, 5, 12],
-      "workspace_id": 782,
       "set_as_current": true
     }
   }
 }
 ```
 
-**Success Response:**
+**Example 2 - Update existing provider configuration:**
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "admin_configure_llm_provider",
+    "arguments": {
+      "provider": "azure",
+      "workspace_id": 782,
+      "model": "gpt-4o",
+      "api_key": "sk-new-key..."
+    }
+  }
+}
+```
+
+**Example 3 - Add agents to existing provider:**
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "admin_configure_llm_provider",
+    "arguments": {
+      "provider": "azure",
+      "workspace_id": 782,
+      "agent_ids": [7, 8, 9],
+      "set_as_current": true
+    }
+  }
+}
+```
+
+**Example 4 - Update config and add agents in one call:**
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "admin_configure_llm_provider",
+    "arguments": {
+      "provider": "azure",
+      "workspace_id": 782,
+      "model": "gpt-4o",
+      "agent_ids": [7, 8, 9],
+      "set_as_current": true
+    }
+  }
+}
+```
+
+**Example 5 - Replace agent list (keep only specified agents):**
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "admin_configure_llm_provider",
+    "arguments": {
+      "provider": "quasar",
+      "workspace_id": 835,
+      "agent_ids": [3],
+      "set_as_current": true
+    }
+  }
+}
+```
+
+**Success Response (New Provider):**
 ```json
 {
   "success": true,
-  "message": "Provider 'azure' configured for workspace 782 and enabled for 3/3 agent(s).",
+  "message": "Provider 'azure' created for workspace 782. credentials validated successfully. enabled for 3/3 agent(s).",
   "provider": "azure",
   "workspace_id": 782,
+  "operation_mode": "create",
+  "operations_performed": ["credentials_created", "agents_managed"],
+  "config_changes": ["api_key", "endpoint", "model", "api_version"],
   "enabled_agent_ids": [1, 5, 12],
-  "set_as_current": true
+  "skipped_agent_ids": [],
+  "set_as_current": true,
+  "credentials_validated": true
+}
+```
+
+**Success Response (Update Provider):**
+```json
+{
+  "success": true,
+  "message": "Provider 'azure' updated (fields: model, api_key). credentials validated successfully. processed 2 agent(s), 1 already configured/current.",
+  "provider": "azure",
+  "workspace_id": 782,
+  "operation_mode": "update",
+  "operations_performed": ["credentials_updated", "agents_managed"],
+  "config_changes": ["model", "api_key"],
+  "enabled_agent_ids": [7, 8],
+  "skipped_agent_ids": [9],
+  "removed_agent_ids": [],
+  "set_as_current": true,
+  "credentials_validated": true,
+  "replace_agents": false
+}
+```
+
+**Success Response (Replace Agents):**
+```json
+{
+  "success": true,
+  "message": "Provider 'quasar' updated (fields: endpoint, model, api_version). credentials validated successfully. processed 1 agent(s), removed 1 agent(s).",
+  "provider": "quasar",
+  "workspace_id": 835,
+  "operation_mode": "update",
+  "operations_performed": ["credentials_updated", "agents_managed", "agents_removed"],
+  "config_changes": ["endpoint", "model", "api_version"],
+  "enabled_agent_ids": [3],
+  "skipped_agent_ids": [],
+  "removed_agent_ids": [1],
+  "set_as_current": true,
+  "credentials_validated": true
 }
 ```
 
@@ -93,7 +212,8 @@ Store LLM provider credentials for a workspace and enable the provider for a set
 ```json
 { "success": false, "error": "Forbidden: only Workspace Admins or Platform Admins can configure LLM providers." }
 { "success": false, "error": "Unsupported provider 'openai'. Supported: ['azure', 'quasar']" }
-{ "success": false, "error": "api_key, endpoint and model are all required." }
+{ "success": false, "error": "For new provider configuration, api_key, endpoint, and model are all required. Provider 'azure' does not exist in workspace 782." }
+{ "success": false, "error": "LLM credential validation failed: Invalid API key. Please check your API key, endpoint, model name, and ensure the service is accessible." }
 ```
 
 ---
@@ -155,7 +275,9 @@ List all LLM providers configured for a workspace, along with which agents each 
 
 ---
 
-#### 3. `admin_remove_llm_provider`
+
+
+#### 2. `admin_remove_llm_provider`
 
 Soft-deactivate an LLM provider from a workspace. The credential record is marked `is_active = false` and the in-memory cache is cleared.
 
@@ -199,7 +321,7 @@ Soft-deactivate an LLM provider from a workspace. The credential record is marke
 
 Any user with a valid JWT can call these tools. They read from MongoDB config documents but do not modify credentials.
 
-#### 4. `list_available_llm_providers`
+#### 3. `list_available_llm_providers`
 
 List all LLM providers that an admin has configured for a specific workspace-agent, along with which provider is currently active. Call this first to discover available options before calling `switch_llm_provider`.
 
@@ -263,7 +385,7 @@ List all LLM providers that an admin has configured for a specific workspace-age
 
 ---
 
-#### 5. `switch_llm_provider`
+#### 4. `switch_llm_provider`
 
 Toggle the active LLM provider for an agent. The provider must have been admin-configured for the workspace **and** enabled for the specific agent. This call only updates `current_provider` — it never stores credentials.
 
@@ -312,7 +434,7 @@ Toggle the active LLM provider for an agent. The provider must have been admin-c
 
 ---
 
-#### 6. `query_llm_router_status`
+#### 5. `query_llm_router_status`
 
 Return the current LLM router state for a workspace/agent, including which providers have credentials and which is active.
 
@@ -353,7 +475,7 @@ Return the current LLM router state for a workspace/agent, including which provi
 
 ---
 
-#### 7. `test_llm_generation`
+#### 6. `test_llm_generation`
 
 Smoke-test the currently active provider for an agent by sending a prompt and returning the response.
 
@@ -472,18 +594,21 @@ Indexes created by the service:
 
 ---
 
-## Typical Workflow
+## Typical Workflows
 
+### Initial Setup Workflow
 ```
 Admin                                          User
   │                                             │
   ├─ admin_configure_llm_provider               │
   │   provider=azure, api_key=...,              │
   │   agent_ids=[1,5], set_as_current=true      │
+  │   → Credentials validated automatically     │
   │                                             │
   ├─ admin_configure_llm_provider               │
   │   provider=quasar, api_key=...,             │
   │   agent_ids=[1], set_as_current=false       │
+  │   → Credentials validated automatically     │
   │                                             │
   │                          ┌──────────────────┤
   │                          │ list_available_llm_providers
@@ -493,11 +618,30 @@ Admin                                          User
   │                          │ switch_llm_provider
   │                          │   provider=quasar, workspace_id=782, agent_id=1
   │                          │
-  │                          │ list_available_llm_providers
-  │                          │   → [azure, quasar (current)]
-  │                          │
   │                          │ test_llm_generation
   │                          │   prompt="Hello!", workspace_id=782, agent_id=1
+  │                          └──────────────────┤
+```
+
+### Update and Expand Workflow
+```
+Admin                                          User
+  │                                             │
+  ├─ admin_configure_llm_provider               │
+  │   provider=azure, workspace_id=782,         │
+  │   model=gpt-4o, api_key=new_key,            │
+  │   agent_ids=[7,8,9], set_as_current=true    │
+  │   → Detects existing provider automatically │
+  │   → Updates config + adds agents in one call│
+  │   → Credentials validated automatically     │
+  │                                             │
+  │                          ┌──────────────────┤
+  │                          │ list_available_llm_providers
+  │                          │   workspace_id=782, agent_id=7
+  │                          │   → [azure (current)]
+  │                          │
+  │                          │ test_llm_generation
+  │                          │   workspace_id=782, agent_id=7
   │                          └──────────────────┤
 ```
 
@@ -615,6 +759,9 @@ The admin tools (`admin_configure_llm_provider`, `admin_remove_llm_provider`, `s
 | Caller not admin | Any admin tool | `{"success": false, "error": "Forbidden: ..."}` |
 | Unsupported provider | `admin_configure_llm_provider` | `{"success": false, "error": "Unsupported provider '...'"}` |
 | Missing credentials | `admin_configure_llm_provider` | `{"success": false, "error": "api_key, endpoint and model are all required."}` |
+| Credential validation failed | `admin_configure_llm_provider` | `{"success": false, "error": "LLM credential validation failed. Configuration aborted.", "validation_error": "...", "validation_details": "..."}` |
+| Missing required fields for new provider | `admin_configure_llm_provider` | `{"success": false, "error": "For new provider configuration, api_key, endpoint, and model are all required. Provider '...' does not exist in workspace ...."}` |
+| Validation failed | `admin_configure_llm_provider` | `{"success": false, "error": "LLM credential validation failed: Invalid API key. Please check your API key, endpoint, model name, and ensure the service is accessible."}` |
 | No config for workspace-agent | `list_available_llm_providers` | `{"success": true, "configured_providers": [], "message": "No LLM providers have been configured..."}` |
 | Provider not in workspace | `switch_llm_provider` | `{"success": false, "error": "Provider '...' has not been configured..."}` |
 | Provider not enabled for agent | `switch_llm_provider` | `{"success": false, "error": "Provider '...' is not enabled for agent..."}` |
@@ -638,6 +785,13 @@ The admin tools (`admin_configure_llm_provider`, `admin_remove_llm_provider`, `s
 **Provider switch succeeds but generation still uses old provider**
 - The in-memory cache may not have been cleared. Call `clear_ai_manager_cache(workspace_id, agent_id)` or restart the service.
 
+**"LLM credential validation failed"**
+- The provided API key, endpoint, or model name is incorrect or the service is unreachable. Verify credentials and network connectivity.
+- Use `skip_validation: true` to bypass validation if you're certain the credentials are correct but validation is failing due to network issues.
+
+**"list index out of range" error in `list_available_llm_providers`**
+- This can occur if endpoint URL parsing fails. The system now handles this gracefully and will use the full endpoint if parsing fails.
+
 ---
 
 ## Workspace Setup Integration
@@ -660,7 +814,8 @@ Note: provider selection defaults are created automatically, but credentials mus
 
 ---
 
-**Version**: 3.1.0
-**Last Updated**: 2026-05-29
+**Version**: 4.0.0
+**Last Updated**: 2026-06-01
 **Credential Source**: `llm_configs.workspace_configs` collection (MongoDB config documents)
 **Security Model**: JWT required for all tools; admin role_id (0 or 3) required for credential management
+**Major Changes**: Unified `admin_configure_llm_provider` tool with smart operation detection for both create and update operations
