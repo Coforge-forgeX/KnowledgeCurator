@@ -28,7 +28,16 @@ class Database:
 			f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
 		)
 		
-		self.engine = create_engine(conn_str)
+		# Configure connection pool with health checks and recycling
+		self.engine = create_engine(
+			conn_str,
+			pool_pre_ping=True,  # Verify connections are alive before using them
+			pool_size=10,  # Maximum number of connections to keep open
+			max_overflow=20,  # Additional connections when pool is exhausted
+			pool_recycle=3600,  # Recycle connections after 1 hour
+			pool_timeout=30,  # Timeout for getting a connection from the pool
+			echo=False  # Set to True for SQL query logging
+		)
 		self.Session = sessionmaker(bind=self.engine)
 		self.metadata = MetaData()
 		self.metadata.reflect(self.engine)
