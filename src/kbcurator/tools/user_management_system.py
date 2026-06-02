@@ -2296,7 +2296,7 @@ def list_integrations_for_entity_prev(id, type):
 
 @mcp.tool()
 @require_auth
-def list_integrations_for_entity(id: int, type: str, workspace_id: int = None, user_id: str = None):
+def list_integrations_for_entity(id: int, type: str, workspace_id: int = None, user_id: int = None):
     """
     List all integrations for a specific agent or tool, user-specific and workspace-specific.
     Args:
