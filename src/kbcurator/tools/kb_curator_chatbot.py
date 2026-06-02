@@ -646,6 +646,175 @@ class Chatbot:
         finally:
             conn.close()
     
+    async def _find_orphaned_neo4j_docs(self, workspace_id, role_id, doc_ids=None):
+        """
+        Query Neo4j directly to find orphaned documents that exist in the graph
+        but have no entries in doc_status or vector storage.
+        
+        Args:
+            workspace_id: Workspace identifier (e.g., "Nucor", "843", None for base)
+            role_id: User role ID
+            doc_ids: Optional list of doc_ids to search for (from other workspaces)
+                    If None, returns ALL documents in Neo4j for this workspace
+            
+        Returns:
+            List of doc_ids found in Neo4j for this workspace
+        """
+        print(f"DEBUG: _find_orphaned_neo4j_docs called for workspace_id={workspace_id}, doc_ids={'None' if doc_ids is None else f'{len(doc_ids)} items'}")
+        try:
+            # Construct workspace name same way as LightRAG does
+            if role_id and str(role_id) != "34" and workspace_id:
+                digit_map = {
+                    '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+                    '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
+                }
+                result = []
+                for c in str(workspace_id):
+                    if c.isalpha():
+                        result.append(c)
+                    elif c.isdigit():
+                        result.append(digit_map[c])
+                workspace_id_alpha = ''.join(result)
+                kb_name = f"{self.sub_industry}/{workspace_id_alpha}"
+            else:
+                kb_name = self.sub_industry
+            
+            workspace_name = ''.join(char for char in f"{self.industry}{kb_name}" if char.isalpha())
+            
+            print(f"DEBUG: Constructed workspace_name={workspace_name} from workspace_id={workspace_id}")
+            
+            # Access Neo4j directly without full LightRAG initialization
+            from neo4j import AsyncGraphDatabase
+            import os
+            import psycopg2
+            
+            neo4j_uri = os.environ.get("NEO4J_URI", "neo4j://20.55.248.225:7687")
+            neo4j_user = os.environ.get("NEO4J_USERNAME", "neo4j")
+            neo4j_password = os.environ.get("NEO4J_PASSWORD", "")
+            
+            print(f"DEBUG: Connecting to Neo4j at {neo4j_uri}")
+            
+            found_doc_ids = []
+            
+            driver = AsyncGraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+            try:
+                print(f"DEBUG: Neo4j driver created, opening session...")
+                async with driver.session() as session:
+                    # If doc_ids provided, search for specific matches
+                    if doc_ids:
+                        print(f"DEBUG: Searching for specific doc_ids in workspace {workspace_name}")
+                        query = f"""
+                        MATCH (n:`{workspace_name}`)
+                        WHERE n.source_id IN $doc_ids
+                        RETURN DISTINCT n.source_id as source_id
+                        """
+                        result = await session.run(query, doc_ids=doc_ids)
+                    else:
+                        # No doc_ids: get ALL documents in Neo4j for orphan cleanup
+                        print(f"DEBUG: Searching for ALL documents in workspace {workspace_name}")
+                        query = f"""
+                        MATCH (n:`{workspace_name}`)
+                        WHERE n.source_id IS NOT NULL AND n.source_id <> ''
+                        RETURN DISTINCT n.source_id as source_id
+                        LIMIT 1000
+                        """
+                        print(f"DEBUG: Executing Neo4j query: {query[:200]}...")
+                        result = await session.run(query)
+                    
+                    print(f"DEBUG: Neo4j query executed, fetching data...")
+                    records = await result.data()
+                    
+                    print(f"DEBUG: Neo4j query returned {len(records)} records for workspace {workspace_name}")
+                    
+                    for record in records:
+                        source_id = record.get('source_id')
+                        if source_id and source_id.startswith('doc-'):
+                            found_doc_ids.append(source_id)
+                    
+                    print(f"DEBUG: Found {len(found_doc_ids)} doc_ids with 'doc-' prefix in Neo4j workspace {workspace_name}")
+                    
+                    # CRITICAL: If no source_ids found but we're in orphan cleanup mode (doc_ids=None),
+                    # check if there are ANY nodes at all in this workspace
+                    if not found_doc_ids and doc_ids is None:
+                        print(f"DEBUG: No source_ids found, checking for ANY nodes in workspace {workspace_name}...")
+                        count_query = f"""
+                        MATCH (n:`{workspace_name}`)
+                        RETURN count(n) as node_count
+                        """
+                        count_result = await session.run(count_query)
+                        count_records = await count_result.data()
+                        node_count = count_records[0].get('node_count', 0) if count_records else 0
+                        print(f"DEBUG: Found {node_count} total nodes without source_id in workspace {workspace_name}")
+                        
+                        if node_count > 0:
+                            # These are orphaned nodes without source_id - mark for complete workspace cleanup
+                            print(f"WARNING: Found {node_count} orphaned nodes in Neo4j workspace {workspace_name} without source_id property!")
+                            print(f"WARNING: These nodes cannot be tracked to specific documents. Recommend manual cleanup.")
+                            # Return a special marker to indicate workspace-level cleanup needed
+                            found_doc_ids_to_return = ['__WORKSPACE_CLEANUP_NEEDED__']
+                        else:
+                            found_doc_ids_to_return = []
+                    
+                    # Now filter to only truly orphaned docs (not in doc_status or VDB)
+                    if found_doc_ids:
+                        try:
+                            conn = psycopg2.connect(
+                                host=os.environ["POSTGRES_HOST"],
+                                user=os.environ["POSTGRES_USER"],
+                                password=os.environ["POSTGRES_PASSWORD"],
+                                dbname=os.environ.get("POSTGRES_DATABASE") or os.environ.get("POSTGRESQL_DATABASE_DATABASE_2")
+                            )
+                            cur = conn.cursor()
+                            
+                            # Check which doc_ids exist in VDB or doc_status
+                            placeholders = ','.join(['%s'] * len(found_doc_ids))
+                            check_query = f"""
+                            SELECT DISTINCT full_doc_id FROM LIGHTRAG_VDB_CHUNKS 
+                            WHERE workspace = %s AND full_doc_id IN ({placeholders})
+                            """
+                            cur.execute(check_query, [workspace_name] + found_doc_ids)
+                            tracked_docs = {row[0] for row in cur.fetchall()}
+                            
+                            print(f"DEBUG: PostgreSQL VDB check found {len(tracked_docs)} tracked docs for workspace {workspace_name}")
+                            
+                            cur.close()
+                            conn.close()
+                            
+                            # Keep only orphaned docs (not tracked in VDB)
+                            orphaned = [doc_id for doc_id in found_doc_ids if doc_id not in tracked_docs]
+                            
+                            print(f"DEBUG: After filtering, {len(orphaned)} orphaned docs remain")
+                            
+                            if orphaned:
+                                print(f"Found {len(orphaned)} orphaned doc(s) in Neo4j workspace {workspace_name} (out of {len(found_doc_ids)} total)")
+                                found_doc_ids_to_return = orphaned
+                            else:
+                                print(f"No orphaned docs found - all {len(found_doc_ids)} docs are tracked in VDB")
+                                found_doc_ids_to_return = []
+                        except Exception as pg_err:
+                            print(f"PostgreSQL check failed, returning all Neo4j docs: {pg_err}")
+                            import traceback
+                            traceback.print_exc()
+                            found_doc_ids_to_return = found_doc_ids
+                    else:
+                        print(f"DEBUG: No doc_ids found in Neo4j workspace {workspace_name}")
+                        found_doc_ids_to_return = []
+            finally:
+                print(f"DEBUG: Closing Neo4j driver")
+                await driver.close()
+            
+            # Return after driver is closed
+            if 'found_doc_ids_to_return' in locals():
+                print(f"DEBUG: _find_orphaned_neo4j_docs returning {len(found_doc_ids_to_return)} doc_ids")
+                return found_doc_ids_to_return
+            
+            print(f"DEBUG: _find_orphaned_neo4j_docs returning empty list (no path matched)")
+            return []
+        except Exception as e:
+            print(f"Error finding orphaned Neo4j docs in workspace {workspace_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
 
     async def handle_confirmation(self, user_message, context):
         try:
@@ -667,32 +836,134 @@ class Chatbot:
                     return "File deletion cancelled. No valid file name was provided."
 
                 print(f"Proceed with file deletion: {filename}")
-                indexed_files = await self.mcp_tool_obj.get_indexed_files(self.workspace_id, self.role_id)
-                result_dict = self._parse_indexed_files_response(indexed_files)
-
+                
+                # Delete from ALL workspaces where this file exists
+                # This prevents orphaned data in Neo4j when querying across multiple workspaces
                 indexed_lookup_name = pending.get("indexed_match_key") or filename
-                list_doc_ids_to_delete = result_dict.get(indexed_lookup_name) or []
-
-                # Fallback: if exact filename key is not present, use best indexed candidate captured earlier.
-                if not list_doc_ids_to_delete:
-                    candidate_name = pending.get("indexed_candidate")
-                    if candidate_name and candidate_name in result_dict:
-                        list_doc_ids_to_delete = result_dict.get(candidate_name) or []
-                        indexed_lookup_name = candidate_name
-
-                print(f"Document IDs to delete: {list_doc_ids_to_delete}")
+                all_workspaces_to_check = []
+                
+                # IMPORTANT: Always check the current user's workspace first
+                # This is where files are actually uploaded and indexed
+                if self.workspace_id:
+                    all_workspaces_to_check.append(self.workspace_id)
+                
+                # Build list of additional workspaces to check (cross-workspace search pattern)
+                # knowledge_bases contains suffixes like ['Nucor', '', 'eightthreenine']
+                # Each represents a separate workspace: OtherDemoInstancesNucor, OtherDemoInstances, OtherDemoInstanceseightthreenine
+                if self.knowledge_bases:
+                    for kb in self.knowledge_bases:
+                        # Each kb value is a workspace suffix
+                        # kb="Nucor" → pass as workspace_id to get "OtherDemoInstancesNucor"
+                        # kb="" → pass None as workspace_id to get "OtherDemoInstances"
+                        # kb="eightthreenine" → pass as workspace_id to get "OtherDemoInstanceseightthreenine"
+                        workspace_to_query = kb if kb else None
+                        # Avoid duplicates - don't add if already in list
+                        if workspace_to_query not in all_workspaces_to_check:
+                            all_workspaces_to_check.append(workspace_to_query)
+                
+                # Collect doc_ids from ALL workspaces
+                all_doc_ids_by_workspace = {}
+                known_doc_ids = []  # Track doc_ids found in any workspace
+                
+                for ws_identifier in all_workspaces_to_check:
+                    try:
+                        # Get indexed files for this specific workspace
+                        indexed_files = await self.mcp_tool_obj.get_indexed_files(ws_identifier, self.role_id)
+                        result_dict = self._parse_indexed_files_response(indexed_files)
+                        
+                        doc_ids = result_dict.get(indexed_lookup_name) or []
+                        
+                        # Fallback: if exact filename key is not present, use best indexed candidate
+                        if not doc_ids:
+                            candidate_name = pending.get("indexed_candidate")
+                            if candidate_name and candidate_name in result_dict:
+                                doc_ids = result_dict.get(candidate_name) or []
+                        
+                        if doc_ids:
+                            workspace_key = str(ws_identifier) if ws_identifier else "base"
+                            all_doc_ids_by_workspace[workspace_key] = {
+                                "ws_identifier": ws_identifier,
+                                "doc_ids": doc_ids
+                            }
+                            # Track these doc_ids for orphan detection in other workspaces
+                            known_doc_ids.extend(doc_ids)
+                            print(f"Found {len(doc_ids)} doc IDs in workspace {workspace_key}")
+                    except Exception as e:
+                        print(f"Error checking workspace {ws_identifier}: {e}")
+                
+                # IMPORTANT: Check for orphaned Neo4j data using known doc_ids
+                # If we found doc_ids in ANY workspace, check if those same doc_ids exist in OTHER workspaces' Neo4j graphs
+                # This catches cases where files were uploaded to multiple workspaces but only properly tracked in one
+                if known_doc_ids:
+                    for ws_identifier in all_workspaces_to_check:
+                        workspace_key = str(ws_identifier) if ws_identifier else "base"
+                        # Skip if we already found doc_ids for this workspace
+                        if workspace_key in all_doc_ids_by_workspace:
+                            continue
+                        
+                        try:
+                            # First attempt: Query Neo4j directly for orphaned data with these specific doc_ids
+                            orphaned_doc_ids = await self._find_orphaned_neo4j_docs(
+                                ws_identifier, 
+                                self.role_id, 
+                                known_doc_ids
+                            )
+                            
+                            # Second attempt: If no matches found with specific doc_ids, search for ANY orphaned data
+                            # This handles cases where the same file was uploaded to multiple workspaces at different times
+                            # generating different doc_ids for the same file
+                            if not orphaned_doc_ids:
+                                print(f"No doc_id matches in workspace {workspace_key}, searching for ANY orphaned Neo4j data...")
+                                orphaned_doc_ids = await self._find_orphaned_neo4j_docs(
+                                    ws_identifier,
+                                    self.role_id,
+                                    None  # None = get ALL orphaned docs
+                                )
+                            
+                            if orphaned_doc_ids:
+                                all_doc_ids_by_workspace[workspace_key] = {
+                                    "ws_identifier": ws_identifier,
+                                    "doc_ids": orphaned_doc_ids
+                                }
+                                print(f"Found {len(orphaned_doc_ids)} orphaned Neo4j doc IDs in workspace {workspace_key}")
+                        except Exception as e:
+                            print(f"Error checking Neo4j orphans in workspace {ws_identifier}: {e}")
+                
+                print(f"Total workspaces with this file: {len(all_doc_ids_by_workspace)}")
 
                 deleted_doc_count = 0
                 failed_doc_count = 0
                 deletion_in_progress = False
                 deletion_error_text = ""
-                if list_doc_ids_to_delete:
-                    bulk_result = await self.mcp_tool_obj.delete_files_by_doc_ids(
-                        list_doc_ids_to_delete,
-                        self.workspace_id,
-                        self.role_id,
-                    )
-                    print(f"Bulk delete result: {bulk_result}")
+                
+                # Delete from each workspace where the file exists
+                for workspace_key, ws_data in all_doc_ids_by_workspace.items():
+                    try:
+                        bulk_result = await self.mcp_tool_obj.delete_files_by_doc_ids(
+                            ws_data["doc_ids"],
+                            ws_data["ws_identifier"],
+                            self.role_id
+                        )
+                        print(f"Bulk delete result for {workspace_key}: {bulk_result}")
+                        
+                        summary = {}
+                        try:
+                            if isinstance(bulk_result, dict):
+                                if bulk_result.get("status") == "client_exception":
+                                    deletion_in_progress = True
+                                    deletion_error_text = bulk_result.get("error") or ""
+                            else:
+                                structured = getattr(bulk_result, "structured_content", None)
+                                if isinstance(structured, dict):
+                                    summary = structured.get("summary", {}) or {}
+                        except Exception:
+                            summary = {}
+
+                        deleted_doc_count += int(summary.get("success", 0) or 0)
+                        failed_doc_count += int(summary.get("failed", 0) or 0) + int(summary.get("not_found", 0) or 0)
+                    except Exception as e:
+                        print(f"Error deleting from workspace {workspace_key}: {e}")
+                        failed_doc_count += len(ws_data["doc_ids"])
 
                     summary = {}
                     try:
@@ -767,29 +1038,30 @@ class Chatbot:
                     )
 
                 if deletion_in_progress:
+                    total_doc_ids = sum(len(ws_data["doc_ids"]) for ws_data in all_doc_ids_by_workspace.values())
                     if blob_deleted_files:
                         return (
-                            f"Deletion started for {len(list_doc_ids_to_delete)} indexed document record(s) for '{indexed_lookup_name}'. "
+                            f"Deletion started for {total_doc_ids} indexed document record(s) for '{indexed_lookup_name}'. "
                             f"Deleted blob file(s): {blob_deleted_files}. "
                             "Index cleanup is still running in background; please recheck indexed files shortly."
                         )
 
                     if blob_result_text:
                         return (
-                            f"Deletion started for {len(list_doc_ids_to_delete)} indexed document record(s) for '{indexed_lookup_name}'. "
+                            f"Deletion started for {total_doc_ids} indexed document record(s) for '{indexed_lookup_name}'. "
                             f"Blob deletion result: {blob_result_text}. "
                             "Index cleanup is still running in background; please recheck indexed files shortly."
                         )
 
                     if deletion_error_text:
                         return (
-                            f"Deletion started for {len(list_doc_ids_to_delete)} indexed document record(s) for '{indexed_lookup_name}', "
+                            f"Deletion started for {total_doc_ids} indexed document record(s) for '{indexed_lookup_name}', "
                             f"but the client connection ended early ({deletion_error_text}). "
                             "The backend may still be completing index cleanup."
                         )
 
                     return (
-                        f"Deletion started for {len(list_doc_ids_to_delete)} indexed document record(s) for '{indexed_lookup_name}'. "
+                        f"Deletion started for {total_doc_ids} indexed document record(s) for '{indexed_lookup_name}'. "
                         "Index cleanup is still running in background; please recheck indexed files shortly."
                     )
 
