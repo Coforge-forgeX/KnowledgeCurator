@@ -24,14 +24,16 @@ class LLMRouterConfigStore:
         self._mongo = get_mongodb_client()
         self._collection = self._mongo.client[LLM_CONFIG_DB_NAME][LLM_CONFIG_COLLECTION_NAME]
         self._indexes_ready = False
-        self._ensure_indexes()
 
     def _ensure_indexes(self) -> None:
         if self._indexes_ready:
             return
-        self._collection.create_index("workspace_id", unique=True, name="uq_workspace_id")
-        self._collection.create_index("updated_at", name="idx_updated_at")
-        self._indexes_ready = True
+        try:
+            self._collection.create_index("workspace_id", unique=True, name="uq_workspace_id")
+            self._collection.create_index("updated_at", name="idx_updated_at")
+            self._indexes_ready = True
+        except Exception as e:
+            logger.warning(f"Failed to create MongoDB indexes: {e}")
 
     @staticmethod
     def _utcnow() -> datetime:
@@ -444,4 +446,8 @@ class LLMRouterConfigStore:
         return count
 
 
-llm_router_config_store = LLMRouterConfigStore()
+try:
+    llm_router_config_store = LLMRouterConfigStore()
+except Exception as e:
+    logger.error(f"Failed to initialize LLMRouterConfigStore: {e}")
+    llm_router_config_store = None
