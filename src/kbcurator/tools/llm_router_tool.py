@@ -25,7 +25,11 @@ from kbcurator.services.workspace_provider_credentials_service import (
 )
 from kbcurator.utils.auth import require_auth_async, get_current_user
 from kbcurator.utils.constants import Role
-from common_adapters.configurableAI import ConfigurableAIManager, clear_ai_manager_cache
+from common_adapters.configurableAI import (
+    ConfigurableAIManager,
+    get_configured_llm_manager,
+    invalidate_llm_cache,
+)
 from fastmcp.exceptions import ToolError, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -39,36 +43,21 @@ def _is_admin_role(role_id: int) -> bool:
     return role_id in (Role.ADMIN.id, Role.WS_ADMIN.id)
 
 
+def _invalidate_manager_cache(workspace_id: int, agent_id: Optional[int] = None) -> None:
+    """Clear LLM manager cache (delegates to common_adapters)."""
+    invalidate_llm_cache(workspace_id=workspace_id, agent_id=agent_id)
+
+
 def _build_manager_from_db(workspace_id: int, agent_id: Optional[int]) -> ConfigurableAIManager:
     """
-    Construct a ConfigurableAIManager whose providers are loaded from
-    MongoDB workspace config, not environment variables.
+    Get a ConfigurableAIManager pre-loaded from MongoDB config.
+    Delegates to common_adapters.configurableAI.get_configured_llm_manager.
     """
-    manager = ConfigurableAIManager()
-    config = agent_llm_config_service.get_effective_configuration(workspace_id, agent_id)
-    if not config:
-        return manager
-
-    configured_providers: List[str] = config.get("configured_providers") or []
-    current_provider: Optional[str] = config.get("current_provider")
-
-    for provider in configured_providers:
-        creds_dict = workspace_provider_credentials_service.build_config_dict(workspace_id, provider)
-        if creds_dict:
-            try:
-                manager.configure_provider(provider, creds_dict)
-            except Exception as e:
-                logger.warning(f"Could not configure provider '{provider}': {e}")
-        else:
-            logger.warning(f"No credentials found for provider '{provider}' in workspace {workspace_id}")
-
-    if current_provider and current_provider in manager.list_configured_providers():
-        try:
-            manager.set_current_provider(current_provider)
-        except Exception as e:
-            logger.warning(f"Could not set current provider '{current_provider}': {e}")
-
-    return manager
+    try:
+        return get_configured_llm_manager(workspace_id, agent_id)
+    except ValueError:
+        # Return empty manager if nothing is configured (for backward compat)
+        return ConfigurableAIManager()
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +371,7 @@ async def admin_configure_llm_provider(
                 operations_performed.append("agents_removed")
 
         # Clear cache to ensure new configuration is used
-        clear_ai_manager_cache(workspace_id=workspace_id)
+        _invalidate_manager_cache(workspace_id=workspace_id)
 
         # Build success message
         messages = []
@@ -544,7 +533,7 @@ async def admin_remove_llm_provider(
         if not removed:
             raise ToolError(f"Provider '{provider}' was not found or could not be deactivated.")
 
-        clear_ai_manager_cache(workspace_id=workspace_id)
+        _invalidate_manager_cache(workspace_id=workspace_id)
 
         return {
             "success": True,
@@ -699,7 +688,7 @@ async def switch_llm_provider(
         user_id=user_id,
     )
 
-    clear_ai_manager_cache(workspace_id=workspace_id, agent_id=agent_id)
+    _invalidate_manager_cache(workspace_id=workspace_id, agent_id=agent_id)
 
     return {
         "success": True,
