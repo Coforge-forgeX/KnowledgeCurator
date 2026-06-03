@@ -312,8 +312,11 @@ Soft-deactivate an LLM provider from a workspace. The credential record is marke
 **Error Responses:**
 ```json
 { "success": false, "error": "Forbidden: only Workspace Admins or Platform Admins can remove LLM providers." }
+{ "success": false, "error": "Cannot remove the Azure provider. Azure (gpt-4.1) is the system default LLM configured at workspace creation and must always remain active. You may update its model/credentials via admin_configure_llm_provider, but it cannot be deleted." }
 { "success": false, "error": "Provider 'quasar' was not found or is already inactive." }
 ```
+
+> **Important**: The Azure provider can **never** be removed. It is the system default configured at workspace creation and must always remain active. Admins can update its model (e.g., from gpt-4.1 to gpt-5.1) or credentials via `admin_configure_llm_provider`, but cannot delete it. Other providers (e.g., quasar) can be freely removed.
 
 ---
 
@@ -382,6 +385,8 @@ List all LLM providers that an admin has configured for a specific workspace-age
 ```
 
 > **Note:** `endpoint_host` is only the hostname portion of the endpoint URL (no scheme, path, or credentials). API keys are never returned to regular users.
+>
+> **Filtering behavior:** Only providers that (a) are explicitly configured for this agent and (b) have active credentials are returned. If a provider was configured for other agents but not this one, it will not appear in the list. Providers whose credentials have been deactivated are also hidden.
 
 ---
 
@@ -434,48 +439,7 @@ Toggle the active LLM provider for an agent. The provider must have been admin-c
 
 ---
 
-#### 5. `query_llm_router_status`
-
-Return the current LLM router state for a workspace/agent, including which providers have credentials and which is active.
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `workspace_id` | int | Yes | Workspace ID |
-| `agent_id` | int | No | Agent ID — omit for workspace-level default |
-
-**Example:**
-```json
-{
-  "method": "tools/call",
-  "params": {
-    "name": "query_llm_router_status",
-    "arguments": { "workspace_id": 782, "agent_id": 1 }
-  }
-}
-```
-
-**Success Response:**
-```json
-{
-  "success": true,
-  "workspace_id": 782,
-  "agent_id": 1,
-  "current_provider": "azure",
-  "configured_providers": [
-    { "provider": "azure", "credentials_present": true },
-    { "provider": "quasar", "credentials_present": true }
-  ],
-  "supported_providers": ["azure", "quasar"]
-}
-```
-
-> **Note:** `configured_providers` is a list of objects (`{provider, credentials_present}`), not plain strings. `credentials_present` confirms that admin has stored credentials in `llm_configs.workspace_configs.provider_credentials`.
-
----
-
-#### 6. `test_llm_generation`
+#### 5. `test_llm_generation`
 
 Smoke-test the currently active provider for an agent by sending a prompt and returning the response.
 
@@ -766,6 +730,7 @@ The admin tools (`admin_configure_llm_provider`, `admin_remove_llm_provider`, `s
 | Provider not in workspace | `switch_llm_provider` | `{"success": false, "error": "Provider '...' has not been configured..."}` |
 | Provider not enabled for agent | `switch_llm_provider` | `{"success": false, "error": "Provider '...' is not enabled for agent..."}` |
 | No active provider | `test_llm_generation` | `{"success": false, "error": "No provider is currently configured..."}` |
+| Attempt to remove Azure provider | `admin_remove_llm_provider` | `{"success": false, "error": "Cannot remove the Azure provider. Azure (gpt-4.1) is the system default..."}` |
 | Provider not found / already inactive | `admin_remove_llm_provider` | `{"success": false, "error": "Provider '...' was not found or is already inactive."}` |
 | MongoDB / network error | Any tool | `{"success": false, "error": "<exception message>"}` |
 
@@ -776,11 +741,12 @@ The admin tools (`admin_configure_llm_provider`, `admin_remove_llm_provider`, `s
 **"No provider is currently configured"**
 - An admin must call `admin_configure_llm_provider` with `set_as_current: true`, or the user must call `switch_llm_provider` after admin setup.
 
-**`configured_providers` is empty in `query_llm_router_status`**
+**`configured_providers` is empty in `list_available_llm_providers`**
 - No agent config row exists yet. Admin must run `admin_configure_llm_provider` first.
+- Or the provider credentials have been deactivated — `list_available_llm_providers` hides providers without active credentials.
 
-**`credentials_present: false` for a provider in `query_llm_router_status`**
-- The agent config row lists the provider but admin credentials were removed (`admin_remove_llm_provider`). Re-configure via `admin_configure_llm_provider`.
+**Provider configured for specific agents only — other agents don't see it**
+- This is expected behavior. `list_available_llm_providers` only returns providers explicitly configured for the requested agent (or from workspace default fallback). If a provider was added only for agents [1, 5], agent 12 will not see it.
 
 **Provider switch succeeds but generation still uses old provider**
 - The in-memory cache may not have been cleared. Call `clear_ai_manager_cache(workspace_id, agent_id)` or restart the service.
@@ -814,8 +780,12 @@ Note: provider selection defaults are created automatically, but credentials mus
 
 ---
 
-**Version**: 4.0.0
-**Last Updated**: 2026-06-01
+**Version**: 4.1.0
+**Last Updated**: 2026-06-03
 **Credential Source**: `llm_configs.workspace_configs` collection (MongoDB config documents)
 **Security Model**: JWT required for all tools; admin role_id (0 or 3) required for credential management
-**Major Changes**: Unified `admin_configure_llm_provider` tool with smart operation detection for both create and update operations
+**Major Changes**:
+- Azure provider is permanently protected — cannot be deleted (model/credentials can still be updated)
+- `list_available_llm_providers` now filters out providers without active credentials
+- Auto-updates `deployment_name` when Azure model is changed without explicit deployment_name
+- Removed non-existent `query_llm_router_status` tool from documentation
