@@ -3361,7 +3361,7 @@ def check_user_presence_by_email(user_email: str, workspace_id: int):
                     response: "The User is already present in User table and in this workspace."
                     is_flag: True
     """
-    claims, jwt_user_id = get_current_user()
+    _, jwt_user_id = get_current_user()
 
     session = db.Session()
     try:
@@ -3370,11 +3370,11 @@ def check_user_presence_by_email(user_email: str, workspace_id: int):
         has_access = False
 
         _, caller_ws_id = _get_assignable_role_ids(session, jwt_user_id, workspace_id)
-        if jwt_user_id == Role.WS_MANAGER.id or caller_ws_id == Role.WS_ADMIN.id:
+        if caller_ws_id == Role.WS_MANAGER.id or caller_ws_id == Role.WS_ADMIN.id:
             has_access = True
 
         if not has_access:
-            return {"error": "You are not authorized to perform this check. Admin or Workspace Admin required."}
+            return {"error": "You are not authorized to perform this check. Workspace Admin or Workspace Manager required."}
 
         # Normalize email and look up user
         email = (user_email or "").strip().lower()
