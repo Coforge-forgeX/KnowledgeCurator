@@ -1489,9 +1489,12 @@ async def upload_and_index_tool(
             if tid:
                 update_file_task_status(tid, "failed")
 
-    # Kick off one background coroutine per file
+    # Prepare one background worker that processes files sequentially.
+    # This avoids concurrent LightRAG writes to the same KB, which can
+    # cause lock contention and misleading per-file indexing status timing.
     print("Starting background upload and indexing tasks for files:", file_names)
     print("length file_contents", len(file_contents))
+    queued_jobs = []
     for fname, fcontent in zip(file_names, file_contents):
         per_file_path = f"{upload_path}/{fname}" if upload_path and fname else None
         # Compute human-readable size with units for storage in file_tasks.file_size
@@ -1513,7 +1516,14 @@ async def upload_and_index_tool(
             "file_path": per_file_path,
             "task_id": tid,
         })
-        asyncio.create_task(background_upload_then_index_single(fname, fcontent, per_file_path, tid))
+
+        queued_jobs.append((fname, fcontent, per_file_path, tid))
+
+    async def background_upload_then_index_sequentially(jobs):
+        for fname, fcontent, per_file_path, tid in jobs:
+            await background_upload_then_index_single(fname, fcontent, per_file_path, tid)
+
+    asyncio.create_task(background_upload_then_index_sequentially(queued_jobs))
 
     # Immediately inform client that tasks started (avoid MCP timeout)
     await ctx.debug("Upload(s) started in background. Use the returned task_ids to poll status.")
@@ -2704,19 +2714,36 @@ async def edit_entity_in_kg(
  
 @mcp.tool()
 async def edit_relation_in_kg(
-    domain: Optional[str] = None,
-    kb_name: Optional[str] = None,
+    domain: Optional[str] = None,           # Other
+    kb_name: Optional[str] = None,          # Demo Instances/
+    knowledge_bases: Optional[list] = None, # [Cards, Payments]
+    workspace_id: Optional[str] = None,     # 753
     source_entity_name: Optional[str] = None,
     target_entity_name: Optional[str] = None,
     updated_data: Optional[dict] = None,
 ):
     try:
-        rag = await initialize_rag(domain=domain, kb_name=kb_name)
-        return await rag.aedit_relation(
-            source_entity=source_entity_name,
-            target_entity=target_entity_name,
-            updated_data=updated_data,
-        )
+        knowledge_bases = list(knowledge_bases) if knowledge_bases else []
+        if workspace_id:
+            digit_map = {
+                '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+                '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
+            }
+            workspace_id_alpha = ''.join(
+                c if c.isalpha() else digit_map[c]
+                for c in str(workspace_id) if c.isalpha() or c.isdigit()
+            )
+            knowledge_bases.append(workspace_id_alpha)
+
+        results = {}
+        for kg in knowledge_bases:
+            rag = await initialize_rag(domain=domain, kb_name=kb_name + kg)
+            results[kg] = await rag.aedit_relation(
+                source_entity=source_entity_name,
+                target_entity=target_entity_name,
+                updated_data=updated_data,
+            )
+        return results
     except Exception as e:
         return {"error": str(e)}
    
