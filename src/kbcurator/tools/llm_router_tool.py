@@ -24,6 +24,7 @@ from kbcurator.services.workspace_provider_credentials_service import (
     SUPPORTED_PROVIDERS,
 )
 from kbcurator.utils.auth import require_auth_async, get_current_user
+from kbcurator.utils.permission import is_admin
 from kbcurator.utils.constants import Role
 from common_adapters.configurableAI import (
     ConfigurableAIManager,
@@ -38,10 +39,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _is_admin_role(role_id: int) -> bool:
-    return role_id in (Role.ADMIN.id, Role.WS_ADMIN.id)
-
 
 def _invalidate_manager_cache(workspace_id: int, agent_id: Optional[int] = None) -> None:
     """Clear LLM manager cache (delegates to common_adapters)."""
@@ -160,7 +157,7 @@ async def admin_configure_llm_provider(
     claims, user_id = get_current_user()
     caller_role = int(claims.get("role_id", -1))
 
-    if not _is_admin_role(caller_role):
+    if not is_admin(caller_role, workspace_id):
         raise ToolError("Forbidden: only Workspace Admins or Platform Admins can configure LLM providers.")
 
     provider = provider.lower().strip()
@@ -436,7 +433,7 @@ async def admin_list_llm_providers(
     claims, user_id = get_current_user()
     caller_role = int(claims.get("role_id", -1))
 
-    if not _is_admin_role(caller_role):
+    if not is_admin(caller_role, workspace_id):
         raise ToolError("Forbidden: only Workspace Admins or Platform Admins can view LLM provider configuration.")
 
     try:
@@ -498,7 +495,7 @@ async def admin_remove_llm_provider(
     claims, user_id = get_current_user()
     caller_role = int(claims.get("role_id", -1))
 
-    if not _is_admin_role(caller_role):
+    if not is_admin(caller_role, workspace_id):
         raise ToolError("Forbidden: only Workspace Admins or Platform Admins can remove LLM providers.")
 
     provider = provider.lower().strip()
