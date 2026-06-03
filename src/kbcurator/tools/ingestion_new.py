@@ -360,6 +360,10 @@ async def query_rag(
         workspace_id_alpha = ''.join(result)
         if workspace_id_alpha and workspace_id_alpha not in knowledge_bases:
             knowledge_bases.append(workspace_id_alpha)
+
+    # If no knowledge bases and no kb_name, cannot query — return early
+    if not knowledge_bases and not kb_name:
+        return {"error": "No knowledge base configured. Please set domain/kb_name or knowledge_bases."}
             
 
     if history is None:
@@ -508,7 +512,7 @@ When handling relationships with timestamps:
             # during parallel initialization. Query execution remains parallel below.
             rag_map = {}
             for kb in knowledge_bases:
-                rag_map[kb] = await initialize_rag(domain=domain, kb_name=kb_name+kb)
+                rag_map[kb] = await initialize_rag(domain=domain, kb_name=(kb_name or '') + kb)
 
             async def query_single_kb(kb):
                 try:
