@@ -24,8 +24,13 @@ from kbcurator.services.workspace_provider_credentials_service import (
     SUPPORTED_PROVIDERS,
 )
 from kbcurator.utils.auth import require_auth_async, get_current_user
+from kbcurator.utils.permission import is_admin
 from kbcurator.utils.constants import Role
-from common_adapters.configurableAI import ConfigurableAIManager, clear_ai_manager_cache
+from common_adapters.configurableAI import (
+    ConfigurableAIManager,
+    get_configured_llm_manager,
+    invalidate_llm_cache,
+)
 from fastmcp.exceptions import ToolError, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -35,40 +40,21 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _is_admin_role(role_id: int) -> bool:
-    return role_id in (Role.ADMIN.id, Role.WS_ADMIN.id)
+def _invalidate_manager_cache(workspace_id: int, agent_id: Optional[int] = None) -> None:
+    """Clear LLM manager cache (delegates to common_adapters)."""
+    invalidate_llm_cache(workspace_id=workspace_id, agent_id=agent_id)
 
 
 def _build_manager_from_db(workspace_id: int, agent_id: Optional[int]) -> ConfigurableAIManager:
     """
-    Construct a ConfigurableAIManager whose providers are loaded from
-    MongoDB workspace config, not environment variables.
+    Get a ConfigurableAIManager pre-loaded from MongoDB config.
+    Delegates to common_adapters.configurableAI.get_configured_llm_manager.
     """
-    manager = ConfigurableAIManager()
-    config = agent_llm_config_service.get_effective_configuration(workspace_id, agent_id)
-    if not config:
-        return manager
-
-    configured_providers: List[str] = config.get("configured_providers") or []
-    current_provider: Optional[str] = config.get("current_provider")
-
-    for provider in configured_providers:
-        creds_dict = workspace_provider_credentials_service.build_config_dict(workspace_id, provider)
-        if creds_dict:
-            try:
-                manager.configure_provider(provider, creds_dict)
-            except Exception as e:
-                logger.warning(f"Could not configure provider '{provider}': {e}")
-        else:
-            logger.warning(f"No credentials found for provider '{provider}' in workspace {workspace_id}")
-
-    if current_provider and current_provider in manager.list_configured_providers():
-        try:
-            manager.set_current_provider(current_provider)
-        except Exception as e:
-            logger.warning(f"Could not set current provider '{current_provider}': {e}")
-
-    return manager
+    try:
+        return get_configured_llm_manager(workspace_id, agent_id)
+    except ValueError:
+        # Return empty manager if nothing is configured (for backward compat)
+        return ConfigurableAIManager()
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +157,7 @@ async def admin_configure_llm_provider(
     claims, user_id = get_current_user()
     caller_role = int(claims.get("role_id", -1))
 
-    if not _is_admin_role(caller_role):
+    if not is_admin(caller_role, workspace_id):
         raise ToolError("Forbidden: only Workspace Admins or Platform Admins can configure LLM providers.")
 
     provider = provider.lower().strip()
@@ -201,12 +187,23 @@ async def admin_configure_llm_provider(
     else:
         # Updating existing provider - merge with existing config
         operation_mode = "update"
+        
+        # For Azure: if model is updated without explicit deployment_name,
+        # auto-update deployment_name to match the new model (Azure requires these to match).
+        effective_deployment_name = deployment_name
+        if effective_deployment_name is None:
+            if model is not None and provider == "azure":
+                # Model changed → deployment_name should follow the new model
+                effective_deployment_name = model
+            else:
+                effective_deployment_name = existing_creds.get("deployment_name")
+        
         config_to_use = {
             "api_key": api_key if api_key is not None else existing_creds["api_key"],
             "endpoint": endpoint if endpoint is not None else existing_creds["endpoint"],
             "model": model if model is not None else existing_creds["model"],
             "api_version": api_version if api_version is not None else existing_creds.get("api_version"),
-            "deployment_name": deployment_name if deployment_name is not None else existing_creds.get("deployment_name"),
+            "deployment_name": effective_deployment_name,
         }
 
     # Track what configuration fields are being changed
@@ -371,7 +368,7 @@ async def admin_configure_llm_provider(
                 operations_performed.append("agents_removed")
 
         # Clear cache to ensure new configuration is used
-        clear_ai_manager_cache(workspace_id=workspace_id)
+        _invalidate_manager_cache(workspace_id=workspace_id)
 
         # Build success message
         messages = []
@@ -436,7 +433,7 @@ async def admin_list_llm_providers(
     claims, user_id = get_current_user()
     caller_role = int(claims.get("role_id", -1))
 
-    if not _is_admin_role(caller_role):
+    if not is_admin(caller_role, workspace_id):
         raise ToolError("Forbidden: only Workspace Admins or Platform Admins can view LLM provider configuration.")
 
     try:
@@ -498,7 +495,7 @@ async def admin_remove_llm_provider(
     claims, user_id = get_current_user()
     caller_role = int(claims.get("role_id", -1))
 
-    if not _is_admin_role(caller_role):
+    if not is_admin(caller_role, workspace_id):
         raise ToolError("Forbidden: only Workspace Admins or Platform Admins can remove LLM providers.")
 
     provider = provider.lower().strip()
@@ -506,8 +503,9 @@ async def admin_remove_llm_provider(
     # Protect the default azure provider — it must never be removed
     if provider == "azure":
         raise ToolError(
-            "Cannot remove the default Azure (gpt-4.1) provider. "
-            "This is the system default and must always remain configured."
+            "Cannot remove the Azure provider. "
+            "Azure (gpt-4.1) is the system default LLM configured at workspace creation and must always remain active. "
+            "You may update its model/credentials via admin_configure_llm_provider, but it cannot be deleted."
         )
 
     try:
@@ -532,7 +530,7 @@ async def admin_remove_llm_provider(
         if not removed:
             raise ToolError(f"Provider '{provider}' was not found or could not be deactivated.")
 
-        clear_ai_manager_cache(workspace_id=workspace_id)
+        _invalidate_manager_cache(workspace_id=workspace_id)
 
         return {
             "success": True,
@@ -572,6 +570,8 @@ async def list_available_llm_providers(
         Dict with configured providers list, current provider, and switch hint.
     """
     try:
+        # Use agent-specific config first; only fall back to workspace default
+        # if the agent has no dedicated configuration.
         config = agent_llm_config_service.get_effective_configuration(workspace_id, agent_id)
         if not config:
             return {
@@ -586,30 +586,41 @@ async def list_available_llm_providers(
         configured_providers: List[str] = config.get("configured_providers") or []
         current_provider: Optional[str] = config.get("current_provider")
 
-        # Enrich with lightweight public metadata (model name, endpoint host) from credentials
+        # Enrich with lightweight public metadata (model name, endpoint host) from credentials.
+        # Only include providers that have active credentials — inactive/removed providers are hidden.
         provider_details = []
         for provider in configured_providers:
             creds = workspace_provider_credentials_service.get_provider_credentials(workspace_id, provider)
             
+            # Skip providers that have no active credentials
+            if not creds:
+                logger.debug(f"Provider '{provider}' listed in agent config but has no active credentials — hiding from user.")
+                continue
+            
             # Safely extract endpoint host
             endpoint_host = None
-            if creds and creds.get("endpoint"):
+            if creds.get("endpoint"):
                 try:
                     endpoint_parts = creds["endpoint"].split("/")
                     if len(endpoint_parts) >= 3:
                         endpoint_host = endpoint_parts[2]
                     else:
-                        endpoint_host = creds["endpoint"]  # Use full endpoint if splitting fails
+                        endpoint_host = creds["endpoint"]
                 except Exception as e:
                     logger.warning(f"Failed to parse endpoint for provider '{provider}': {e}")
                     endpoint_host = creds["endpoint"]
             
             provider_details.append({
                 "provider": provider,
-                "model": creds["model"] if creds else None,
+                "model": creds["model"],
                 "endpoint_host": endpoint_host,
                 "is_current": provider == current_provider,
             })
+
+        # If current_provider was filtered out (no credentials), clear it in the response
+        active_provider_names = [p["provider"] for p in provider_details]
+        if current_provider and current_provider not in active_provider_names:
+            current_provider = active_provider_names[0] if active_provider_names else None
 
         return {
             "success": True,
@@ -617,10 +628,10 @@ async def list_available_llm_providers(
             "agent_id": agent_id,
             "configured_providers": provider_details,
             "current_provider": current_provider,
-            "can_switch": len(configured_providers) > 1,
+            "can_switch": len(provider_details) > 1,
             "switch_hint": (
                 "Use switch_llm_provider with provider=<name> to change the active LLM."
-                if len(configured_providers) > 1 else None
+                if len(provider_details) > 1 else None
             ),
         }
     except Exception as e:
@@ -674,7 +685,7 @@ async def switch_llm_provider(
         user_id=user_id,
     )
 
-    clear_ai_manager_cache(workspace_id=workspace_id, agent_id=agent_id)
+    _invalidate_manager_cache(workspace_id=workspace_id, agent_id=agent_id)
 
     return {
         "success": True,
