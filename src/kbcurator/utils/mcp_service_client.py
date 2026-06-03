@@ -261,8 +261,8 @@ class MCPServiceClient:
                 "knowledge_bases": self.knowledge_bases,
                 "user_prompt": "",
                 "mode": "mix",
-                "workspace_id": workspace_id,  # ADD THIS
-                "role_id": role_id              # ADD THIS
+                "workspace_id": str(workspace_id),  # Convert to string for MCP tool
+                "role_id": role_id
             }
 
             tool_name = "query_rag"

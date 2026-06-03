@@ -10,7 +10,7 @@ from datetime import datetime
 # Third-party and internal imports
 sys.path.append("../utils")
 from kbcurator.utils.prompt_builder import PromptBuilder
-from kbcurator.utils.azurecustomllm import AzureCustomLLM
+from kbcurator.utils.llm_helper import get_llm_response_with_context, get_llm_response_with_context_async
 from kbcurator.utils.classifier import classifier
 from kbcurator.utils.mcp_service_client import MCPServiceClient
 from kbcurator.server.server import mcp
@@ -31,8 +31,6 @@ from fastmcp.server.dependencies import get_http_headers
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
-
-llm_classifier = AzureCustomLLM()
 
 class IntentDetector:
     """
@@ -62,9 +60,8 @@ class IntentDetector:
             "greeting": ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening'],
             "help": ['help', 'assist me', 'support', 'i need help', 'can you help me','what can you do','what are your capabilities']
         }
-        self.llm_classifier = AzureCustomLLM()
 
-    def detect_intent(self, user_message: str) -> str:
+    def detect_intent(self, user_message: str, workspace_id: int, agent_id: Optional[int] = None) -> str:
         # Build a prompt with examples for each intent
         prompt = """
             You are an intent classifier for a chatbot. Classify the user message into one of these intents:
@@ -86,9 +83,11 @@ class IntentDetector:
         
         prompt += f"\n\nUser message: \"{user_message}\"\nIntent:"
 
-        response = self.llm_classifier._call(
-            input=user_message,
-            sys_prompt=prompt
+        response = get_llm_response_with_context(
+            workspace_id=workspace_id,
+            user_input=user_message,
+            sys_prompt=prompt,
+            agent_id=agent_id
         )
 
         # print(f"Response from classifier is {response}")
@@ -167,9 +166,9 @@ def resolve_indexed_filename(requested_filename: str, indexed_files: Dict[str, l
 
     return None
 
-async def get_parsed_data(message: str) -> json:
+async def get_parsed_data(message: str, workspace_id: int, agent_id: Optional[int] = None) -> json:
     parser_prompt = PromptBuilder.get_parser_prompt(message)
-    parsed_data = await classifier(message, parser_prompt)
+    parsed_data = await classifier(message, parser_prompt, workspace_id=workspace_id, agent_id=agent_id)
     print(f"Parsed data from classifier: {parsed_data[:10]}")
     parsed_data = json.loads(parsed_data)
     return parsed_data
@@ -318,7 +317,7 @@ class Chatbot:
                 if self.file_names:
                     intent = 'upload_file'
                 else:
-                    intent = self.intent_detector.detect_intent(message)
+                    intent = self.intent_detector.detect_intent(message, workspace_id=self.workspace_id)
                     if intent in ['help']:
                         intent = 'help'
                     elif intent in ['greeting']:
@@ -326,7 +325,7 @@ class Chatbot:
                     else:
                         intent = 'search_kb'
             elif self.mode.upper() == 'UPDATE':
-                intent = self.intent_detector.detect_intent(message)
+                intent = self.intent_detector.detect_intent(message, workspace_id=self.workspace_id)
             else:
                 intent = 'search_kb'
 
@@ -488,7 +487,7 @@ class Chatbot:
 
     async def handle_delete_entity(self, message: str, context: ChatbotContext, intent: str) -> str:
         try:
-            parsed_data = await get_parsed_data(message)
+            parsed_data = await get_parsed_data(message, workspace_id=self.workspace_id)
             print(f"Parsed data for deletion: {parsed_data}")
 
             delet_args = { 
@@ -508,7 +507,7 @@ class Chatbot:
     async def handle_add_entity(self, message: str, context: ChatbotContext, intent: str) -> str:
         # Add entity logic here
         try:
-            parsed_data = await get_parsed_data(message)
+            parsed_data = await get_parsed_data(message, workspace_id=self.workspace_id)
             print(f"Parsed data for addition: {parsed_data}")
 
             add_args = { 
@@ -1142,6 +1141,11 @@ async def message_gpt(
     )
     if not valid_scope:
         return {"error": scope_err}
+
+    # Convert string IDs to integers for internal use
+    workspace_id = int(workspace_id)
+    user_id = int(user_id)
+    role_id = int(role_id)
 
     try:
         token = get_http_headers(include_all=True).get('authorization',"") or get_http_headers().get('Authorization',"")
