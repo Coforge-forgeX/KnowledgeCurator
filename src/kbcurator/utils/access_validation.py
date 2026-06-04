@@ -131,18 +131,18 @@ def validate_chatbot_request_scope(user_id, workspace_id, role_id, industry, sub
     - provided knowledge_bases are within mapped workspace KBs (if provided)
     """
     if user_id is None:
-        return False, "user_id cannot be null"
+        return False, "user_id cannot be null", None
     if not workspace_id:
-        return False, "workspace_id is required for authentication."
+        return False, "workspace_id is required for authentication.", None
 
     try:
         requested_role_id = int(role_id)
     except (TypeError, ValueError):
-        return False, "Invalid role_id."
+        return False, "Invalid role_id.", None
 
     normalized_kbs = _normalize_kb_input(knowledge_bases)
     if normalized_kbs is None:
-        return False, "knowledge_bases must be a list when provided."
+        return False, "knowledge_bases must be a list when provided.", None
 
     session = db.Session()
     try:
@@ -152,18 +152,20 @@ def validate_chatbot_request_scope(user_id, workspace_id, role_id, industry, sub
             .first()
         )
         if not user_map:
-            return False, "You are not authorized to access this workspace."
+            return False, "You are not authorized to access this workspace.", None
 
         mapped_role_id = getattr(user_map, "role_id", None)
         try:
             mapped_role_id_int = int(mapped_role_id)
         except (TypeError, ValueError):
-            return False, "Invalid role mapping for the user in this workspace."
+            return False, "Invalid role mapping for the user in this workspace.", None
 
         if requested_role_id != mapped_role_id_int:
-            return False, "Provided role_id is not valid for this user in the selected workspace."
+            return False, "Provided role_id is not valid for this user in the selected workspace.", None
+        
+        can_curate_kb = bool(getattr(user_map, "can_curate_kb", False))
     except Exception as e:
-        return False, str(e)
+        return False, str(e), None
     finally:
         session.close()
 
@@ -173,10 +175,10 @@ def validate_chatbot_request_scope(user_id, workspace_id, role_id, industry, sub
         expected_subindustry = scope_snapshot.get("subindustry_name")
 
         if expected_industry and _normalize_text(industry) != expected_industry:
-            return False, "Invalid industry for this workspace."
+            return False, "Invalid industry for this workspace.", can_curate_kb
 
         if expected_subindustry and _normalize_text(sub_industry) != expected_subindustry:
-            return False, "Invalid sub_industry for this workspace."
+            return False, "Invalid sub_industry for this workspace.", can_curate_kb
 
         if normalized_kbs:
             allowed_kb_titles = scope_snapshot.get("knowledge_bases", set())
@@ -190,9 +192,9 @@ def validate_chatbot_request_scope(user_id, workspace_id, role_id, industry, sub
                 if kb.strip().isdigit() and int(kb.strip()) in allowed_kb_ids:
                     continue
 
-                return False, "One or more knowledge_bases are invalid for this workspace."
+                return False, "One or more knowledge_bases are invalid for this workspace.", can_curate_kb
 
-    return True, None
+    return True, None, can_curate_kb
 
 def validate_user_workspace_access(user_id=None, workspace_id=None):
     """

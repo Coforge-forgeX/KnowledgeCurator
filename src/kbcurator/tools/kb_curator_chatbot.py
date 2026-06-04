@@ -206,6 +206,7 @@ class Chatbot:
             role_id: int, 
             session_id: str, 
             token: str | None,
+            can_curate_kb: bool,
             knowledge_bases: list = None, 
             file_names: list = None, 
             file_contents: list = None, 
@@ -232,6 +233,7 @@ class Chatbot:
         self.mode = mode
         self.task_id = None
         self.token = token
+        self.can_curate_kb = bool(can_curate_kb)
         self.mcp_tool_obj = MCPServiceClient(
             server_url = self.server_url,
             industry= self.industry,
@@ -420,6 +422,22 @@ class Chatbot:
         
     async def route_intent(self, intent: str, message: str, context: ChatbotContext):
         """Route to the appropriate handler based on detected intent."""
+        restricted_intents = {
+            "upload_file",
+            "add_entity",
+            "delete_entity",
+            "index_url",
+            "update_entity",
+            "delete_file",
+        }
+
+        # Non-curation users can only use search/help/greeting/default assistant replies.
+        if not self.can_curate_kb and intent in restricted_intents:
+            return (
+                "You have search-only access in this workspace. "
+                "Indexing or editing the knowledge base is not allowed for your account."
+            )
+
         if intent == "search_kb":
             return await self.handle_search(message, context)
         elif intent == "upload_file":
@@ -1131,7 +1149,7 @@ async def message_gpt(
         return {"error": err}
 
     # Reusable payload integrity check to reject tampered/corrupted inputs.
-    valid_scope, scope_err = validate_chatbot_request_scope(
+    valid_scope, scope_err, can_curate_kb = validate_chatbot_request_scope(
         user_id=user_id,
         workspace_id=workspace_id,
         role_id=role_id,
@@ -1161,6 +1179,7 @@ async def message_gpt(
             user_id=user_id,
             role_id=role_id,
             session_id=session_id, 
+            can_curate_kb=can_curate_kb,
             file_names=file_names, 
             file_contents=file_contents, 
             mode=mode,
