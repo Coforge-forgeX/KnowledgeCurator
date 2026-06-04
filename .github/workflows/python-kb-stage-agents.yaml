@@ -1,13 +1,13 @@
 name: Deploy-KBCurator deploy to poly app
 on:
   workflow_dispatch: 
-  # push:
-  #   branches:
-  #     - main
-  #   paths:    
-  #     - 'src/kbcurator/**'
-  #     - 'Dockerfile'
-  #     - '.github/workflows/python-kb-prod-agents.yaml'
+  push:
+    branches:
+      - stage
+    paths:    
+      - 'src/kbcurator/**'
+      - 'Dockerfile'
+      - '.github/workflows/python-kb-stage-agents.yaml'
    
 env:
   AZURE_WEBAPP_NAME: forgeX-stg-kb                     
