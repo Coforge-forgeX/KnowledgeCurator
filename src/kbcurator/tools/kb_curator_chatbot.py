@@ -993,9 +993,9 @@ def get_conversation_history(workspace_id: str = None, user_id: str = None, limi
                 # Fetch the conversation title from context collection
                 title = session.get_conversation_title(workspace_id, user_id, ses)
                 logger.info(f"Data for session {ses}: {data}")
+                assistant_msg = next((msg for msg in reversed(data) if msg.get("role") == "assistant"), None) if isinstance(data, list) else None
                 if isinstance(data, list) and len(data) >= 2: 
                     user_msg = next((msg for msg in reversed(data) if msg.get("role") == "user"), None)
-                    assistant_msg = next((msg for msg in reversed(data) if msg.get("role") == "assistant"), None)
                     last_msg = data[-1]
                     time_modified_str = last_msg.get("timestamp", "N/A")
                     conversations.append({
@@ -1004,7 +1004,7 @@ def get_conversation_history(workspace_id: str = None, user_id: str = None, limi
                         "title": title,
                         "user": user_msg["content"] if user_msg else None,
                         "assistant": assistant_msg["content"] if assistant_msg else None,
-                        "task_ids": assistant_msg["task_ids"] if assistant_msg else None
+                        "task_ids": assistant_msg.get("task_ids") if assistant_msg else None
                     })
                 else:
                     conversations.append({
