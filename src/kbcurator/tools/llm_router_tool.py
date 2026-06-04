@@ -155,10 +155,9 @@ async def admin_configure_llm_provider(
         Summary dict with success flag and details.
     """
     claims, user_id = get_current_user()
-    caller_role = int(claims.get("role_id", -1))
 
-    if not is_admin(caller_role, workspace_id):
-        raise ToolError("Forbidden: only Workspace Admins or Platform Admins can configure LLM providers.")
+    if not is_admin(user_id, workspace_id):
+        raise ToolError("Forbidden: only Workspace Admins can configure LLM providers.")
 
     provider = provider.lower().strip()
     if provider not in SUPPORTED_PROVIDERS:
@@ -431,10 +430,9 @@ async def admin_list_llm_providers(
         Dict with configured providers and per-agent activation status.
     """
     claims, user_id = get_current_user()
-    caller_role = int(claims.get("role_id", -1))
 
-    if not is_admin(caller_role, workspace_id):
-        raise ToolError("Forbidden: only Workspace Admins or Platform Admins can view LLM provider configuration.")
+    if not is_admin(user_id, workspace_id):
+        raise ToolError("Forbidden: only Workspace Admins can view LLM provider configuration.")
 
     try:
         credential_records = workspace_provider_credentials_service.list_workspace_providers(workspace_id)
@@ -493,10 +491,9 @@ async def admin_remove_llm_provider(
         Success/failure dict.
     """
     claims, user_id = get_current_user()
-    caller_role = int(claims.get("role_id", -1))
 
-    if not is_admin(caller_role, workspace_id):
-        raise ToolError("Forbidden: only Workspace Admins or Platform Admins can remove LLM providers.")
+    if not is_admin(user_id, workspace_id):
+        raise ToolError("Forbidden: only Workspace Admins can remove LLM providers.")
 
     provider = provider.lower().strip()
 
