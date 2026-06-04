@@ -1,4 +1,7 @@
-
+from dotenv import load_dotenv
+load_dotenv()
+from common_adapters.langfuse_instrumentation import setup_langfuse
+setup_langfuse()
 import json
 import asyncio
 from typing import List, Optional
