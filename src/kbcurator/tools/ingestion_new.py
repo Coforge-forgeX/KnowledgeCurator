@@ -40,7 +40,7 @@ from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.async_configs import BrowserConfig, CrawlerRunConfig, CacheMode, DefaultMarkdownGenerator
-from kbcurator.utils.llm_helper import get_llm_response
+from kbcurator.utils.azurecustomllm import AzureCustomLLM
 from kbcurator.utils.access_validation import validate_user_workspace_access
 from kbcurator.utils.request_context import request_var
 from kbcurator.utils.db import db
@@ -500,6 +500,7 @@ When handling relationships with timestamps:
             "history:", history[:10]
         )
         if knowledge_bases:
+            llm_summarize = AzureCustomLLM(temperature=0)
             results = {}
             kb_graph_refs = []
 
@@ -535,7 +536,7 @@ When handling relationships with timestamps:
                     results[kb] = response
                     kb_graph_refs.append(f"Knowledge Base: {kb}")
 
-            # Summarize the results using LLM Router
+            # Summarize the results using AzureCustomLLM
             summary_prompt = user_prompt
             
             for kb, resp in results.items():
@@ -547,17 +548,9 @@ When handling relationships with timestamps:
             summary_prompt += "\n---\nReferences:\n"
             for i, kb in enumerate(results.keys(), 1):
                 summary_prompt += f"[{i}] {kb}\n"
-            
-            # Use LLM Router with workspace_id
-            try:
-                ws_id = int(workspace_id) if workspace_id else None
-                if ws_id:
-                    summary = get_llm_response(workspace_id=ws_id, prompt=summary_prompt)
-                else:
-                    # Fallback: try to get from context or raise error
-                    raise ValueError("workspace_id is required for LLM calls")
-            except Exception as e:
-                summary = f"Error generating summary: {str(e)}"
+            summary = llm_summarize._call(
+                input=summary_prompt
+            )
 
             
             
@@ -2695,6 +2688,7 @@ async def edit_entity_in_kg(
 ):
     try:
         knowledge_bases = list(knowledge_bases) if knowledge_bases else []
+        print(f"[DEBUG edit_entity] Called with domain={domain}, kb_name={kb_name}, workspace_id={workspace_id}, entity_name={entity_name}, knowledge_bases={knowledge_bases}")
         if workspace_id:
             digit_map = {
                 '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
@@ -2707,15 +2701,27 @@ async def edit_entity_in_kg(
             knowledge_bases.append(workspace_id_alpha)
             # knowledge_bases = [Cards, Payments, sevenfivethree]
 
+        print(f"[DEBUG edit_entity] Final scopes to try: {knowledge_bases}")
         results = {}
         for kg in knowledge_bases:
-            rag = await initialize_rag(domain=domain, kb_name=kb_name + kg)  # Other + Demo Instances/ + Cards
-            results[kg] = await rag.aedit_entity(
-                entity_name=entity_name,
-                updated_data=updated_data,
-                allow_rename=True,
+            try:
+                combined_kb = kb_name + kg
+                print(f"[DEBUG edit_entity] Trying scope '{kg}' -> initialize_rag(domain={domain}, kb_name={combined_kb})")
+                rag = await initialize_rag(domain=domain, kb_name=combined_kb)
+                print(f"[DEBUG edit_entity] RAG initialized for '{kg}', calling aedit_entity(entity_name={entity_name})")
+                result = await rag.aedit_entity(
+                    entity_name=entity_name,
+                    updated_data=updated_data,
+                    allow_rename=True,
                 )
-        return {"response":f"{entity_name} updated successfully", "details": results}
+                print(f"[DEBUG edit_entity] Response for scope '{kg}': {result}")
+                results[kg] = result
+            except Exception as e:
+                print(f"[DEBUG edit_entity] Exception for scope '{kg}': {e}")
+                results[kg] = str(e)
+
+        print(f"[DEBUG edit_entity] Final results: {results}")
+        return results
     except Exception as e:
         return {"error": str(e)}
  
