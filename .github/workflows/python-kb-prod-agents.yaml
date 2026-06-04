@@ -10,10 +10,10 @@ on:
       - '.github/workflows/python-kb-prod-agents.yaml'
    
 env:
-  AZURE_WEBAPP_NAME: forgeX-stg-kb                     
+  AZURE_WEBAPP_NAME: forgeX2-kb                     
   REGISTRY: ${{ secrets.registry }}
-  DOCKER_IMAGE_NAME: stg-poly-kbcurator
-  rg_name: ${{ secrets.STG_RG_NAME }}
+  DOCKER_IMAGE_NAME: prod2-poly-kbcurator
+  rg_name: ${{ secrets.PROD_RG_NAME }}
   subscription_id: ${{ secrets.subscription_id }}
 
 jobs:
