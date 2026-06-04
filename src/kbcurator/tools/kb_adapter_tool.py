@@ -1,4 +1,4 @@
-from agent_search.server.server import mcp
+from kbcurator.server.server import mcp
 from azure.storage.blob import generate_blob_sas, BlobSasPermissions, BlobServiceClient
 import requests
 from dotenv import load_dotenv
@@ -7,7 +7,10 @@ import base64
 from datetime import datetime, timedelta
 import traceback
 
-load_dotenv(os.path.abspath(os.path.join(os.getcwd(),'.env')))
+# Load .env file if it exists (for local development)
+env_path = os.path.abspath(os.path.join(os.getcwd(), '.env'))
+if os.path.exists(env_path):
+    load_dotenv(env_path)
 
 @mcp.tool()
 def fetch_blob_structure():
@@ -157,20 +160,14 @@ def upload_files_to_blob(domain: str, kbs: list, file_names: list, file_contents
             return {"error": str(e)}
     
 @mcp.tool()
-def delete_files_from_blob(domain: str, kbs: list, file_names: list):
+def delete_files_from_blob(domain: str, kbs: list, file_names: list, container_name: str = None):
     """
     Deletes files from Azure Blob Storage under the specified domain and KB directories.
 
-    Args:
-        domain (str): The domain name (top-level directory).
-        kbs (list): List of KB names (subdirectories).
-        file_names (list): List of file names to delete.
-
-    Returns:
-        str: Summary of deleted files or error message.
     """
     connection_string = os.getenv('AZURE_BLOB_STORAGE_CONNECTION_STRING')
-    container_name = os.getenv('AZURE_BLOB_STORAGE_CONTAINER_NAME')
+    if container_name is None:
+        container_name = os.getenv('AZURE_BLOB_STORAGE_CONTAINER_NAME')
 
     if not connection_string or not container_name:
         return "Azure Blob Storage configuration is missing."
@@ -194,6 +191,43 @@ def delete_files_from_blob(domain: str, kbs: list, file_names: list):
         return f"Deleted files: {deleted_files}"
     except Exception as e:
         return f"Error deleting files: {e}"
+# def delete_files_from_blob(domain: str, kbs: list, file_names: list):
+#     """
+#     Deletes files from Azure Blob Storage under the specified domain and KB directories.
+
+#     Args:
+#         domain (str): The domain name (top-level directory).
+#         kbs (list): List of KB names (subdirectories).
+#         file_names (list): List of file names to delete.
+
+#     Returns:
+#         str: Summary of deleted files or error message.
+#     """
+#     connection_string = os.getenv('AZURE_BLOB_STORAGE_CONNECTION_STRING')
+#     container_name = os.getenv('AZURE_BLOB_STORAGE_CONTAINER_NAME')
+
+#     if not connection_string or not container_name:
+#         return "Azure Blob Storage configuration is missing."
+
+#     try:
+#         blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+#         container_client = blob_service_client.get_container_client(container_name)
+#         deleted_files = []
+
+#         for kb in kbs:
+#             for fname in file_names:
+#                 blob_path = f"{domain}/{kb}/{fname}"
+#                 blob_client = container_client.get_blob_client(blob_path)
+#                 try:
+#                     blob_client.delete_blob()
+#                     deleted_files.append(blob_path)
+#                 except Exception as e:
+#                     # File might not exist, skip or log as needed
+#                     pass
+
+#         return f"Deleted files: {deleted_files}"
+#     except Exception as e:
+#         return f"Error deleting files: {e}"
 
 # New MCP tool: fetch file and return downloadable URL
 # @mcp.tool()

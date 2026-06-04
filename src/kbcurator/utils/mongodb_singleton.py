@@ -1,34 +1,26 @@
-import logging
+import os
+from urllib.parse import unquote
 import threading
+import logging
 import certifi
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
-from typing import Optional, Any
-import os
-import re
+from typing import Optional
 from dotenv import load_dotenv
-from common_adapters.database import DatabaseAdapterFactory, DatabaseAdapter
 
 load_dotenv()
 
 
 class MongoDBSingleton:
     """
-    Thread-safe singleton implementation for database client connection.
-    Supports both MongoDB and AWS DocumentDB through the adapter pattern.
-    Ensures only one database client instance is created and reused across the application.
-    
-    The database type is determined by the DB_TYPE environment variable:
-    - 'mongodb' (default): Uses standard MongoDB
-    - 'documentdb': Uses AWS DocumentDB
+    Thread-safe singleton implementation for MongoDB client connection.
+    Ensures only one MongoDB client instance is created and reused across the application.
     """
     
     _instance: Optional['MongoDBSingleton'] = None
     _lock = threading.Lock()
-    _client: Optional[Any] = None  # Can be MongoDB or DocumentDB client
-    _adapter: Optional[DatabaseAdapter] = None
+    _client: Optional[MongoClient] = None
     _db_chatbot = None
-    _db_workflow = None
     _is_initialized = False
     
     def __new__(cls):
@@ -55,109 +47,67 @@ class MongoDBSingleton:
                 self._initialize_connection()
     
     def _initialize_connection(self):
-        """
-        Initialize database connection using the appropriate adapter and centralized DBSettings config.
-        Supports both MongoDB and AWS DocumentDB based on DB_TYPE environment variable.
-        """
-        from common_adapters.database.config import initialize_db_settings
+        """Initialize MongoDB connection with connection pooling."""
         try:
-            # Load DB config from environment using the new config pattern
-            settings = initialize_db_settings()
-            db_type = settings.db_type
-            masked_uri = re.sub(r'://([^:]+):([^@]+)@', r'://\1:****@', settings.db_uri)
-            logging.info(f"Connecting to {db_type.upper()} with URI: {masked_uri}")
-            # Create adapter and client using the factory and settings
-            self._adapter = DatabaseAdapterFactory.create_adapter(db_type)
-            self._client = self._adapter.create_client(settings.db_uri, db_type=db_type)
-            # Verify connection
-            if not self._adapter.ping(self._client):
-                raise ConnectionError(f"Failed to ping {db_type} server. Please check connection URI and network connectivity.")
-            # Initialize database references
-            chatbot_db_name = os.getenv("MONGODB_CHATBOT_DATABASE_NAME", "chatbot_db")
-            self._db_chatbot = self._adapter.get_database(self._client, chatbot_db_name)
-            workflow_db_name = os.getenv("MONGODB_WORKFLOW_DATABASE_NAME", "npd_workflow_db")
-            self._db_workflow = self._adapter.get_database(self._client, workflow_db_name)
+            mongodb_uri = os.getenv("MONGODB_DATABASE_URI", "").strip()
+            if not mongodb_uri:
+                raise ValueError("MONGODB_DATABASE_URI environment variable is required")
+
+            # If an encoded URI is provided, decode it once so MongoClient gets a valid URI.
+            if "%" in mongodb_uri and "://" not in mongodb_uri:
+                mongodb_uri = unquote(mongodb_uri)
+            
+            self._client = MongoClient(
+                mongodb_uri,
+                server_api=ServerApi('1'),
+                tlsCAFile=certifi.where(),
+                maxPoolSize=50,
+                minPoolSize=0,
+                maxIdleTimeMS=45000,
+                waitQueueTimeoutMS=10000,
+                serverSelectionTimeoutMS=10000,  # 10 seconds
+                connectTimeoutMS=10000,          # 10 seconds
+                socketTimeoutMS=10000
+            )
+            
+            # Initialize instance variables for database references
+            self._db_chatbot = self._client["chatbot_db"]
+            
+            # Mark as initialized using class variable
             MongoDBSingleton._is_initialized = True
-            logging.info(f"✅ {db_type.upper()} connection initialized successfully (Singleton)")
-            logging.info(f"   Database endpoints - Chatbot: {chatbot_db_name}, Workflow: {workflow_db_name}")
-        except ValueError as e:
-            logging.error(f"❌ Configuration error: {e}")
-            self._client = None
-            self._adapter = None
-            MongoDBSingleton._is_initialized = False
-            raise
-        except ConnectionError as e:
-            logging.error(f"❌ Connection error: {e}")
-            self._client = None
-            self._adapter = None
-            MongoDBSingleton._is_initialized = False
-            raise
+            logging.info("✅ MongoDB connection initialized successfully (Singleton)")
         except Exception as e:
-            logging.error(f"❌ Unexpected error initializing database connection: {e}")
-            logging.error(f"   DB_TYPE: {os.getenv('DB_TYPE', 'mongodb')}")
-            logging.error(f"   Check that your connection URI is valid and the database is accessible.")
-            self._client = None
-            self._adapter = None
-            MongoDBSingleton._is_initialized = False
+            logging.error(f"❌ Error initializing MongoDB connection: {e}")
             raise
     
     @property
-    def client(self) -> Any:
-        """
-        Get the database client instance.
-        
-        Returns:
-            Database client instance (MongoClient for both MongoDB and DocumentDB)
-        """
+    def client(self) -> MongoClient:
+        """Get the MongoDB client instance."""
         if not MongoDBSingleton._is_initialized or self._client is None:
-            raise RuntimeError("Database client not initialized")
+            raise RuntimeError("MongoDB client not initialized")
         return self._client
     
     @property
     def chatbot_db(self):
-        """
-        Get the chatbot database instance.
-        
-        Returns:
-            Database instance for chatbot operations
-        """
+        """Get the chatbot database instance."""
         if not MongoDBSingleton._is_initialized or self._db_chatbot is None:
-            raise RuntimeError("Database client not initialized")
+            raise RuntimeError("MongoDB client not initialized")
         return self._db_chatbot
     
-    @property
-    def workflow_db(self):
-        """
-        Get the workflow database instance.
-        
-        Returns:
-            Database instance for workflow operations
-        """
-        if not MongoDBSingleton._is_initialized or self._db_workflow is None:
-            raise RuntimeError("Database client not initialized")
-        return self._db_workflow
-    
     def close(self):
-        """
-        Close the database connection gracefully.
-        Uses the adapter's close method to ensure proper cleanup.
-        Call this on application shutdown.
-        """
+        """Close the MongoDB connection. Call this on application shutdown."""
         print("🔧 close() method called!")
         with self._lock:
             print(f"🔧 _client exists: {self._client is not None}")
-            if self._client and self._adapter:
-                print("🔧 Closing database client...")
-                self._adapter.close(self._client)
+            if self._client:
+                print("🔧 Closing MongoDB client...")
+                self._client.close()
                 self._client = None
-                self._adapter = None
                 # Reset class variable
                 MongoDBSingleton._is_initialized = False
-                print("✅ Database connection closed gracefully")
-                logging.info("✅ Database connection closed gracefully")
-            else:
-                print("⚠️ Database client was already None")
-                
+                print("✅ MongoDB connection closed gracefully")
+                logging.info("✅ MongoDB connection closed gracefully")
+    
     @classmethod
     def reset_instance(cls):
         """
@@ -165,26 +115,17 @@ class MongoDBSingleton:
         WARNING: Only use this in test environments.
         """
         with cls._lock:
-            if cls._instance is not None:
-                if cls._instance._client is not None and cls._instance._adapter is not None:
-                    cls._instance._adapter.close(cls._instance._client)
-                cls._instance._adapter = None
+            if cls._instance is not None and cls._instance._client is not None:
+                cls._instance._client.close()
             cls._instance = None
             cls._is_initialized = False
 
 
 def get_mongodb_client() -> MongoDBSingleton:
     """
-    Get the database singleton instance.
-    
-    This function returns a singleton instance that provides access to either
-    MongoDB or AWS DocumentDB based on the DB_TYPE environment variable.
+    Factory function to get the MongoDB singleton instance.
     
     Returns:
-        MongoDBSingleton: The singleton instance with database connections
-        
-    Example:
-        >>> db = get_mongodb_client()
-        >>> chatbot_collection = db.chatbot_db["my_collection"]
+        MongoDBSingleton: The singleton MongoDB client instance
     """
     return MongoDBSingleton()

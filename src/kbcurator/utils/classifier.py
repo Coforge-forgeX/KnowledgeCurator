@@ -1,15 +1,9 @@
 from typing import Optional
-from agent_search.utils.azurecustomllm import AzureCustomLLM
-from agent_search.utils.prompt_builder import PromptBuilder
+from .azurecustomllm import AzureCustomLLM
+from .prompt_builder import PromptBuilder
 
-_llm_classifier = None
-
-def _get_classifier():
-    global _llm_classifier
-    if _llm_classifier is None:
-        _llm_classifier = AzureCustomLLM()
-    return _llm_classifier
-
+llm_classifier = AzureCustomLLM()
+ 
 async def classifier(user_prompt: str , sys_prompt: str, history : Optional[list|None] = None )-> str:
     """
     Classifies the user prompt based on the system prompt.
@@ -25,7 +19,7 @@ async def classifier(user_prompt: str , sys_prompt: str, history : Optional[list
     # sys_prompt = PromptBuilder.get_intent_prompt(user_prompt)
     # print(f"System_prompt", sys_prompt)
     # Use the LLM to classify the user prompt
-    classification = _get_classifier().invoke(input = user_prompt , sys_prompt = sys_prompt , history = history)
+    classification = llm_classifier.invoke(input = user_prompt , sys_prompt = sys_prompt , history = history)
     
     # if isinstance(classification, str):
     #     classification = classification.strip()
