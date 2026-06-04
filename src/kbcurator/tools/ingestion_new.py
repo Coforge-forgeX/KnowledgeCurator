@@ -41,6 +41,7 @@ from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.async_configs import BrowserConfig, CrawlerRunConfig, CacheMode, DefaultMarkdownGenerator
 from kbcurator.utils.azurecustomllm import AzureCustomLLM
+from kbcurator.utils.llm_helper import get_llm_response
 from kbcurator.utils.access_validation import validate_user_workspace_access
 from kbcurator.utils.request_context import request_var
 from kbcurator.utils.db import db
@@ -500,7 +501,6 @@ When handling relationships with timestamps:
             "history:", history[:10]
         )
         if knowledge_bases:
-            llm_summarize = AzureCustomLLM(temperature=0)
             results = {}
             kb_graph_refs = []
 
@@ -536,7 +536,7 @@ When handling relationships with timestamps:
                     results[kb] = response
                     kb_graph_refs.append(f"Knowledge Base: {kb}")
 
-            # Summarize the results using AzureCustomLLM
+            # Summarize the results using LLM Router
             summary_prompt = user_prompt
             
             for kb, resp in results.items():
@@ -548,9 +548,19 @@ When handling relationships with timestamps:
             summary_prompt += "\n---\nReferences:\n"
             for i, kb in enumerate(results.keys(), 1):
                 summary_prompt += f"[{i}] {kb}\n"
-            summary = llm_summarize._call(
-                input=summary_prompt
-            )
+            
+            # Use LLM Router with workspace_id
+            print(f"📝 [Multi-KB Summary] Using LLM Router for workspace_id={workspace_id}")
+            try:
+                ws_id = int(workspace_id) if workspace_id else None
+                if ws_id:
+                    summary = get_llm_response(workspace_id=ws_id, prompt=summary_prompt)
+                else:
+                    # Fallback: try to get from context or raise error
+                    raise ValueError("workspace_id is required for LLM calls")
+            except Exception as e:
+                print(f"❌ Error generating summary with LLM Router: {e}")
+                summary = f"Error generating summary: {str(e)}"
 
             
             
