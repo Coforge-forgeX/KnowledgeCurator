@@ -303,6 +303,17 @@ def generate_download_url_for_file(
 
 async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = None) -> LightRAG:
     data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+    
+    # Ensure the directory exists
+    os.makedirs(data_dir, exist_ok=True)
+    
+    print(f"[DEBUG] initialize_rag called with domain='{domain}', kb_name='{kb_name}'")
+    print(f"[DEBUG] Computed data_dir (working_dir): '{data_dir}'")
+    print(f"[DEBUG] data_dir exists: {os.path.exists(data_dir)}")
+    print(f"[DEBUG] data_dir is writable: {os.access(data_dir, os.W_OK) if os.path.exists(data_dir) else 'N/A'}")
+    print(f"[DEBUG] __file__ location: '{__file__}'")
+    print(f"[DEBUG] Current working directory: '{os.getcwd()}'")
+    
     lightrag_database = ''.join(char for char in f"{domain}{kb_name}" if char.isalpha())
     os.environ['NEO4J_DATABASE'] = lightrag_database
     print(''.join(char for char in f"{domain}{kb_name}" if char.isalpha()))
@@ -1329,10 +1340,18 @@ async def lightrag_indexing_tool(
             return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
  
         chunks = chunk_text(content, chunk_size=2000)
+        print(f"Total Chunks: {len(chunks)}")
+        print(f"[DEBUG] File path passed to LightRAG: '{file_path}'")
+        print(f"[DEBUG] file_path type: {type(file_path)}")
+        
+        # Ensure file_path uses forward slashes (for consistency across OS)
+        normalized_file_path = file_path.replace('\\', '/') if file_path else file_path
+        print(f"[DEBUG] Normalized file_path: '{normalized_file_path}'")
+        
         for idx, chunk in enumerate(chunks):
-            await rag.ainsert(input=chunk, file_paths=[file_path])
-            #await ctx.debug(f"Progress: {idx+1}/{len(chunks)}")
-        return {"status": "success", "file": file_path, "chunks": len(chunks)}
+            await rag.ainsert(input=chunk, file_paths=[normalized_file_path])
+            print(f"Chunk {idx+1}/{len(chunks)} indexed for: {normalized_file_path}")
+        return {"status": "success", "file": normalized_file_path, "chunks": len(chunks)}
     except Exception as e:
         return {"error": str(e)}    
  
@@ -1504,9 +1523,16 @@ async def upload_and_index_tool(
     # cause lock contention and misleading per-file indexing status timing.
     print("Starting background upload and indexing tasks for files:", file_names)
     print("length file_contents", len(file_contents))
+    print(f"[DEBUG] upload_path parameter: '{upload_path}'")
+    print(f"[DEBUG] container_name parameter: '{container_name}'")
+    print(f"[DEBUG] domain parameter: '{domain}'")
+    print(f"[DEBUG] kb_name parameter: '{kb_name}'")
+    
     queued_jobs = []
     for fname, fcontent in zip(file_names, file_contents):
         per_file_path = f"{upload_path}/{fname}" if upload_path and fname else None
+        print(f"[DEBUG] File '{fname}' -> path: '{per_file_path}'")
+        
         # Compute human-readable size with units for storage in file_tasks.file_size
         _bytes = _estimate_content_size_bytes(fcontent)
         estimated_size = _format_size_with_unit(_bytes)
@@ -1586,6 +1612,10 @@ async def upload_and_index_tool(
                     update_file_task_status(tid, "failed")
                     continue
 
+                print(f"[DEBUG] Calling lightrag_indexing_tool with file_path: '{fpath}'")
+                print(f"[DEBUG] upload_path was: '{upload_path}'")
+                print(f"[DEBUG] fname was: '{fname}'")
+                
                 result = await lightrag_indexing_tool(
                     container_name=container_name,
                     domain=domain,
