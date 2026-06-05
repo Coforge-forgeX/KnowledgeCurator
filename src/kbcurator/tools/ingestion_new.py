@@ -433,10 +433,6 @@ When handling relationships with timestamps:
 
 - **Integrity**:
     - Only cite references that are actual document files from which the information was extracted.
-
-- **Note**:
-    - Always give answer never mention Sorry, I'm not able to provide an answer to that question or no-context
-
     """
 
 # - **Continuity**: Maintain logical flow with the conversation history.
@@ -2873,12 +2869,23 @@ async def delete_by_doc_id(doc_id, domain: Optional[str] = None, kb_name: Option
         error_msg = f"Failed to delete document with doc_id '{doc_id}'. Please Verify the document ID exists and try again."
         return {"error": error_msg}  # Return error instead of None
 
-def _delete_orphaned_vdb_chunks(doc_id: str, workspace_name: str) -> int:
+def _delete_orphaned_vdb_chunks(doc_id: str, workspace_name: str) -> dict:
     """
-    Directly remove orphaned rows from LIGHTRAG_VDB_CHUNKS when LightRAG KV store
-    no longer holds the doc (adelete_by_doc_id returns not_found).
-    Returns total rows deleted across the table.
+    Remove orphaned rows for a doc across LIGHTRAG_VDB_CHUNKS, LIGHTRAG_VDB_ENTITY,
+    and LIGHTRAG_VDB_RELATION when LightRAG KV store no longer holds the doc
+    (adelete_by_doc_id returns not_found).
+
+    Strategy:
+      1. Look up chunk_ids + file_path from VDB_CHUNKS for the doc_id (before deleting).
+      2. Delete VDB_ENTITY/VDB_RELATION rows whose chunk_ids array overlaps.
+      3. Fallback by file_path for rows where the chunk row is already gone but
+         the entity/relation row still references the file (mirrors the orphan state
+         seen when delete previously only touched VDB_CHUNKS).
+      4. Delete VDB_CHUNKS rows for the doc_id last.
+
+    Returns dict with chunks_deleted, entities_deleted, relations_deleted.
     """
+    result = {"chunks_deleted": 0, "entities_deleted": 0, "relations_deleted": 0}
     try:
         conn = psycopg2.connect(
             host=os.environ["POSTGRES_HOST"],
@@ -2887,18 +2894,173 @@ def _delete_orphaned_vdb_chunks(doc_id: str, workspace_name: str) -> int:
             dbname=os.environ.get("POSTGRES_DATABASE") or os.environ.get("POSTGRESQL_DATABASE_DATABASE_2"),
         )
         cur = conn.cursor()
+
+        cur.execute(
+            "SELECT id, file_path FROM LIGHTRAG_VDB_CHUNKS WHERE full_doc_id = %s AND workspace = %s",
+            (doc_id, workspace_name),
+        )
+        chunk_rows = cur.fetchall()
+        chunk_ids = [r[0] for r in chunk_rows]
+        derived_file_path = chunk_rows[0][1] if chunk_rows else None
+
+        if chunk_ids:
+            cur.execute(
+                "DELETE FROM LIGHTRAG_VDB_ENTITY WHERE workspace = %s AND chunk_ids::text[] && %s::text[]",
+                (workspace_name, chunk_ids),
+            )
+            result["entities_deleted"] += cur.rowcount
+            cur.execute(
+                "DELETE FROM LIGHTRAG_VDB_RELATION WHERE workspace = %s AND chunk_ids::text[] && %s::text[]",
+                (workspace_name, chunk_ids),
+            )
+            result["relations_deleted"] += cur.rowcount
+
+        if derived_file_path:
+            cur.execute(
+                "DELETE FROM LIGHTRAG_VDB_ENTITY WHERE workspace = %s AND file_path = %s",
+                (workspace_name, derived_file_path),
+            )
+            result["entities_deleted"] += cur.rowcount
+            cur.execute(
+                "DELETE FROM LIGHTRAG_VDB_RELATION WHERE workspace = %s AND file_path = %s",
+                (workspace_name, derived_file_path),
+            )
+            result["relations_deleted"] += cur.rowcount
+
         cur.execute(
             "DELETE FROM LIGHTRAG_VDB_CHUNKS WHERE full_doc_id = %s AND workspace = %s",
             (doc_id, workspace_name),
         )
-        deleted = cur.rowcount
+        result["chunks_deleted"] = cur.rowcount
+
         conn.commit()
         cur.close()
         conn.close()
-        return deleted
+        return result
     except Exception as e:
         print(f"_delete_orphaned_vdb_chunks error doc_id={doc_id} workspace={workspace_name}: {e}")
-        return 0
+        result["error"] = str(e)
+        return result
+
+
+async def _delete_orphaned_neo4j_data(doc_id: str, workspace_name: str, rag: LightRAG) -> dict:
+    """
+    Delete orphaned Neo4j entities and relations for a document.
+    
+    When a document is not found in LightRAG's KV store but orphaned data exists in Neo4j,
+    this function removes all entities and relations with matching source_id.
+    
+    Returns counts of entities and relations deleted.
+    """
+    try:
+        graph_storage = rag.chunk_entity_relation_graph
+        
+        # Execute queries using Neo4j driver
+        entities_deleted = 0
+        relations_deleted = 0
+        
+        if hasattr(graph_storage, '_driver') and graph_storage._driver:
+            # Use async Neo4j driver session (no database param - uses default)
+            async with graph_storage._driver.session() as session:
+                # Delete entities linked to this document - collect first, then delete and return count
+                entity_query = f"""
+                MATCH (e:`{workspace_name}`)
+                WHERE e.source_id = $doc_id
+                WITH collect(e) as entities
+                FOREACH (node IN entities | DETACH DELETE node)
+                RETURN size(entities) as deleted_entities
+                """
+                
+                entity_result = await session.run(entity_query, doc_id=doc_id)
+                entity_records = await entity_result.data()
+                if entity_records:
+                    entities_deleted = entity_records[0].get('deleted_entities', 0)
+                
+                # Delete relations linked to this document - collect first, then delete and return count
+                relation_query = f"""
+                MATCH (a:`{workspace_name}`)-[r]->(b:`{workspace_name}`)
+                WHERE r.source_id = $doc_id
+                WITH collect(r) as relations
+                FOREACH (rel IN relations | DELETE rel)
+                RETURN size(relations) as deleted_relations
+                """
+                
+                relation_result = await session.run(relation_query, doc_id=doc_id)
+                relation_records = await relation_result.data()
+                if relation_records:
+                    relations_deleted = relation_records[0].get('deleted_relations', 0)
+        else:
+            print(f"WARNING: Neo4j driver not available for workspace {workspace_name}")
+        
+        return {
+            "entities_deleted": entities_deleted,
+            "relations_deleted": relations_deleted
+        }
+    except Exception as e:
+        print(f"_delete_orphaned_neo4j_data error doc_id={doc_id} workspace={workspace_name}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"entities_deleted": 0, "relations_deleted": 0, "error": str(e)}
+
+
+async def _delete_all_workspace_neo4j_data(workspace_name: str, rag: LightRAG) -> dict:
+    """
+    Delete ALL Neo4j entities and relations for an entire workspace.
+    
+    This is a "nuclear option" used when nodes lack source_id properties and cannot
+    be tracked to individual documents. Use with caution - this removes ALL graph data
+    for the workspace.
+    
+    Returns counts of entities and relations deleted.
+    """
+    try:
+        graph_storage = rag.chunk_entity_relation_graph
+        
+        entities_deleted = 0
+        relations_deleted = 0
+        
+        if hasattr(graph_storage, '_driver') and graph_storage._driver:
+            async with graph_storage._driver.session() as session:
+                # Delete all relations first (must happen before deleting nodes)
+                relation_query = f"""
+                MATCH (a:`{workspace_name}`)-[r]->(b:`{workspace_name}`)
+                WITH collect(r) as relations
+                FOREACH (rel IN relations | DELETE rel)
+                RETURN size(relations) as deleted_relations
+                """
+                
+                relation_result = await session.run(relation_query)
+                relation_records = await relation_result.data()
+                if relation_records:
+                    relations_deleted = relation_records[0].get('deleted_relations', 0)
+                
+                # Delete all entities (nodes)
+                entity_query = f"""
+                MATCH (e:`{workspace_name}`)
+                WITH collect(e) as entities
+                FOREACH (node IN entities | DETACH DELETE node)
+                RETURN size(entities) as deleted_entities
+                """
+                
+                entity_result = await session.run(entity_query)
+                entity_records = await entity_result.data()
+                if entity_records:
+                    entities_deleted = entity_records[0].get('deleted_entities', 0)
+                
+                print(f"WARNING: Deleted ALL Neo4j data for workspace {workspace_name}: {entities_deleted} entities, {relations_deleted} relations")
+        else:
+            print(f"WARNING: Neo4j driver not available for workspace {workspace_name}")
+        
+        return {
+            "entities_deleted": entities_deleted,
+            "relations_deleted": relations_deleted,
+            "workspace_cleared": True
+        }
+    except Exception as e:
+        print(f"_delete_all_workspace_neo4j_data error workspace={workspace_name}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"entities_deleted": 0, "relations_deleted": 0, "workspace_cleared": False, "error": str(e)}
 
 
 @mcp.tool()
@@ -2926,6 +3088,10 @@ async def delete_by_doc_ids(
     success_count = 0
     not_found_count = 0
     failed_count = 0
+    
+    # Track Neo4j cleanup effectiveness
+    neo4j_cleanup_attempted = 0
+    neo4j_cleanup_succeeded = 0
 
     print(
         f"DELETE_TRACE [{trace_id or 'n/a'}] delete_by_doc_ids:start "
@@ -2934,6 +3100,7 @@ async def delete_by_doc_ids(
 
     try:
         rag = await initialize_rag(domain=domain, kb_name=kb_name)
+        workspace_name = ''.join(c for c in f"{domain or ''}{kb_name or ''}" if c.isalpha())
 
         # Fast file-purge mode: skip expensive per-doc KG rebuild cycle.
         if skip_rebuild:
@@ -2973,13 +3140,29 @@ async def delete_by_doc_ids(
                     status_code = 404
 
                 if status_code == 404 or status == "not_found":
-                    # LightRAG KV store missing this doc — clean up orphaned VDB chunks directly.
-                    workspace_name = ''.join(c for c in f"{domain or ''}{kb_name or ''}" if c.isalpha())
-                    vdb_deleted = _delete_orphaned_vdb_chunks(doc_id, workspace_name)
-                    if vdb_deleted:
+                    # LightRAG KV store missing this doc — clean up orphaned VDB rows
+                    # (chunks + entity + relation) and Neo4j data directly.
+
+                    vdb_result = _delete_orphaned_vdb_chunks(doc_id, workspace_name)
+                    vdb_chunks = vdb_result.get('chunks_deleted', 0)
+                    vdb_entities = vdb_result.get('entities_deleted', 0)
+                    vdb_relations = vdb_result.get('relations_deleted', 0)
+
+                    neo4j_result = await _delete_orphaned_neo4j_data(doc_id, workspace_name, rag)
+                    neo4j_cleanup_attempted += 1
+
+                    neo4j_entities = neo4j_result.get('entities_deleted', 0)
+                    neo4j_relations = neo4j_result.get('relations_deleted', 0)
+
+                    if neo4j_entities > 0 or neo4j_relations > 0:
+                        neo4j_cleanup_succeeded += 1
+
+                    if vdb_chunks or vdb_entities or vdb_relations or neo4j_entities > 0 or neo4j_relations > 0:
                         print(
                             f"DELETE_TRACE [{trace_id or 'n/a'}] delete_by_doc_ids:orphan_cleanup "
-                            f"kb_name={kb_name} doc_id={doc_id} vdb_rows_deleted={vdb_deleted}"
+                            f"kb_name={kb_name} doc_id={doc_id} "
+                            f"vdb_chunks={vdb_chunks} vdb_entities={vdb_entities} vdb_relations={vdb_relations} "
+                            f"neo4j_entities={neo4j_entities} neo4j_relations={neo4j_relations}"
                         )
                         success_count += 1
                         status = "success"
@@ -3016,6 +3199,25 @@ async def delete_by_doc_ids(
                     f"DELETE_TRACE [{trace_id or 'n/a'}] delete_by_doc_ids:doc_exception "
                     f"kb_name={kb_name} doc_id={doc_id} error={str(e)}"
                 )
+
+        # Check if Neo4j cleanup failed for all documents (nodes lack source_id properties)
+        if neo4j_cleanup_attempted > 0 and neo4j_cleanup_succeeded == 0:
+            print(
+                f"WARNING: Neo4j cleanup returned 0 entities/relations for ALL {neo4j_cleanup_attempted} documents. "
+                f"This indicates nodes lack source_id properties. Triggering workspace-level cleanup..."
+            )
+            try:
+                workspace_cleanup_result = await _delete_all_workspace_neo4j_data(workspace_name, rag)
+                print(
+                    f"DELETE_TRACE [{trace_id or 'n/a'}] delete_by_doc_ids:workspace_neo4j_cleanup "
+                    f"kb_name={kb_name} workspace={workspace_name} "
+                    f"entities_deleted={workspace_cleanup_result.get('entities_deleted', 0)} "
+                    f"relations_deleted={workspace_cleanup_result.get('relations_deleted', 0)}"
+                )
+            except Exception as cleanup_error:
+                print(f"ERROR: Workspace-level Neo4j cleanup failed: {cleanup_error}")
+                import traceback
+                traceback.print_exc()
 
         summary = {
             "requested": len(doc_ids),
