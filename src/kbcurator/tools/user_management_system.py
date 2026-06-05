@@ -7,6 +7,8 @@ from sqlalchemy import func
 from kbcurator.utils.db import db
 from os import getenv
 import sys
+import threading
+import requests
 from kbcurator.utils.auth import create_jwt_token, verify_jwt_token, create_refresh_token, verify_refresh_token
 from kbcurator.utils.request_context import request_var
 from sqlalchemy import select, func as sql_func
@@ -1524,6 +1526,21 @@ def delete_workspace(workspace_id):
         except Exception as llm_config_error:
             print(f"[Post-commit] Failed to delete LLM configurations: {llm_config_error}")
             # Don't fail workspace deletion if LLM config cleanup fails, just log it
+        
+        # Fire-and-forget: delete AMS artifacts for this workspace in background
+        def _delete_ams_artifacts(ws_id):
+            try:
+                ams_base_url = getenv("AMS_BACKEND_URL", "https://amsstudio-backend-dev.azurewebsites.net/api")
+                resp = requests.post(
+                    f"{ams_base_url}/mt/delete_workspace",
+                    data={"workspace_id": ws_id},
+                    timeout=90,
+                )
+                print(f"[AMS Cleanup] workspace {ws_id}: status={resp.status_code}, body={resp.text[:200]}")
+            except Exception as ams_err:
+                print(f"[AMS Cleanup] Failed to delete AMS artifacts for workspace {ws_id}: {ams_err}")
+
+        threading.Thread(target=_delete_ams_artifacts, args=(workspace_id,), daemon=True).start()
         
         return {"response": "Workspace deleted (set inactive)"}
     except Exception as e:
