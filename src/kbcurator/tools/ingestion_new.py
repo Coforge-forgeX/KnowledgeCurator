@@ -1486,9 +1486,12 @@ async def upload_and_index_tool(
             if tid:
                 update_file_task_status(tid, "failed")
 
-    # Kick off one background coroutine per file
+    # Prepare one background worker that processes files sequentially.
+    # This avoids concurrent LightRAG writes to the same KB, which can
+    # cause lock contention and misleading per-file indexing status timing.
     print("Starting background upload and indexing tasks for files:", file_names)
     print("length file_contents", len(file_contents))
+    queued_jobs = []
     for fname, fcontent in zip(file_names, file_contents):
         per_file_path = f"{upload_path}/{fname}" if upload_path and fname else None
         # Compute human-readable size with units for storage in file_tasks.file_size
