@@ -1510,7 +1510,100 @@ async def upload_and_index_tool(
             "file_path": per_file_path,
             "task_id": tid,
         })
-        asyncio.create_task(background_upload_then_index_single(fname, fcontent, per_file_path, tid))
+
+        queued_jobs.append((fname, fcontent, per_file_path, tid))
+
+    async def background_upload_all_then_index_sequentially(jobs):
+        # Phase 1: Upload ALL files in parallel
+        async def upload_single(fname, fcontent, fpath, tid):
+            try:
+                if not tid:
+                    print(f"No task id created for file {fname}; aborting upload.")
+                    return (fname, fcontent, fpath, tid, False)
+
+                update_file_task_status(tid, "uploading")
+                upload_result = await upload_files_and_get_urls(
+                    container_name,
+                    upload_path or "",
+                    [fname],
+                    [fcontent],
+                    expiry_years=expiry_years,
+                )
+
+                per_file_error = False
+                if isinstance(upload_result, dict):
+                    if upload_result.get("error"):
+                        per_file_error = True
+                    else:
+                        v = upload_result.get(fname)
+                        if isinstance(v, str) and v.startswith("Error:"):
+                            per_file_error = True
+
+                if per_file_error:
+                    update_file_task_status(tid, "failed")
+                    print("Upload failed for task_id:", tid, "result:", upload_result)
+                    return (fname, fcontent, fpath, tid, False)
+
+                update_file_task_status(tid, "uploaded")
+                print("Upload complete for task_id:", tid)
+                return (fname, fcontent, fpath, tid, True)
+            except Exception as e:
+                tb = traceback.format_exc()
+                print(f"Upload error for task_id {tid}: {e}\n{tb}")
+                if tid:
+                    update_file_task_status(tid, "failed")
+                return (fname, fcontent, fpath, tid, False)
+
+        upload_tasks = [
+            upload_single(fname, fcontent, fpath, tid)
+            for fname, fcontent, fpath, tid in jobs
+        ]
+        upload_results = await asyncio.gather(*upload_tasks)
+
+        # Phase 2: Index only successfully uploaded files, one at a time
+        for fname, fcontent, fpath, tid, upload_ok in upload_results:
+            if not upload_ok:
+                continue
+            try:
+                update_file_task_status(tid, "indexing")
+                if not fpath:
+                    update_file_task_status(tid, "failed")
+                    continue
+
+                result = await lightrag_indexing_tool(
+                    container_name=container_name,
+                    domain=domain,
+                    kb_name=kb_name,
+                    file_path=fpath,
+                )
+
+                if isinstance(result, dict) and result.get("error"):
+                    error_msg = str(result.get("error"))
+                    if (
+                        'already exists' in error_msg
+                        or 'No new unique documents' in error_msg
+                        or 'No documents to process' in error_msg
+                    ):
+                        print("File indexing already completed or nothing to index for task_id:", tid)
+                        update_file_task_status(tid, "indexed")
+                    else:
+                        print("Indexing failed for task_id:", tid, "error:", error_msg)
+                        update_file_task_status(tid, "failed")
+                else:
+                    update_file_task_status(tid, "indexed")
+                    print("Indexing complete for task_id:", tid)
+
+            except Exception as e:
+                tb = traceback.format_exc()
+                error_msg = str(e) or "Unknown error (exception has no message)"
+                if 'already exists' in error_msg or 'No new unique documents' in error_msg or 'No documents to process' in error_msg:
+                    print("File indexing already completed or nothing to index for task_id:", tid)
+                    update_file_task_status(tid, "indexed")
+                else:
+                    print(f"Error during background indexing: {error_msg}\nTraceback:\n{tb}")
+                    update_file_task_status(tid, "failed")
+
+    asyncio.create_task(background_upload_all_then_index_sequentially(queued_jobs))
 
     # Immediately inform client that tasks started (avoid MCP timeout)
     await ctx.debug("Upload(s) started in background. Use the returned task_ids to poll status.")
