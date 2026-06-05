@@ -13,6 +13,15 @@ from lightrag.kg.shared_storage import initialize_share_data, initialize_pipelin
 import aiohttp
 from kbcurator.server.server import mcp
 import psycopg2
+
+# Log LightRAG version for debugging
+try:
+    import pkg_resources
+    lightrag_version = pkg_resources.get_distribution("lightrag-hku").version
+    print(f"[LIGHTRAG VERSION] lightrag-hku {lightrag_version}")
+except Exception as e:
+    print(f"[LIGHTRAG VERSION] Could not determine version: {e}")
+
 from azure.storage.blob import BlobServiceClient
 from PyPDF2 import PdfReader
 from docx import Document
