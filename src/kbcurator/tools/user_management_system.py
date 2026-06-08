@@ -1637,6 +1637,7 @@ def fetch_workspace_details(workspace_id) -> ToolResult:
                     agents.append(agent_dict)
 
                 return ToolResult(
+                    content=[],
                     structured_content={
                     "workspace": ws_info,
                     "industry": None,
