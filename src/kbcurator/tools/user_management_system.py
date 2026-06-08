@@ -1023,11 +1023,22 @@ def create_workspace(payload):
         # Always create a workspace-level default Azure configuration (after commit).
         # This guarantees every new workspace has a usable default provider selection.
         try:
+            # Determine the default model from provider credentials
+            default_model = None
+            try:
+                azure_creds = workspace_provider_credentials_service.get_provider_credentials(workspace_id, 'azure')
+                if azure_creds and azure_creds.get('model'):
+                    default_model = azure_creds['model']
+            except Exception:
+                pass
+
             agent_llm_config_service.create_or_update_configuration(
                 workspace_id=workspace_id,
                 agent_id=None,
                 configured_providers=['azure'],
+                configured_models={'azure': [default_model]} if default_model else None,
                 current_provider='azure',
+                current_model=default_model,
                 user_id=creator_id,
             )
             print(f"[Post-commit] Created workspace default Azure LLM configuration for workspace {workspace_id}")
@@ -1047,6 +1058,23 @@ def create_workspace(payload):
                     user_id=creator_id
                 )
                 print(f"[Post-commit] Created LLM configurations for {len(created_configs)} agents in workspace {workspace_id}")
+
+                # Populate model_assignments so the UI shows agents for the default model
+                try:
+                    azure_creds = workspace_provider_credentials_service.get_provider_credentials(workspace_id, 'azure')
+                    default_model = azure_creds.get('model') if azure_creds else None
+                    if default_model:
+                        workspace_provider_credentials_service.set_model_assignments(
+                            workspace_id=workspace_id,
+                            provider_name='azure',
+                            model_name=default_model,
+                            agent_ids=agent_ids,
+                            user_id=creator_id,
+                        )
+                        print(f"[Post-commit] Set model_assignments for '{default_model}' with {len(agent_ids)} agents")
+                except Exception as ma_error:
+                    print(f"[Post-commit] Failed to set model_assignments: {ma_error}")
+
             except Exception as agent_llm_config_error:
                 print(f"[Post-commit] Failed to create agent LLM configurations: {agent_llm_config_error}")
                 # Don't fail workspace creation if LLM config fails, just log it
@@ -1527,6 +1555,34 @@ def delete_workspace(workspace_id):
             print(f"[Post-commit] Failed to delete LLM configurations: {llm_config_error}")
             # Don't fail workspace deletion if LLM config cleanup fails, just log it
         
+        # Delete workflow artifacts and job states from npd_workflow_db
+        def _delete_workflow_data(ws_id):
+            try:
+                from common_adapters.configurableAI.llm_router_config_store import _get_mongo_client
+                client = _get_mongo_client()
+                db_name = getenv("MONGODB_WORKFLOW_DATABASE_NAME", "npd_workflow_db")
+                workflow_db = client[db_name]
+
+                jobs_collection = workflow_db[getenv("WORKFLOW_COLLECTION_NAME", "workflow_jobs")]
+                artifacts_collection = workflow_db[getenv("WORKFLOW_ARTIFACT_COLLECTION_NAME", "workflow_artifacts")]
+
+                # Get all job_ids for this workspace
+                job_docs = jobs_collection.find({"workspace_id": str(ws_id)}, {"job_id": 1, "_id": 0})
+                job_ids = [doc["job_id"] for doc in job_docs if doc.get("job_id")]
+
+                # Delete artifacts for those jobs
+                if job_ids:
+                    art_result = artifacts_collection.delete_many({"job_id": {"$in": job_ids}})
+                    print(f"[Workflow Cleanup] Deleted {art_result.deleted_count} artifact docs for workspace {ws_id}")
+
+                # Delete workflow job states
+                jobs_result = jobs_collection.delete_many({"workspace_id": str(ws_id)})
+                print(f"[Workflow Cleanup] Deleted {jobs_result.deleted_count} workflow jobs for workspace {ws_id}")
+            except Exception as wf_err:
+                print(f"[Workflow Cleanup] Failed for workspace {ws_id}: {wf_err}")
+
+        threading.Thread(target=_delete_workflow_data, args=(workspace_id,), daemon=True).start()
+
         # Fire-and-forget: delete AMS artifacts for this workspace in background
         def _delete_ams_artifacts(ws_id):
             try:
