@@ -62,5 +62,47 @@ class WorkspaceProviderCredentialsService:
             user_id=user_id,
         )
 
+    def remove_model_from_provider(
+        self,
+        workspace_id: int,
+        provider_name: str,
+        model_name: str,
+        user_id: Optional[int] = None,
+    ) -> bool:
+        return llm_router_config_store.remove_model_from_provider(
+            workspace_id=workspace_id,
+            provider_name=provider_name,
+            model_name=model_name,
+            user_id=user_id,
+        )
+
+    def set_model_assignments(
+        self,
+        workspace_id: int,
+        provider_name: str,
+        model_name: str,
+        agent_ids: list,
+        user_id: Optional[int] = None,
+    ) -> None:
+        return llm_router_config_store.set_model_assignments(
+            workspace_id=workspace_id,
+            provider_name=provider_name,
+            model_name=model_name,
+            agent_ids=agent_ids,
+            user_id=user_id,
+        )
+
+    def get_model_assignments(
+        self,
+        workspace_id: int,
+        provider_name: str,
+        model_name: str,
+    ) -> list:
+        return llm_router_config_store.get_model_assignments(
+            workspace_id=workspace_id,
+            provider_name=provider_name,
+            model_name=model_name,
+        )
+
 
 workspace_provider_credentials_service = WorkspaceProviderCredentialsService()

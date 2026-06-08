@@ -21,14 +21,18 @@ class AgentLLMConfigurationService:
         workspace_id: int,
         agent_id: Optional[int] = None,
         configured_providers: Optional[List[str]] = None,
+        configured_models: Optional[Dict] = None,
         current_provider: Optional[str] = None,
+        current_model: Optional[str] = None,
         user_id: Optional[int] = None,
     ) -> Dict:
         return llm_router_config_store.create_or_update_configuration(
             workspace_id=workspace_id,
             agent_id=agent_id,
             configured_providers=configured_providers,
+            configured_models=configured_models,
             current_provider=current_provider,
+            current_model=current_model,
             user_id=user_id,
         )
 
@@ -37,12 +41,14 @@ class AgentLLMConfigurationService:
         workspace_id: int,
         provider: str,
         agent_id: Optional[int] = None,
+        model: Optional[str] = None,
         user_id: Optional[int] = None,
     ) -> Dict:
         return llm_router_config_store.switch_provider(
             workspace_id=workspace_id,
             provider=provider,
             agent_id=agent_id,
+            model=model,
             user_id=user_id,
         )
 
@@ -116,6 +122,24 @@ class AgentLLMConfigurationService:
     def delete_workspace_configurations(self, workspace_id: int, user_id: Optional[int] = None) -> int:
         return llm_router_config_store.delete_workspace_configurations(
             workspace_id=workspace_id,
+            user_id=user_id,
+        )
+
+    def add_model_to_agent(
+        self,
+        workspace_id: int,
+        provider: str,
+        model: str,
+        agent_id: Optional[int] = None,
+        set_as_current: bool = False,
+        user_id: Optional[int] = None,
+    ) -> Dict:
+        return llm_router_config_store.add_model_to_agent(
+            workspace_id=workspace_id,
+            provider=provider,
+            model=model,
+            agent_id=agent_id,
+            set_as_current=set_as_current,
             user_id=user_id,
         )
 
