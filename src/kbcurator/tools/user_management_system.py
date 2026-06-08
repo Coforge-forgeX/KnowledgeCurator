@@ -35,6 +35,7 @@ from kbcurator.utils.constants import DefaultValue, Role, WorkspaceType
 from kbcurator.services.agent_llm_configuration_service import agent_llm_config_service
 from kbcurator.services.workspace_provider_credentials_service import workspace_provider_credentials_service
 
+from fastmcp.tools.tool import ToolResult
 
 @mcp.tool()
 @require_auth_async
@@ -1552,7 +1553,7 @@ def delete_workspace(workspace_id):
 
 @mcp.tool()
 @require_auth
-def fetch_workspace_details(workspace_id):
+def fetch_workspace_details(workspace_id) -> ToolResult:
     '''
     Fetch all information about a workspace, including master table, mappings, and all tool/agent/user details.
     Args:
@@ -1635,7 +1636,8 @@ def fetch_workspace_details(workspace_id):
                     agent_dict['type'] = 'agent'
                     agents.append(agent_dict)
 
-                return {
+                return ToolResult(
+                    structured_content={
                     "workspace": ws_info,
                     "industry": None,
                     "industry_name": None,
@@ -1646,7 +1648,7 @@ def fetch_workspace_details(workspace_id):
                     "agents": agents,
                     "users": [],
                     "knowledge_bases": []
-                }
+                })
             else:
                 return {"error": "Workspace not found or inactive"}
 
