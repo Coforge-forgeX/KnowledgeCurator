@@ -178,6 +178,245 @@ List providers available to an agent with their configured models.
 
 Smoke-test the active LLM with a simple prompt.
 
+---
+
+## Technical Deep Dive — Code Flow & Internals
+
+This section explains how the system works end-to-end for technical leads reviewing the architecture.
+
+### System Components
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  FRONTEND (Forge-X-Web)                                                       │
+│  src/components/UserManagement/LLMConfigManager.jsx  — Table UI               │
+│  src/components/UserManagement/LLMConfigDialog.jsx   — Add/Edit modal         │
+│  src/config/workspace/workspaceListMcp.jsx           — API layer (MCP calls)  │
+└──────────────────┬───────────────────────────────────────────────────────────┘
+                   │ MCP Tool Calls (via SSE transport)
+                   ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  BACKEND — KnowledgeCurator (MCP Server)                                      │
+│  src/kbcurator/tools/llm_router_tool.py              — Tool handlers          │
+│  src/kbcurator/services/                                                      │
+│    workspace_provider_credentials_service.py         — Credential facade      │
+│    agent_llm_configuration_service.py                — Agent config facade    │
+└──────────────────┬───────────────────────────────────────────────────────────┘
+                   │ Direct method calls
+                   ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  SHARED LIBRARY — CommonAdapters (forgexpackages)                             │
+│  src/common_adapters/configurableAI/                                          │
+│    llm_router_config_store.py    — MongoDB CRUD (single source of truth)      │
+│    llm_router.py                 — Runtime manager factory + cache             │
+│    configurable_ai_manager.py    — Provider abstraction (Azure/OpenAI SDK)     │
+└──────────────────┬───────────────────────────────────────────────────────────┘
+                   │ PyMongo
+                   ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  MongoDB Atlas — Database: llm_configs, Collection: workspace_configs         │
+│  One document per workspace (keyed by workspace_id unique index)              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Flow 1: Admin Adds a Model (e.g., adding `claude-sonnet-4` for KB Curator & PO Agent)
+
+```
+Frontend                    Backend (llm_router_tool.py)         Config Store (MongoDB)
+────────                    ───────────────────────────          ──────────────────────
+1. User fills dialog:       
+   provider: "quasar"       
+   model: "claude-sonnet-4" 
+   agent_ids: [1, 2]        
+   endpoint, api_key         
+                            
+2. callMcpTool(             
+   "admin_configure_llm_    
+    provider", payload)     
+         │                  
+         ▼                  
+                            3. Check is_admin(user_id, workspace_id)
+                            4. Determine: is_new_provider? (check existing creds)
+                            5. Merge config: only override provided fields
+                            6. Validate credentials (test LLM call)
+                            7. upsert_provider_credentials()
+                            │                                    ┌─ $set provider_credentials.quasar
+                            │                                    │  (api_key, endpoint, model,
+                            │                                    │   available_models appended)
+                            ▼                                    └──────────────────────────────
+                            8. set_model_assignments(             ┌─ Read full model_assignments dict
+                               provider="quasar",                │  Add key: "claude-sonnet-4": [1,2]
+                               model="claude-sonnet-4",          │  $set entire dict back
+                               agent_ids=[1, 2])                 │  (avoids dot-notation issues)
+                            │                                    └──────────────────────────────
+                            ▼
+                            9. For each agent_id in [1, 2]:
+                               add_model_to_agent(               ┌─ Read agent_configs.1
+                                 provider="quasar",              │  Append "quasar" to configured_providers
+                                 model="claude-sonnet-4",        │  Append "claude-sonnet-4" to
+                                 agent_id=1,                     │    configured_models.quasar
+                                 set_as_current=True)            │  Set current_provider="quasar"
+                                                                 │  Set current_model="claude-sonnet-4"
+                                                                 │  $set agent_configs.1 = payload
+                                                                 └──────────────────────────────
+                            10. invalidate_llm_cache()
+                            11. Return success response
+         │
+         ▼
+3. fetchLLM() → callMcpTool("admin_list_llm_providers")
+4. Re-render table with updated data
+```
+
+### Flow 2: Admin Lists Configurations (Table Load)
+
+```
+Frontend                    Backend                              Config Store
+────────                    ───────                              ────────────
+1. getLLMConfigurationList  
+   ({workspace_id: 892})    
+         │                  
+         ▼                  
+                            2. list_workspace_providers()         → Read provider_credentials
+                            3. get_workspace_configurations()     → Read agent_configs
+                            
+                            4. For each provider:
+                               For each model in available_models:
+                                 a. Check model_assignments[model] → agent_ids
+                                 b. If model_assignments exists for this model:
+                                      Use it directly (new behavior)
+                                 c. Else (legacy fallback):
+                                      Scan agent_configs for agents with 
+                                      this model in configured_models[provider]
+                                 d. Build row: {provider, model, endpoint,
+                                              agents_enabled, ...}
+                            
+                            5. Return: configured_providers[] (one row per model)
+         │
+         ▼
+6. Render table: each row = one model
+   Columns: Provider | Model | Endpoint | API Version | Agents | Actions
+```
+
+### Flow 3: Agent Answers a User Query (Runtime)
+
+```
+Any Agent Backend           common_adapters/llm_router.py       Config Store
+─────────────────           ─────────────────────────────       ────────────
+1. manager = get_configured_llm_manager(
+     workspace_id=892, agent_id=1)
+         │
+         ▼
+                            2. Check in-memory cache (_manager_cache)
+                               Key: "892:1"
+                               If cached → return immediately (O(1))
+                            
+                            3. Cache miss:
+                               a. get_effective_configuration(892, 1)
+                                  → Read agent_configs.1 from MongoDB
+                                  → Fallback to __workspace_default__ if missing
+                               
+                               b. Extract:
+                                  current_provider = "quasar"
+                                  current_model = "claude-sonnet-4"
+                                  configured_providers = ["azure", "quasar"]
+                               
+                               c. For each configured provider:
+                                  build_config_dict(892, provider, model_override)
+                                  → Reads provider_credentials.{provider}
+                                  → Resolves deployment_name from available_models
+                                  → Returns: {api_key, endpoint, model, ...}
+                               
+                               d. manager.configure_provider(provider, config)
+                                  → Initializes OpenAI/Azure SDK client
+                               
+                               e. manager.set_current_provider("quasar")
+                               
+                               f. Cache: _manager_cache["892:1"] = manager
+         │
+         ▼
+2. response = await manager.generate_text_async(prompt)
+   → Uses quasar/claude-sonnet-4 SDK client
+   → Returns LLM response text
+```
+
+### Flow 4: Workspace Creation (Default Config Bootstrap)
+
+```
+user_management_system.py              Config Store
+─────────────────────────              ────────────
+1. create_workspace()
+   → PostgreSQL: insert workspace row
+   → Commit transaction
+
+2. Seed Azure credentials:
+   → Read env: AZURE_OPENAI_LLM_MODEL_*
+   → upsert_provider_credentials(                  $set provider_credentials.azure = {
+       provider="azure",                              api_key, endpoint, model: "gpt-4.1",
+       model="gpt-4.1", ...)                          available_models: [{...}],
+                                                      model_assignments: {} }
+
+3. Create workspace default:
+   → create_or_update_configuration(               $set agent_configs.__workspace_default__ = {
+       agent_id=None,                                 configured_providers: ["azure"],
+       configured_providers=["azure"],                configured_models: {azure: ["gpt-4.1"]},
+       current_provider="azure",                      current_provider: "azure",
+       current_model="gpt-4.1")                       current_model: "gpt-4.1" }
+
+4. Bulk-create agent configs:
+   → bulk_create_agent_configurations(             For each agent_id in [1,2,3,5,6]:
+       agent_ids=[1,2,3,5,6],                       $set agent_configs.{id} = {
+       configured_providers=["azure"],                configured_providers: ["azure"],
+       current_provider="azure")                      configured_models: {azure: ["gpt-4.1"]},
+                                                      current_provider: "azure",
+                                                      current_model: "gpt-4.1" }
+
+5. Set model_assignments:
+   → set_model_assignments(                        Read model_assignments dict
+       provider="azure",                           Set: {"gpt-4.1": [1,2,3,5,6]}
+       model="gpt-4.1",                            $set provider_credentials.azure.model_assignments
+       agent_ids=[1,2,3,5,6])
+```
+
+### Key Design Decisions & Rationale
+
+| Decision | Rationale |
+|----------|-----------|
+| **Single MongoDB document per workspace** | Avoids joins; all config for a workspace is in one atomic read. Indexed by `workspace_id` (unique). |
+| **`model_assignments` in provider_credentials** | Decouples UI display (which agents show under a model) from runtime config. Allows many-to-many without overwriting. |
+| **`configured_models` in agent_configs** | Tracks which models an agent has access to (for switching). Separate from what's currently active. |
+| **`current_provider` + `current_model`** | Single point of truth for runtime — no ambiguity about which LLM an agent uses. |
+| **Read-modify-write for model_assignments** | MongoDB dot notation breaks on model names with dots (e.g., `gpt-4.1`). Full dict read/write avoids this. |
+| **Azure is immutable default** | Guarantees every agent always has a fallback LLM. Prevents accidental lockout. |
+| **In-memory cache with explicit invalidation** | Avoids MongoDB round-trip on every LLM call. Cache key: `{workspace_id}:{agent_id}`. |
+| **Credential validation before storage** | Prevents storing broken configs that would cause runtime failures. |
+| **Service layer (thin facades)** | `workspace_provider_credentials_service` and `agent_llm_configuration_service` decouple KnowledgeCurator from `common_adapters` internals. |
+
+### Potential Optimization Areas
+
+| Area | Current State | Potential Improvement |
+|------|--------------|----------------------|
+| **MongoDB reads in list** | `admin_list` reads full doc + iterates all agents | Could use aggregation pipeline for projection |
+| **Credential validation** | Makes a real LLM call on every save | Could cache validated credentials for N minutes |
+| **Cache granularity** | One cache entry per workspace:agent | Consider LRU eviction for large deployments |
+| **Bulk agent updates** | Iterates and writes individually | Could batch into single `$set` with multiple agent keys |
+| **model_assignments write** | Read-modify-write (2 DB ops) | Could use MongoDB array operators if dot issue is solved differently |
+| **Available models list** | Only grows (never cleaned up on model removal from all agents) | `remove_model_from_provider` handles this, but orphan entries possible |
+
+### File Map
+
+| File | Role |
+|------|------|
+| `forgexpackages/src/common_adapters/configurableAI/llm_router_config_store.py` | Core MongoDB CRUD — all data operations |
+| `forgexpackages/src/common_adapters/configurableAI/llm_router.py` | Runtime: `get_configured_llm_manager()` + cache |
+| `forgexpackages/src/common_adapters/configurableAI/configurable_ai_manager.py` | Provider abstraction (OpenAI SDK wrapper) |
+| `KnowledgeCurator/src/kbcurator/tools/llm_router_tool.py` | MCP tool handlers (admin + user tools) |
+| `KnowledgeCurator/src/kbcurator/tools/user_management_system.py` | Workspace creation (seeds default config) |
+| `KnowledgeCurator/src/kbcurator/services/workspace_provider_credentials_service.py` | Thin facade over config store (credentials) |
+| `KnowledgeCurator/src/kbcurator/services/agent_llm_configuration_service.py` | Thin facade over config store (agent configs) |
+| `Forge-X-Web/src/components/UserManagement/LLMConfigManager.jsx` | Frontend table component |
+| `Forge-X-Web/src/components/UserManagement/LLMConfigDialog.jsx` | Frontend add/edit modal |
+| `Forge-X-Web/src/config/workspace/workspaceListMcp.jsx` | Frontend API layer |
+
 ## Architecture
 
 ```
