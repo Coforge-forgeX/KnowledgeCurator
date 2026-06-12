@@ -15,7 +15,7 @@ from kbcurator.utils.classifier import classifier
 from kbcurator.utils.mcp_service_client import MCPServiceClient
 from kbcurator.server.server import mcp
 from kbcurator.server.main import session
-from kbcurator.utils.helpers import evaluate_user_input
+from kbcurator.utils.helpers import evaluate_user_input, workspace_id_to_alpha
 import difflib
 from kbcurator.utils.chatbot_context import ChatbotContext
 import re
@@ -680,97 +680,84 @@ class Chatbot:
         print(f"DEBUG: _find_orphaned_neo4j_docs called for workspace_id={workspace_id}, doc_ids={'None' if doc_ids is None else f'{len(doc_ids)} items'}")
         try:
             # Construct workspace name same way as LightRAG does
-            if role_id and str(role_id) != "34" and workspace_id:
-                digit_map = {
-                    '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
-                    '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
-                }
-                result = []
-                for c in str(workspace_id):
-                    if c.isalpha():
-                        result.append(c)
-                    elif c.isdigit():
-                        result.append(digit_map[c])
-                workspace_id_alpha = ''.join(result)
-                kb_name = f"{self.sub_industry}/{workspace_id_alpha}"
-            else:
+            from kbcurator.utils.mcp_service_client import MCPServiceClient
+            if  workspace_id and MCPServiceClient()._is_kg_workspace(workspace_id) :
                 kb_name = self.sub_industry
+            else:
+                workspace_id_alpha = workspace_id_to_alpha(workspace_id)
+                kb_name = f"{self.sub_industry}/{workspace_id_alpha}"
             
             workspace_name = ''.join(char for char in f"{self.industry}{kb_name}" if char.isalpha())
             
             print(f"DEBUG: Constructed workspace_name={workspace_name} from workspace_id={workspace_id}")
+
             
-            # Access Neo4j directly without full LightRAG initialization
-            from neo4j import AsyncGraphDatabase
+            # Access Neo4j using the Neo4jDriver class
+            from kbcurator.services.neo4j_driver import Neo4jDriver
             import os
             import psycopg2
             
-            neo4j_uri = os.environ.get("NEO4J_URI", "neo4j://20.55.248.225:7687")
-            neo4j_user = os.environ.get("NEO4J_USERNAME", "neo4j")
-            neo4j_password = os.environ.get("NEO4J_PASSWORD", "")
-            
-            print(f"DEBUG: Connecting to Neo4j at {neo4j_uri}")
+            print(f"DEBUG: Connecting to Neo4j using Neo4jDriver")
             
             found_doc_ids = []
             
-            driver = AsyncGraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+            driver = Neo4jDriver()
             try:
-                print(f"DEBUG: Neo4j driver created, opening session...")
-                async with driver.session() as session:
-                    # If doc_ids provided, search for specific matches
-                    if doc_ids:
-                        print(f"DEBUG: Searching for specific doc_ids in workspace {workspace_name}")
-                        query = f"""
-                        MATCH (n:`{workspace_name}`)
-                        WHERE n.source_id IN $doc_ids
-                        RETURN DISTINCT n.source_id as source_id
-                        """
-                        result = await session.run(query, doc_ids=doc_ids)
+                await driver.connect()
+                print(f"DEBUG: Neo4j driver connected, executing queries...")
+                
+                # If doc_ids provided, search for specific matches
+                if doc_ids:
+                    print(f"DEBUG: Searching for specific doc_ids in workspace {workspace_name}")
+                    query = f"""
+                    MATCH (n:`{workspace_name}`)
+                    WHERE n.source_id IN $doc_ids
+                    RETURN DISTINCT n.source_id as source_id
+                    """
+                    records = await driver.execute_read_query(query, {"doc_ids": doc_ids})
+                else:
+                    # No doc_ids: get ALL documents in Neo4j for orphan cleanup
+                    print(f"DEBUG: Searching for ALL documents in workspace {workspace_name}")
+                    query = f"""
+                    MATCH (n:`{workspace_name}`)
+                    WHERE n.source_id IS NOT NULL AND n.source_id <> ''
+                    RETURN DISTINCT n.source_id as source_id
+                    LIMIT 1000
+                    """
+                    print(f"DEBUG: Executing Neo4j query: {query[:200]}...")
+                    records = await driver.execute_read_query(query)
+                
+                print(f"DEBUG: Neo4j query executed, processing data...")
+                
+                print(f"DEBUG: Neo4j query returned {len(records)} records for workspace {workspace_name}")
+                
+                for record in records:
+                    source_id = record.get('source_id')
+                    if source_id and source_id.startswith('doc-'):
+                        found_doc_ids.append(source_id)
+                
+                print(f"DEBUG: Found {len(found_doc_ids)} doc_ids with 'doc-' prefix in Neo4j workspace {workspace_name}")
+                
+                # CRITICAL: If no source_ids found but we're in orphan cleanup mode (doc_ids=None),
+                # check if there are ANY nodes at all in this workspace
+                if not found_doc_ids and doc_ids is None:
+                    print(f"DEBUG: No source_ids found, checking for ANY nodes in workspace {workspace_name}...")
+                    count_query = f"""
+                    MATCH (n:`{workspace_name}`)
+                    RETURN count(n) as node_count
+                    """
+                    count_records = await driver.execute_read_query(count_query)
+                    node_count = count_records[0].get('node_count', 0) if count_records else 0
+                    print(f"DEBUG: Found {node_count} total nodes without source_id in workspace {workspace_name}")
+                    
+                    if node_count > 0:
+                        # These are orphaned nodes without source_id - mark for complete workspace cleanup
+                        print(f"WARNING: Found {node_count} orphaned nodes in Neo4j workspace {workspace_name} without source_id property!")
+                        print(f"WARNING: These nodes cannot be tracked to specific documents. Recommend manual cleanup.")
+                        # Return a special marker to indicate workspace-level cleanup needed
+                        found_doc_ids_to_return = ['__WORKSPACE_CLEANUP_NEEDED__']
                     else:
-                        # No doc_ids: get ALL documents in Neo4j for orphan cleanup
-                        print(f"DEBUG: Searching for ALL documents in workspace {workspace_name}")
-                        query = f"""
-                        MATCH (n:`{workspace_name}`)
-                        WHERE n.source_id IS NOT NULL AND n.source_id <> ''
-                        RETURN DISTINCT n.source_id as source_id
-                        LIMIT 1000
-                        """
-                        print(f"DEBUG: Executing Neo4j query: {query[:200]}...")
-                        result = await session.run(query)
-                    
-                    print(f"DEBUG: Neo4j query executed, fetching data...")
-                    records = await result.data()
-                    
-                    print(f"DEBUG: Neo4j query returned {len(records)} records for workspace {workspace_name}")
-                    
-                    for record in records:
-                        source_id = record.get('source_id')
-                        if source_id and source_id.startswith('doc-'):
-                            found_doc_ids.append(source_id)
-                    
-                    print(f"DEBUG: Found {len(found_doc_ids)} doc_ids with 'doc-' prefix in Neo4j workspace {workspace_name}")
-                    
-                    # CRITICAL: If no source_ids found but we're in orphan cleanup mode (doc_ids=None),
-                    # check if there are ANY nodes at all in this workspace
-                    if not found_doc_ids and doc_ids is None:
-                        print(f"DEBUG: No source_ids found, checking for ANY nodes in workspace {workspace_name}...")
-                        count_query = f"""
-                        MATCH (n:`{workspace_name}`)
-                        RETURN count(n) as node_count
-                        """
-                        count_result = await session.run(count_query)
-                        count_records = await count_result.data()
-                        node_count = count_records[0].get('node_count', 0) if count_records else 0
-                        print(f"DEBUG: Found {node_count} total nodes without source_id in workspace {workspace_name}")
-                        
-                        if node_count > 0:
-                            # These are orphaned nodes without source_id - mark for complete workspace cleanup
-                            print(f"WARNING: Found {node_count} orphaned nodes in Neo4j workspace {workspace_name} without source_id property!")
-                            print(f"WARNING: These nodes cannot be tracked to specific documents. Recommend manual cleanup.")
-                            # Return a special marker to indicate workspace-level cleanup needed
-                            found_doc_ids_to_return = ['__WORKSPACE_CLEANUP_NEEDED__']
-                        else:
-                            found_doc_ids_to_return = []
+                        found_doc_ids_to_return = []
                     
                     # Now filter to only truly orphaned docs (not in doc_status or VDB)
                     if found_doc_ids:
