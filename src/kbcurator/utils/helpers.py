@@ -64,3 +64,17 @@ def preprocessing_for_edits(parsed_Data: dict, industry:str, sub_industry:str):
     "updated_data": updated_data}
     
     return edit_arguments
+
+def workspace_id_to_alpha(workspace_id) -> str:
+    """Convert workspace_id to alpha representation by converting digits to words."""
+    digit_map = {
+        '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+        '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
+    }
+    result = []
+    for c in str(workspace_id or ""):
+        if c.isalpha():
+            result.append(c)
+        elif c.isdigit():
+            result.append(digit_map[c])
+    return ''.join(result)
