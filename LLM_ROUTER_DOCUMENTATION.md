@@ -9,14 +9,21 @@ The LLM Router provides admin-managed LLM provider configuration per workspace. 
 - **MongoDB-backed Config**: Credentials, model lists, and agent assignments stored per workspace.
 - **Multi-Provider / Multi-Model**: Each agent can have multiple providers configured, each with multiple models.
 - **Per-Agent Runtime Selection**: Each agent has a `current_provider` + `current_model` that determines which LLM answers queries.
-- **Model Assignments**: Independent many-to-many tracking of which agents are assigned to which models (for UI display).
-- **Default Azure Protection**: Azure is the system default — all agents must have it; it cannot be removed.
+- **Model-Specific Assignments**: Each model can be assigned to specific agents independently.
+- **Default Azure Protection**: Azure gpt-4.1 is the system default — all agents must have it configured.
 - **Credential Validation**: Credentials are tested before storage.
 - **In-memory Cache**: `ConfigurableAIManager` instances are cached and invalidated on config changes.
 
 ## Supported Providers
 
 `azure`, `quasar`
+
+## Key Scenarios Handled
+
+1. **Configure agent_ids [1,2,3] for claude-sonnet-4 (quasar)**: Adds this model to those agents
+2. **Later configure agent_ids [1,3] for claude-sonnet-4 (quasar)**: Removes the model from agent 2
+3. **Configure agent_ids [1,3,4] for gpt-5-2-chat (quasar)**: Agents 1,3 now have multiple models configured
+4. **switch_llm_provider**: Agents can toggle between their configured models
 
 ## MongoDB Document Schema
 
@@ -96,27 +103,27 @@ Database: `llm_configs`, Collection: `workspace_configs`
 
 #### 1. `admin_configure_llm_provider`
 
-Create or update a provider configuration and assign models to agents.
+Configure or update a provider and assign a specific model to agents.
 
 **Parameters:**
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `provider` | str | Yes | `'azure'` or `'quasar'` |
 | `workspace_id` | int | Yes | Target workspace |
-| `model` | str | New: Yes | Model name |
+| `model` | str | New: Yes | Model name to configure |
 | `endpoint` | str | New: Yes | API endpoint URL |
 | `api_key` | str | New: Yes | API key (optional on update) |
 | `api_version` | str | No | Azure API version |
 | `deployment_name` | str | No | Azure deployment name |
-| `agent_ids` | List[int] | No | Agents to assign this model to |
-| `set_as_current` | bool | No | Set as active provider for listed agents |
+| `agent_ids` | List[int] | No | Agents to configure this model for |
+| `set_as_current` | bool | No | Set as active provider+model for listed agents |
 | `skip_validation` | bool | No | Skip credential testing |
 
 **Behavior:**
-- New provider: Creates credentials, adds model to `available_models`
-- Existing provider: Merges with existing config (only provided fields update)
-- `agent_ids`: Saves to `model_assignments` and adds model to each agent's `configured_models`
-- Azure provider: Cannot modify agent assignments (all agents must have it)
+- When `agent_ids` is provided, this model is configured ONLY for those agents
+- Agents not in the list will have this model removed from their configuration
+- Special protection for Azure gpt-4.1: all agents must have it configured
+- Each model can be independently assigned to different sets of agents
 
 #### 2. `admin_list_llm_providers`
 
@@ -158,7 +165,7 @@ Remove a specific model or deactivate an entire provider.
 
 **Constraints:**
 - Cannot fully remove `azure` (system default)
-- Cannot remove the last provider
+- Cannot remove Azure gpt-4.1 from all agents (must remain on all agents)
 
 ### User Tools
 
@@ -172,7 +179,9 @@ Switch the active provider+model for an agent.
 
 #### 5. `list_available_llm_providers`
 
-List providers available to an agent with their configured models.
+List providers and models available to a specific agent. Only shows models that are actually configured for this agent.
+
+**Returns:** Provider details with configured models for this agent only.
 
 #### 6. `test_llm_generation`
 
@@ -458,8 +467,9 @@ When a workspace is created:
 
 ## Important Constraints
 
-1. **Azure is always present** — every agent must have azure configured; users cannot remove agents from it.
+1. **Azure gpt-4.1 is always present** — every agent must have azure gpt-4.1 configured; it cannot be removed.
 2. **One model active at runtime** — `current_provider` + `current_model` determines what the agent uses.
 3. **Many models configurable** — `configured_models` allows multiple models per provider per agent.
-4. **Model assignments are independent** — assigning agents to model A does NOT affect model B.
-5. **Dots in model names** — handled via read-modify-write (not MongoDB dot notation).
+4. **Model assignments are independent** — configuring agents for model A does NOT affect model B assignments.
+5. **Agent-specific model visibility** — `list_available_llm_providers` only shows models configured for that agent.
+6. **Dots in model names** — handled via read-modify-write (not MongoDB dot notation).
