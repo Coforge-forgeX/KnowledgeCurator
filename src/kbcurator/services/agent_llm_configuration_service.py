@@ -143,5 +143,33 @@ class AgentLLMConfigurationService:
             user_id=user_id,
         )
 
+    def remove_model_from_agent(
+        self,
+        workspace_id: int,
+        provider: str,
+        model: str,
+        agent_id: Optional[int] = None,
+        user_id: Optional[int] = None,
+    ) -> Dict:
+        return llm_router_config_store.remove_model_from_agent(
+            workspace_id=workspace_id,
+            provider=provider,
+            model=model,
+            agent_id=agent_id,
+            user_id=user_id,
+        )
+
+    def get_model_assignments(
+        self,
+        workspace_id: int,
+        provider_name: str,
+        model_name: str,
+    ) -> List[int]:
+        return llm_router_config_store.get_model_assignments(
+            workspace_id=workspace_id,
+            provider_name=provider_name,
+            model_name=model_name,
+        )
+
 
 agent_llm_config_service = AgentLLMConfigurationService()
