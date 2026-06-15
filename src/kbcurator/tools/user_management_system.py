@@ -1511,6 +1511,51 @@ def update_workspace(payload):
                     ))
 
         session.commit()
+
+        # Create LLM configurations for newly added agents (after commit)
+        if agent_ids:
+            try:
+                # Get existing agent configurations to avoid duplicates
+                existing_configs = agent_llm_config_service.get_workspace_configurations(workspace_id)
+                existing_agent_ids = set()
+                if existing_configs:
+                    for config in existing_configs:
+                        if config.get('agent_id'):
+                            existing_agent_ids.add(config['agent_id'])
+
+                # Filter out agents that already have configurations
+                new_agent_ids = [aid for aid in agent_ids if aid not in existing_agent_ids]
+                
+                if new_agent_ids:
+                    created_configs = agent_llm_config_service.bulk_create_agent_configurations(
+                        workspace_id=workspace_id,
+                        agent_ids=new_agent_ids,
+                        configured_providers=['azure'],
+                        current_provider='azure',
+                        user_id=jwt_user_id
+                    )
+                    print(f"[Post-commit] Created LLM configurations for {len(created_configs)} new agents in workspace {workspace_id}")
+
+                    # Populate model_assignments for new agents so the UI shows them for the default model
+                    try:
+                        azure_creds = workspace_provider_credentials_service.get_provider_credentials(workspace_id, 'azure')
+                        default_model = azure_creds.get('model') if azure_creds else None
+                        if default_model:
+                            workspace_provider_credentials_service.set_model_assignments(
+                                workspace_id=workspace_id,
+                                provider_name='azure',
+                                model_name=default_model,
+                                agent_ids=new_agent_ids,
+                                user_id=jwt_user_id,
+                            )
+                            print(f"[Post-commit] Set model_assignments for '{default_model}' with {len(new_agent_ids)} new agents")
+                    except Exception as ma_error:
+                        print(f"[Post-commit] Failed to set model_assignments for new agents: {ma_error}")
+
+            except Exception as agent_llm_config_error:
+                print(f"[Post-commit] Failed to create agent LLM configurations: {agent_llm_config_error}")
+                # Don't fail workspace update if LLM config fails, just log it
+
         return {"response": "Workspace updated"}
     except Exception as e:
         session.rollback()
