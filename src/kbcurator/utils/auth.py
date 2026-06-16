@@ -712,11 +712,11 @@ def _create_user_with_workspace(email: str, workspace_id: int) -> Dict[str, Any]
             cur.execute(
                 """
                 INSERT INTO public.workspace_users_mapping
-                    (workspace_id, user_id, is_active, created_date, last_updated)
-                VALUES (%s, %s, TRUE, %s, %s)
+                    (workspace_id, user_id, role_id, is_active, created_date, last_updated)
+                VALUES (%s, %s, %s, TRUE, %s, %s)
                 ON CONFLICT DO NOTHING
                 """,
-                (workspace_id, user["user_id"], now, now),
+                (workspace_id, user["user_id"], 1, now, now),
             )
             conn.commit()
 
