@@ -14,14 +14,6 @@ import aiohttp
 from kbcurator.server.server import mcp
 import psycopg2
 
-# Log LightRAG version for debugging
-try:
-    import pkg_resources
-    lightrag_version = pkg_resources.get_distribution("lightrag-hku").version
-    print(f"[LIGHTRAG VERSION] lightrag-hku {lightrag_version}")
-except Exception as e:
-    print(f"[LIGHTRAG VERSION] Could not determine version: {e}")
-
 from azure.storage.blob import BlobServiceClient
 from PyPDF2 import PdfReader
 from docx import Document
@@ -315,13 +307,6 @@ async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = 
     
     # Ensure the directory exists
     os.makedirs(data_dir, exist_ok=True)
-    
-    print(f"[DEBUG] initialize_rag called with domain='{domain}', kb_name='{kb_name}'")
-    print(f"[DEBUG] Computed data_dir (working_dir): '{data_dir}'")
-    print(f"[DEBUG] data_dir exists: {os.path.exists(data_dir)}")
-    print(f"[DEBUG] data_dir is writable: {os.access(data_dir, os.W_OK) if os.path.exists(data_dir) else 'N/A'}")
-    print(f"[DEBUG] __file__ location: '{__file__}'")
-    print(f"[DEBUG] Current working directory: '{os.getcwd()}'")
     
     lightrag_database = ''.join(char for char in f"{domain}{kb_name}" if char.isalpha())
     os.environ['NEO4J_DATABASE'] = lightrag_database
