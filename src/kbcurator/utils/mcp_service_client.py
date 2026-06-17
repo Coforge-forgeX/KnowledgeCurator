@@ -203,7 +203,7 @@ class MCPServiceClient:
     #         print("An error occurred while processing your request.")
     #         return "Unable to process your request at this time. Please try again later."
 
-    async def query_rag(self, intent, user_message, history, workspace_id, role_id):
+    async def query_rag(self, intent, user_message, history, workspace_id, role_id, agent_id=None):
         print(f"Calling MCP tool for intent: {intent} with message: {user_message}")
         
         # Initialize kb_name
@@ -262,7 +262,8 @@ class MCPServiceClient:
                 "user_prompt": "",
                 "mode": "mix",
                 "workspace_id": str(workspace_id),  # Convert to string for MCP tool
-                "role_id": role_id
+                "role_id": role_id,
+                "agent_id": agent_id
             }
 
             tool_name = "query_rag"

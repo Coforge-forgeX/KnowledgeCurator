@@ -51,9 +51,19 @@ def _build_manager_from_db(workspace_id: int, agent_id: Optional[int]) -> Config
     Delegates to common_adapters.configurableAI.get_configured_llm_manager.
     """
     try:
-        return get_configured_llm_manager(workspace_id, agent_id)
+        manager = get_configured_llm_manager(workspace_id, agent_id)
+        current_provider = manager.get_current_provider()
+        logger.info(
+            f"LLM provider resolved: '{current_provider}' "
+            f"(workspace_id={workspace_id}, agent_id={agent_id})"
+        )
+        return manager
     except ValueError:
         # Return empty manager if nothing is configured (for backward compat)
+        logger.warning(
+            f"No LLM provider configured — using empty manager "
+            f"(workspace_id={workspace_id}, agent_id={agent_id})"
+        )
         return ConfigurableAIManager()
 
 

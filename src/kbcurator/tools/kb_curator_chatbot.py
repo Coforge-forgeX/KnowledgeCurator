@@ -10,7 +10,8 @@ from datetime import datetime
 # Third-party and internal imports
 sys.path.append("../utils")
 from kbcurator.utils.prompt_builder import PromptBuilder
-from kbcurator.utils.llm_helper import get_llm_response_with_context, get_llm_response_with_context_async
+from kbcurator.utils.llm_helper import get_llm_response_with_context_async
+from kbcurator.tools.llm_router_tool import _build_manager_from_db
 from kbcurator.utils.classifier import classifier
 from kbcurator.utils.mcp_service_client import MCPServiceClient
 from kbcurator.server.server import mcp
@@ -61,7 +62,7 @@ class IntentDetector:
             "help": ['help', 'assist me', 'support', 'i need help', 'can you help me','what can you do','what are your capabilities']
         }
 
-    def detect_intent(self, user_message: str, workspace_id: int, agent_id: Optional[int] = None) -> str:
+    async def detect_intent(self, user_message: str, workspace_id: int, agent_id: Optional[int] = None) -> str:
         # Build a prompt with examples for each intent
         prompt = """
             You are an intent classifier for a chatbot. Classify the user message into one of these intents:
@@ -83,7 +84,8 @@ class IntentDetector:
         
         prompt += f"\n\nUser message: \"{user_message}\"\nIntent:"
 
-        response = get_llm_response_with_context(
+        print(f"MY agent Id: {agent_id}")
+        response = await get_llm_response_with_context_async(
             workspace_id=workspace_id,
             user_input=user_message,
             sys_prompt=prompt,
@@ -204,6 +206,7 @@ class Chatbot:
             workspace_id: int, 
             user_id: int, 
             role_id: int, 
+            agent_id: str | int,
             session_id: str, 
             token: str | None,
             can_curate_kb: bool,
@@ -231,6 +234,7 @@ class Chatbot:
         self.file_names = file_names
         self.file_contents = file_contents
         self.mode = mode
+        self.agent_id = agent_id
         self.task_id = None
         self.token = token
         self.can_curate_kb = bool(can_curate_kb)
@@ -319,7 +323,7 @@ class Chatbot:
                 if self.file_names:
                     intent = 'upload_file'
                 else:
-                    intent = self.intent_detector.detect_intent(message, workspace_id=self.workspace_id)
+                    intent = await self.intent_detector.detect_intent(message, workspace_id=self.workspace_id, agent_id=self.agent_id)
                     if intent in ['help']:
                         intent = 'help'
                     elif intent in ['greeting']:
@@ -327,7 +331,7 @@ class Chatbot:
                     else:
                         intent = 'search_kb'
             elif self.mode.upper() == 'UPDATE':
-                intent = self.intent_detector.detect_intent(message, workspace_id=self.workspace_id)
+                intent = await self.intent_detector.detect_intent(message, workspace_id=self.workspace_id, agent_id=self.agent_id)
             else:
                 intent = 'search_kb'
 
@@ -358,7 +362,7 @@ class Chatbot:
         #     return "Sorry, something went wrong while processing your request. Please try again"
             print(f"Detected intent: {intent} for message: {message[:50]}")
 
-            intent_response = await self.route_intent(intent, message, context)
+            intent_response = await self.route_intent(intent, message, context, self.agent_id)
             print("Query RAG response: ", str(intent_response)[:50])
             
             # Handle different response types
@@ -420,7 +424,7 @@ class Chatbot:
             print(f"Error processing message: {e}")
             return "Sorry, something went wrong while processing your request. Please try again"
         
-    async def route_intent(self, intent: str, message: str, context: ChatbotContext):
+    async def route_intent(self, intent: str, message: str, context: ChatbotContext, agent_id: str | int):
         """Route to the appropriate handler based on detected intent."""
         restricted_intents = {
             "upload_file",
@@ -477,10 +481,15 @@ class Chatbot:
         # Extract search query
         try:
             print(f"Inside Search kb {message}")
+            try:
+                _provider = _build_manager_from_db(self.workspace_id, self.agent_id).get_current_provider()
+                print(f"LLM provider for search (workspace_id={self.workspace_id}): {_provider}")
+            except Exception as _e:
+                print(f"Could not resolve LLM provider for search: {_e}")
             history = self.session.load_history(self.workspace_id, self.user_id, self.session_id)
             history = history[-5:]
             # print(f"History: {history}, type: {type(history)}")
-            assistant_message = await self.mcp_tool_obj.query_rag('Search',message, history, self.workspace_id, self.role_id)
+            assistant_message = await self.mcp_tool_obj.query_rag('Search',message, history, self.workspace_id, self.role_id, agent_id=self.agent_id)
             print(f"Query RAG response type: {type(assistant_message)}")
             
             # Check if response is structured (dict with sources) or plain text
@@ -505,7 +514,7 @@ class Chatbot:
 
     async def handle_delete_entity(self, message: str, context: ChatbotContext, intent: str) -> str:
         try:
-            parsed_data = await get_parsed_data(message, workspace_id=self.workspace_id)
+            parsed_data = await get_parsed_data(message, workspace_id=self.workspace_id, agent_id=self.agent_id)
             print(f"Parsed data for deletion: {parsed_data}")
 
             delet_args = { 
@@ -525,7 +534,7 @@ class Chatbot:
     async def handle_add_entity(self, message: str, context: ChatbotContext, intent: str) -> str:
         # Add entity logic here
         try:
-            parsed_data = await get_parsed_data(message, workspace_id=self.workspace_id)
+            parsed_data = await get_parsed_data(message, workspace_id=self.workspace_id, agent_id=self.agent_id)
             print(f"Parsed data for addition: {parsed_data}")
 
             add_args = { 
@@ -1121,6 +1130,7 @@ async def message_gpt(
     industry: str,
     sub_industry: str,
     mode: Optional[str],
+    agent_id: str | int,
     knowledge_bases: Optional[list[str]] = None,
     file_names: Optional[List[str]] = None,
     file_contents: Optional[List[str]] = None
@@ -1151,6 +1161,7 @@ async def message_gpt(
     workspace_id = int(workspace_id)
     user_id = int(user_id)
     role_id = int(role_id)
+    agent_id = int(agent_id)
 
     try:
         token = get_http_headers(include_all=True).get('authorization',"") or get_http_headers().get('Authorization',"")
@@ -1170,6 +1181,7 @@ async def message_gpt(
             file_names=file_names, 
             file_contents=file_contents, 
             mode=mode,
+            agent_id=agent_id,
             token=token
             )
         response = await bot.process_message(user_message)
