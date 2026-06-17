@@ -50,7 +50,7 @@ from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.async_configs import BrowserConfig, CrawlerRunConfig, CacheMode, DefaultMarkdownGenerator
 from kbcurator.utils.azurecustomllm import AzureCustomLLM
-from kbcurator.utils.llm_helper import get_llm_response
+from kbcurator.utils.llm_helper import get_llm_response, get_llm_response_async
 from kbcurator.utils.access_validation import validate_user_workspace_access
 from kbcurator.utils.request_context import request_var
 from kbcurator.utils.db import db
@@ -355,7 +355,8 @@ async def query_rag(
     history: Optional[list] = None,
     mode: str = 'mix',
     workspace_id: Optional[str] = None,  # ADD THIS
-    role_id: Optional[int] = None        # ADD THIS
+    role_id: Optional[int] = None,       # ADD THIS
+    agent_id: Optional[int] = None       # agent-specific LLM config
 ) -> dict:
     """
     Query the RAG system with a question and optional user prompt.
@@ -574,7 +575,7 @@ When handling relationships with timestamps:
             try:
                 ws_id = int(workspace_id) if workspace_id else None
                 if ws_id:
-                    summary = get_llm_response(workspace_id=ws_id, prompt=summary_prompt)
+                    summary = await get_llm_response_async(workspace_id=ws_id, prompt=summary_prompt, agent_id=agent_id)
                 else:
                     # Fallback: try to get from context or raise error
                     raise ValueError("workspace_id is required for LLM calls")
