@@ -570,14 +570,20 @@ When handling relationships with timestamps:
 
             
             
-            # Parse references from the summary and generate download URLs
+            # Parse references from the original RAG responses and generate download URLs
             original_kb_name = kb_name.split('/')[0] if '/' in kb_name else kb_name
             sources = []
-            parsed_refs = parse_references_from_response(summary)  # Parse from summary, not response
+            
+            # Collect references from all KB responses instead of the LLM summary
+            all_parsed_refs = []
+            for kb, resp in results.items():
+                if isinstance(resp, str):  # Only process string responses, skip error dicts
+                    kb_refs = parse_references_from_response(resp)
+                    all_parsed_refs.extend(kb_refs)
+            
+            print(f"Parsed {len(all_parsed_refs)} references from original RAG responses")
 
-            print(f"Parsed {len(parsed_refs)} references from LightRAG response")
-
-            for ref in parsed_refs:
+            for ref in all_parsed_refs:
                 citation = ref['citation_number']
                 file_path = ref['file_path']
                 
