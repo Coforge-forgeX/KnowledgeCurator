@@ -1646,19 +1646,13 @@ def delete_workspace(workspace_id):
         # Fire-and-forget: delete salesforce_techspec artifacts for this workspace in background
         def _delete_salesforce_techspec_artifacts(ws_id):
             try:
-                # Delete user prompts for this workspace
-                from salesforce_techspec.utils.mongodb_singleton import get_database
-                db = get_database()
-                if db is not None:
-                    # Delete workspace-specific user prompts
-                    prompts_result = db["user_prompts"].delete_many({"workspace_id": str(ws_id)})
-                    print(f"[Salesforce TechSpec Cleanup] Deleted {prompts_result.deleted_count} user prompts for workspace {ws_id}")
-                    
-                    # Delete messages for this workspace
-                    messages_result = db["session_history"].delete_many({"workspace_id": str(ws_id)})
-                    print(f"[Salesforce TechSpec Cleanup] Deleted {messages_result.deleted_count} messages for workspace {ws_id}")
-                else:
-                    print(f"[Salesforce TechSpec Cleanup] MongoDB not available for workspace {ws_id}")
+                salesforce_base_url = getenv("SALESFORCE_TECHSPEC_URL", "https://forgex-dev-salesforce-techspec.azurewebsites.net")
+                resp = requests.post(
+                    f"{salesforce_base_url}/api/workspace/delete",
+                    json={"workspace_id": str(ws_id)},
+                    timeout=90,
+                )
+                print(f"[Salesforce TechSpec Cleanup] workspace {ws_id}: status={resp.status_code}, body={resp.text[:200]}")
             except Exception as sf_err:
                 print(f"[Salesforce TechSpec Cleanup] Failed to delete salesforce_techspec artifacts for workspace {ws_id}: {sf_err}")
 
