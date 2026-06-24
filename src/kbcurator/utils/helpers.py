@@ -1,16 +1,18 @@
-from .azurecustomllm import AzureCustomLLM
+from kbcurator.utils.llm_helper import get_llm_response_with_context
 import re
-from .prompt_builder import PromptBuilder
+from kbcurator.utils.prompt_builder import PromptBuilder
+from typing import Optional
 
 # Function to evaluate quality of prompt
-def evaluate_user_input(user_input,industry,sub_industry):
-    llm_classifier = AzureCustomLLM()
+def evaluate_user_input(user_input: str, industry: str, sub_industry: str, workspace_id: int, agent_id: Optional[int] = None):
     quality_prompt = PromptBuilder.get_intent_prompt(user_input, industry, sub_industry) 
 
-    response = llm_classifier._call(
-            input=user_input,
-            sys_prompt=quality_prompt
-        )
+    response = get_llm_response_with_context(
+        workspace_id=workspace_id,
+        user_input=user_input,
+        sys_prompt=quality_prompt,
+        agent_id=agent_id
+    )
     
     return response
 
