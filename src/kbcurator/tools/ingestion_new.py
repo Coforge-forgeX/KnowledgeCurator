@@ -42,7 +42,7 @@ from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.async_configs import BrowserConfig, CrawlerRunConfig, CacheMode, DefaultMarkdownGenerator
 from kbcurator.utils.azurecustomllm import AzureCustomLLM
-from kbcurator.utils.azurecustomllm import AzureCustomLLM
+from kbcurator.utils.llm_helper import get_llm_response, get_llm_response_async
 from kbcurator.utils.access_validation import validate_user_workspace_access
 from kbcurator.utils.request_context import request_var
 from kbcurator.utils.db import db
@@ -340,7 +340,8 @@ async def query_rag(
     history: Optional[list] = None,
     mode: str = 'mix',
     workspace_id: Optional[str] = None,  # ADD THIS
-    role_id: Optional[int] = None        # ADD THIS
+    role_id: Optional[int] = None,       # ADD THIS
+    agent_id: Optional[int] = None       # agent-specific LLM config
 ) -> dict:
     """
     Query the RAG system with a question and optional user prompt.
@@ -366,6 +367,10 @@ async def query_rag(
         workspace_id_alpha = ''.join(result)
         if workspace_id_alpha and workspace_id_alpha not in knowledge_bases:
             knowledge_bases.append(workspace_id_alpha)
+
+    # If no knowledge bases and no kb_name, cannot query — return early
+    if not knowledge_bases and not kb_name:
+        return {"error": "No knowledge base configured. Please set domain/kb_name or knowledge_bases."}
             
 
     if history is None:
@@ -502,7 +507,6 @@ When handling relationships with timestamps:
             "history:", history[:10]
         )
         if knowledge_bases:
-            llm_summarize = AzureCustomLLM(temperature=0)
             results = {}
             kb_graph_refs = []
 
@@ -510,7 +514,7 @@ When handling relationships with timestamps:
             # during parallel initialization. Query execution remains parallel below.
             rag_map = {}
             for kb in knowledge_bases:
-                rag_map[kb] = await initialize_rag(domain=domain, kb_name=kb_name+kb)
+                rag_map[kb] = await initialize_rag(domain=domain, kb_name=(kb_name or '') + kb)
 
             async def query_single_kb(kb):
                 try:
@@ -538,7 +542,7 @@ When handling relationships with timestamps:
                     results[kb] = response
                     kb_graph_refs.append(f"Knowledge Base: {kb}")
 
-            # Summarize the results using AzureCustomLLM
+            # Summarize the results using LLM Router
             summary_prompt = user_prompt
             
             for kb, resp in results.items():
@@ -550,20 +554,36 @@ When handling relationships with timestamps:
             summary_prompt += "\n---\nReferences:\n"
             for i, kb in enumerate(results.keys(), 1):
                 summary_prompt += f"[{i}] {kb}\n"
-            summary = llm_summarize._call(
-                input=summary_prompt
-            )
+            
+            # Use LLM Router with workspace_id
+            print(f"📝 [Multi-KB Summary] Using LLM Router for workspace_id={workspace_id}")
+            try:
+                ws_id = int(workspace_id) if workspace_id else None
+                if ws_id:
+                    summary = await get_llm_response_async(workspace_id=ws_id, prompt=summary_prompt, agent_id=agent_id)
+                else:
+                    # Fallback: try to get from context or raise error
+                    raise ValueError("workspace_id is required for LLM calls")
+            except Exception as e:
+                print(f"❌ Error generating summary with LLM Router: {e}")
+                summary = f"Error generating summary: {str(e)}"
 
             
             
-            # Parse references from the summary and generate download URLs
+            # Parse references from the original RAG responses and generate download URLs
             original_kb_name = kb_name.split('/')[0] if '/' in kb_name else kb_name
             sources = []
-            parsed_refs = parse_references_from_response(summary)  # Parse from summary, not response
+            
+            # Collect references from all KB responses instead of the LLM summary
+            all_parsed_refs = []
+            for kb, resp in results.items():
+                if isinstance(resp, str):  # Only process string responses, skip error dicts
+                    kb_refs = parse_references_from_response(resp)
+                    all_parsed_refs.extend(kb_refs)
+            
+            print(f"Parsed {len(all_parsed_refs)} references from original RAG responses")
 
-            print(f"Parsed {len(parsed_refs)} references from LightRAG response")
-
-            for ref in parsed_refs:
+            for ref in all_parsed_refs:
                 citation = ref['citation_number']
                 file_path = ref['file_path']
                 
@@ -2834,19 +2854,36 @@ async def edit_entity_in_kg(
  
 @mcp.tool()
 async def edit_relation_in_kg(
-    domain: Optional[str] = None,
-    kb_name: Optional[str] = None,
+    domain: Optional[str] = None,           # Other
+    kb_name: Optional[str] = None,          # Demo Instances/
+    knowledge_bases: Optional[list] = None, # [Cards, Payments]
+    workspace_id: Optional[str] = None,     # 753
     source_entity_name: Optional[str] = None,
     target_entity_name: Optional[str] = None,
     updated_data: Optional[dict] = None,
 ):
     try:
-        rag = await initialize_rag(domain=domain, kb_name=kb_name)
-        return await rag.aedit_relation(
-            source_entity=source_entity_name,
-            target_entity=target_entity_name,
-            updated_data=updated_data,
-        )
+        knowledge_bases = list(knowledge_bases) if knowledge_bases else []
+        if workspace_id:
+            digit_map = {
+                '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+                '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
+            }
+            workspace_id_alpha = ''.join(
+                c if c.isalpha() else digit_map[c]
+                for c in str(workspace_id) if c.isalpha() or c.isdigit()
+            )
+            knowledge_bases.append(workspace_id_alpha)
+
+        results = {}
+        for kg in knowledge_bases:
+            rag = await initialize_rag(domain=domain, kb_name=kb_name + kg)
+            results[kg] = await rag.aedit_relation(
+                source_entity=source_entity_name,
+                target_entity=target_entity_name,
+                updated_data=updated_data,
+            )
+        return results
     except Exception as e:
         return {"error": str(e)}
    
