@@ -1,0 +1,71 @@
+name: Build Docker Image and Upload to Blob
+
+on:
+  push:
+    branches:
+      - sei-onprem-main
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: forgexkb
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      AZURE_STORAGE_ACCOUNT: onpremsei
+      AZURE_STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
+      CONTAINER_NAME: onpremseiforgexkb
+
+    steps:
+      # ✅ Checkout
+      - name: Checkout
+        uses: actions/checkout@v4
+
+
+      # ✅ Build Docker Image (PASS ARG)
+      - name: Build Docker Image
+        run: |
+          docker build \
+            -t $IMAGE_NAME:${{ github.sha }} .
+
+      # ✅ Save as TAR.GZ
+      - name: Save Docker Image
+        run: |
+          mkdir -p output
+          docker save $IMAGE_NAME:${{ github.sha }} -o output/kb-image.tar
+          gzip output/kb-image.tar
+
+      # ✅ Upload to Blob
+      - name: Upload to Blob
+        run: |
+          DATE=$(date +%Y%m%d%H%M%S)
+          FILE_NAME=kb-$DATE.tar.gz
+
+          az storage blob upload \
+            --account-name $AZURE_STORAGE_ACCOUNT \
+            --account-key $AZURE_STORAGE_KEY \
+            --container-name $CONTAINER_NAME \
+            --name $FILE_NAME \
+            --file output/kb-image.tar.gz \
+            --overwrite
+
+          echo "FILE_NAME=$FILE_NAME" >> $GITHUB_ENV
+
+      # ✅ Generate SAS link
+      - name: Generate SAS URL
+        run: |
+          EXPIRY=$(date -u -d "7 days" '+%Y-%m-%dT%H:%MZ')
+
+          SAS=$(az storage blob generate-sas \
+            --account-name $AZURE_STORAGE_ACCOUNT \
+            --account-key $AZURE_STORAGE_KEY \
+            --container-name $CONTAINER_NAME \
+            --name $FILE_NAME \
+            --permissions r \
+            --expiry $EXPIRY \
+            -o tsv)
+
+          echo "✅ DOWNLOAD LINK:"
+          echo "https://$AZURE_STORAGE_ACCOUNT.blob.core.windows.net/$CONTAINER_NAME/$FILE_NAME?$SAS"
