@@ -5,8 +5,8 @@ import psycopg2
 from configparser import ConfigParser
 from sqlalchemy import func
 from kbcurator.utils.db import db
-from os import getenv
 import sys
+from os import getenv
 from kbcurator.utils.auth import create_jwt_token, verify_jwt_token, create_refresh_token, verify_refresh_token
 from kbcurator.utils.request_context import request_var
 from sqlalchemy import select, func as sql_func
