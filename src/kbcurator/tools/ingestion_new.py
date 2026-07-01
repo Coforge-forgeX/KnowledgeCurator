@@ -34,6 +34,7 @@ import zipfile
 import tempfile
 from azure.storage.blob import BlobServiceClient, ContentSettings
 from azure.storage.blob import generate_blob_sas, BlobSasPermissions
+from kbcurator.utils.blob_sas import build_sas_url
 from datetime import datetime, timedelta
 import base64
 from azure.core.credentials import AzureKeyCredential
@@ -276,20 +277,27 @@ def generate_download_url_for_file(
                 try:
                     if blob_client.exists():
                         print(f"✓ File found in {container_type} container: {blob_path}")
-                        
-                        sas_token = generate_blob_sas(
-                            account_name=blob_service_client.account_name,
+
+                        # Mint a fresh SAS via the shared helper (timezone-aware
+                        # UTC expiry + clock-skew buffer).
+                        download_url = build_sas_url(
                             container_name=container_name,
-                            blob_name=blob_path,
-                            account_key=blob_service_client.credential.account_key,
-                            permission=BlobSasPermissions(read=True),
-                            expiry=datetime.now() + timedelta(days=expiry_days),
-                            content_disposition=f'attachment; filename="{file_name}"'
+                            blob_path=blob_path,
+                            file_name=file_name,
+                            expiry_days=expiry_days,
                         )
-                        
-                        download_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{container_name}/{blob_path}?{sas_token}"
+                        if not download_url:
+                            print(f"Failed to mint SAS for: {file_path}")
+                            return None
                         print(f"Generated download URL for: {file_path}")
-                        return download_url
+                        # Return coordinates too so callers can persist them and
+                        # re-mint the URL later instead of storing an expiring link.
+                        return {
+                            "download_url": download_url,
+                            "container_name": container_name,
+                            "blob_path": blob_path,
+                            "download_name": file_name,
+                        }
                 except Exception as e:
                     # Log but continue trying other paths
                     print(f"Error checking blob {blob_path}: {e}")
@@ -589,13 +597,17 @@ When handling relationships with timestamps:
                 
                 print(f"Processing reference {citation}: {file_path}")
                 
-                download_url = generate_download_url_for_file(domain, original_kb_name, file_path,workspace_id=workspace_id,
+                dl = generate_download_url_for_file(domain, original_kb_name, file_path,workspace_id=workspace_id,
                 role_id=role_id)
-                
-                if download_url:
+
+                if dl:
                     sources.append({
                         "file_name": f"{citation} {os.path.basename(file_path)}",
-                        "download_url": download_url
+                        "download_url": dl["download_url"],
+                        # Persist coordinates so the link can be re-minted later.
+                        "container_name": dl["container_name"],
+                        "blob_path": dl["blob_path"],
+                        "download_name": dl["download_name"],
                     })
                     print(f"Added source: {citation} {os.path.basename(file_path)}")
                 else:
@@ -660,13 +672,17 @@ When handling relationships with timestamps:
                 print(f"   Domain: {domain}, KB: {original_kb_name}, WorkspaceID: {workspace_id}, RoleID: {role_id}")
                 
                 # Use ORIGINAL kb_name for blob path (not the modified one)
-                download_url = generate_download_url_for_file(domain, original_kb_name, file_path,workspace_id=workspace_id,
+                dl = generate_download_url_for_file(domain, original_kb_name, file_path,workspace_id=workspace_id,
                 role_id=role_id)
-                
-                if download_url:
+
+                if dl:
                     sources.append({
                         "file_name": f"{citation} {os.path.basename(file_path)}",
-                        "download_url": download_url
+                        "download_url": dl["download_url"],
+                        # Persist coordinates so the link can be re-minted later.
+                        "container_name": dl["container_name"],
+                        "blob_path": dl["blob_path"],
+                        "download_name": dl["download_name"],
                     })
                     print(f"✓ Generated URL for {citation}")
                 else:

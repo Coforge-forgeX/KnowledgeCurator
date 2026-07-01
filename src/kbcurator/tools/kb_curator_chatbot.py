@@ -1210,7 +1210,11 @@ def get_conversation_history(workspace_id: str = None, user_id: str = None, limi
         return {"error": "workspace_id is required for authentication."}
 
     # Validate user access to workspace
-    valid, err = validate_user_workspace_access(workspace_id=workspace_id)
+    # Note: validate_user_workspace_access requires both user_id and workspace_id.
+    valid, err = validate_user_workspace_access(
+        user_id=user_id,
+        workspace_id=workspace_id,
+    )
     if not valid:
         return {"error": err}
 
@@ -1239,58 +1243,59 @@ def get_conversation_history(workspace_id: str = None, user_id: str = None, limi
     finally:
         pass
 
+    # Mongo history is stored with integer workspace_id/user_id (see message_gpt).
+    # Normalize IDs so callers can pass strings (typical JSON payloads).
     try:
-        if limit == 5:
-            con_hist = session.get_recent_sessions(workspace_id, user_id, limit=limit)
-            last_messages = []
-            for ses in con_hist:
-                logger.info(f"Session ID: {ses}")
-                history = session.load_history(workspace_id, user_id, ses)
-                # Fetch the conversation title from context collection
-                title = session.get_conversation_title(workspace_id, user_id, ses)
-                if history and len(history) >= 2:
-                    last_msg = history[-2]
-                    last_messages.append({
-                        "role": last_msg.get("role"),
-                        "content": last_msg.get("content"),
-                        "task_ids": last_msg.get("task_ids") if last_msg.get("task_ids") else None,
-                        "session_id": ses,
-                        "title": title,
-                        "time_modified": last_msg.get("timestamp")
-                    })
-            return {"response": last_messages}
-        else:
-            # No threshold: return last user query AND response for each file
-            res = session.get_recent_sessions(workspace_id, user_id, limit=0)
-            conversations = []
-            for ses in res:
-                data = session.load_history(workspace_id, user_id, ses)
-                # Fetch the conversation title from context collection
-                title = session.get_conversation_title(workspace_id, user_id, ses)
-                logger.info(f"Data for session {ses}: {data}")
-                assistant_msg = next((msg for msg in reversed(data) if msg.get("role") == "assistant"), None) if isinstance(data, list) else None
-                if isinstance(data, list) and len(data) >= 2: 
-                    user_msg = next((msg for msg in reversed(data) if msg.get("role") == "user"), None)
-                    last_msg = data[-1]
-                    time_modified_str = last_msg.get("timestamp", "N/A")
-                    conversations.append({
-                        "session_id": ses,
-                        "time_modified": time_modified_str,
-                        "title": title,
-                        "user": user_msg["content"] if user_msg else None,
-                        "assistant": assistant_msg["content"] if assistant_msg else None,
-                        "task_ids": assistant_msg.get("task_ids") if assistant_msg else None
-                    })
-                else:
-                    conversations.append({
-                        "session_id": ses,
-                        "time_modified": "N/A",
-                        "title": title,
-                        "user": None,
-                        "assistant": None,
-                        "task_ids": assistant_msg.get("task_ids") if assistant_msg else None
-                    })
-            return {"response": conversations}
+        workspace_id_q = int(workspace_id) if workspace_id is not None else workspace_id
+    except (TypeError, ValueError):
+        workspace_id_q = workspace_id
+    try:
+        user_id_q = int(user_id) if user_id is not None else user_id
+    except (TypeError, ValueError):
+        user_id_q = user_id
+
+    try:
+        # Treat `limit` as:
+        # - when provided: number of recent sessions to summarize
+        # - when omitted/0: return all sessions
+        sessions_limit = 0 if (limit is None) else int(limit)
+        con_hist = session.get_recent_sessions(workspace_id_q, user_id_q, limit=sessions_limit)
+
+        # SessionHistoryManager.get_recent_sessions may return a sentinel string list.
+        if not con_hist or (len(con_hist) == 1 and con_hist[0] in ["No sessions found", "Error fetching sessions"]):
+            return {"response": []}
+
+        conversations = []
+        for ses in con_hist:
+            if not ses or ses in ["No sessions found", "Error fetching sessions"]:
+                continue
+            data = session.load_history(workspace_id_q, user_id_q, ses)
+            title = session.get_conversation_title(workspace_id_q, user_id_q, ses)
+
+            if not isinstance(data, list) or not data:
+                conversations.append({
+                    "session_id": ses,
+                    "time_modified": "N/A",
+                    "title": title,
+                    "user": None,
+                    "assistant": None,
+                    "task_ids": None,
+                })
+                continue
+
+            assistant_msg = next((msg for msg in reversed(data) if msg.get("role") == "assistant"), None)
+            user_msg = next((msg for msg in reversed(data) if msg.get("role") == "user"), None)
+            last_msg = data[-1] if data else {}
+            conversations.append({
+                "session_id": ses,
+                "time_modified": last_msg.get("timestamp", "N/A"),
+                "title": title,
+                "user": user_msg.get("content") if user_msg else None,
+                "assistant": assistant_msg.get("content") if assistant_msg else None,
+                "task_ids": assistant_msg.get("task_ids") if assistant_msg else None,
+            })
+
+        return {"response": conversations}
     except Exception as e:
         return {"error":f"Error occurred while retrieving conversation history: {e}"}
 
