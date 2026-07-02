@@ -331,10 +331,16 @@ def login_user(email: str, password: str):
 
     except Exception as e:
         session.rollback()
-        print(f"Error during login: {e}")
+        import traceback
+        tb = traceback.format_exc()
+        # Force-flush so it lands in the container stream even with buffered stdout.
+        print(f"Error during login: {type(e).__name__}: {e}\n{tb}", flush=True)
         return {
             'success': False,
-            'message': 'An error occurred during login. Please try again later.'
+            'message': 'An error occurred during login. Please try again later.',
+            # TEMP diagnostic — remove once root cause found. Surfaces the real
+            # exception in the API response so it can be read without server logs.
+            'error_detail': f"{type(e).__name__}: {e}",
         }
     finally:
         session.close()
