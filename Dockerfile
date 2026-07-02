@@ -36,5 +36,10 @@ RUN playwright install --with-deps chromium
 
 # Expose FastAPI port
 EXPOSE 9000
-
-CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker kbcurator.server.main:http_app --bind 0.0.0.0:${PORT:-9000}"]
+#CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker kbcurator.server.main:http_app --bind 0.0.0.0:${PORT:-9000}"]
+# --preload: import heavy libs (lightrag/playwright/langchain) ONCE in the master
+#            process, then fork copy-on-write workers -> no per-worker re-import
+#            stampede on low-core plans. Safe because no DB/Mongo/Redis connection
+#            is opened at import time (all lazily initialized on first request).
+# --timeout / --graceful-timeout: give the first (schema-reflecting) request room.
+CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker kbcurator.server.main:http_app --bind 0.0.0.0:${PORT:-9000} --workers ${WEB_CONCURRENCY:-2} --timeout 120 --graceful-timeout 30 --preload"]

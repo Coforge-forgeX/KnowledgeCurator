@@ -12,14 +12,41 @@ class Database:
 	"""
 	_instance = None
 	_lock = RLock()
+	_initialized = False
 
 	def __new__(cls):
 		if cls._instance is None:
 			with cls._lock:
 				if cls._instance is None:
 					cls._instance = super().__new__(cls)
-					cls._instance._init_db()
 		return cls._instance
+
+	def _ensure_init(self):
+		"""Build engine + reflect schema on first real use, once.
+
+		Deliberately NOT called at import time. The schema reflect is a
+		blocking Postgres round-trip; running it at import made every
+		gunicorn worker stall on boot and pushed cold start past the
+		Azure 230s container-start limit (restart loop -> login down).
+		Deferring it lets the /health startup probe answer immediately.
+		"""
+		if Database._initialized:
+			return
+		with Database._lock:
+			if not Database._initialized:
+				self._init_db()
+				Database._initialized = True
+
+	def __getattr__(self, name):
+		# Invoked only for attributes not yet set (i.e. before init).
+		# Dunder lookups (copy/pickle/hasattr probes) must not trigger init.
+		if name.startswith("__") and name.endswith("__"):
+			raise AttributeError(name)
+		self._ensure_init()
+		d = object.__getattribute__(self, "__dict__")
+		if name in d:
+			return d[name]
+		raise AttributeError(name)
 
 	def _init_db(self):
 		# Build connection string from config
