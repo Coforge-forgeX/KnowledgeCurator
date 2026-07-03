@@ -14,7 +14,6 @@ import aiohttp
 from kbcurator.server.server import mcp
 import psycopg2
 
-
 from azure.storage.blob import BlobServiceClient
 from PyPDF2 import PdfReader
 from docx import Document
@@ -1535,6 +1534,7 @@ async def upload_and_index_tool(
             print(f"Unexpected background error for task_id {tid}: {e}\n{tb}")
             if tid:
                 update_file_task_status(tid, "failed")
+
     # Prepare one background worker that processes files sequentially.
     # This avoids concurrent LightRAG writes to the same KB, which can
     # cause lock contention and misleading per-file indexing status timing.
