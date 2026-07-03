@@ -1535,10 +1535,6 @@ async def upload_and_index_tool(
             print(f"Unexpected background error for task_id {tid}: {e}\n{tb}")
             if tid:
                 update_file_task_status(tid, "failed")
-
-    # Prepare one background worker that processes files sequentially.
-    # This avoids concurrent LightRAG writes to the same KB, which can
-    # cause lock contention and misleading per-file indexing status timing.
     # Prepare one background worker that processes files sequentially.
     # This avoids concurrent LightRAG writes to the same KB, which can
     # cause lock contention and misleading per-file indexing status timing.
@@ -1550,16 +1546,8 @@ async def upload_and_index_tool(
     print(f"[DEBUG] kb_name parameter: '{kb_name}'")
     
     queued_jobs = []
-    print(f"[DEBUG] upload_path parameter: '{upload_path}'")
-    print(f"[DEBUG] container_name parameter: '{container_name}'")
-    print(f"[DEBUG] domain parameter: '{domain}'")
-    print(f"[DEBUG] kb_name parameter: '{kb_name}'")
-    
-    queued_jobs = []
     for fname, fcontent in zip(file_names, file_contents):
         per_file_path = f"{upload_path}/{fname}" if upload_path and fname else None
-        print(f"[DEBUG] File '{fname}' -> path: '{per_file_path}'")
-        
         print(f"[DEBUG] File '{fname}' -> path: '{per_file_path}'")
         
         # Compute human-readable size with units for storage in file_tasks.file_size
