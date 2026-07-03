@@ -1,5 +1,5 @@
 import os
-from urllib.parse import unquote
+from urllib.parse import quote_plus
 import threading
 import logging
 import certifi
@@ -8,7 +8,7 @@ from pymongo.server_api import ServerApi
 from typing import Optional
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 class MongoDBSingleton:
@@ -53,10 +53,13 @@ class MongoDBSingleton:
             if not mongodb_uri:
                 raise ValueError("MONGODB_DATABASE_URI environment variable is required")
 
-            # If an encoded URI is provided, decode it once so MongoClient gets a valid URI.
-            if "%" in mongodb_uri and "://" not in mongodb_uri:
-                mongodb_uri = unquote(mongodb_uri)
-            
+            if "://" in mongodb_uri and "@" in mongodb_uri:
+                scheme, rest = mongodb_uri.split("://", 1)
+                userinfo, host_and_query = rest.rsplit("@", 1)
+                if ":" in userinfo:
+                    username, password = userinfo.split(":", 1)
+                    mongodb_uri = f"{scheme}://{username}:{quote_plus(password)}@{host_and_query}"
+
             self._client = MongoClient(
                 mongodb_uri,
                 server_api=ServerApi('1'),
@@ -79,7 +82,7 @@ class MongoDBSingleton:
         except Exception as e:
             logging.error(f"❌ Error initializing MongoDB connection: {e}")
             raise
-    
+
     @property
     def client(self) -> MongoClient:
         """Get the MongoDB client instance."""

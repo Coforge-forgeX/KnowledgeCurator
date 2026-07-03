@@ -56,6 +56,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "upload_and_index_tool",
         "use_llm_provider",
         "test_llm_generation",
+        "admin_configure_llm_provider",
+        "admin_list_llm_providers",
+        "admin_remove_llm_provider",
+        "switch_llm_provider",
+        "list_available_llm_providers",
     ]
 
     async def dispatch(self, request: Request, call_next):

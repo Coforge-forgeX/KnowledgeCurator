@@ -7,6 +7,8 @@ from sqlalchemy import func
 from kbcurator.utils.db import db
 from os import getenv
 import sys
+import threading
+import requests
 from kbcurator.utils.auth import create_jwt_token, verify_jwt_token, create_refresh_token, verify_refresh_token
 from kbcurator.utils.request_context import request_var
 from sqlalchemy import select, func as sql_func
@@ -33,6 +35,7 @@ from kbcurator.utils.constants import DefaultValue, Role, WorkspaceType
 from kbcurator.services.agent_llm_configuration_service import agent_llm_config_service
 from kbcurator.services.workspace_provider_credentials_service import workspace_provider_credentials_service
 
+from fastmcp.tools.tool import ToolResult
 
 @mcp.tool()
 @require_auth_async
@@ -1021,11 +1024,22 @@ def create_workspace(payload):
         # Always create a workspace-level default Azure configuration (after commit).
         # This guarantees every new workspace has a usable default provider selection.
         try:
+            # Determine the default model from provider credentials
+            default_model = None
+            try:
+                azure_creds = workspace_provider_credentials_service.get_provider_credentials(workspace_id, 'azure')
+                if azure_creds and azure_creds.get('model'):
+                    default_model = azure_creds['model']
+            except Exception:
+                pass
+
             agent_llm_config_service.create_or_update_configuration(
                 workspace_id=workspace_id,
                 agent_id=None,
                 configured_providers=['azure'],
+                configured_models={'azure': [default_model]} if default_model else None,
                 current_provider='azure',
+                current_model=default_model,
                 user_id=creator_id,
             )
             print(f"[Post-commit] Created workspace default Azure LLM configuration for workspace {workspace_id}")
@@ -1045,6 +1059,23 @@ def create_workspace(payload):
                     user_id=creator_id
                 )
                 print(f"[Post-commit] Created LLM configurations for {len(created_configs)} agents in workspace {workspace_id}")
+
+                # Populate model_assignments so the UI shows agents for the default model
+                try:
+                    azure_creds = workspace_provider_credentials_service.get_provider_credentials(workspace_id, 'azure')
+                    default_model = azure_creds.get('model') if azure_creds else None
+                    if default_model:
+                        workspace_provider_credentials_service.set_model_assignments(
+                            workspace_id=workspace_id,
+                            provider_name='azure',
+                            model_name=default_model,
+                            agent_ids=agent_ids,
+                            user_id=creator_id,
+                        )
+                        print(f"[Post-commit] Set model_assignments for '{default_model}' with {len(agent_ids)} agents")
+                except Exception as ma_error:
+                    print(f"[Post-commit] Failed to set model_assignments: {ma_error}")
+
             except Exception as agent_llm_config_error:
                 print(f"[Post-commit] Failed to create agent LLM configurations: {agent_llm_config_error}")
                 # Don't fail workspace creation if LLM config fails, just log it
@@ -1481,6 +1512,51 @@ def update_workspace(payload):
                     ))
 
         session.commit()
+
+        # Create LLM configurations for newly added agents (after commit)
+        if agent_ids:
+            try:
+                # Get existing agent configurations to avoid duplicates
+                existing_configs = agent_llm_config_service.get_workspace_configurations(workspace_id)
+                existing_agent_ids = set()
+                if existing_configs:
+                    for config in existing_configs:
+                        if config.get('agent_id'):
+                            existing_agent_ids.add(config['agent_id'])
+
+                # Filter out agents that already have configurations
+                new_agent_ids = [aid for aid in agent_ids if aid not in existing_agent_ids]
+                
+                if new_agent_ids:
+                    created_configs = agent_llm_config_service.bulk_create_agent_configurations(
+                        workspace_id=workspace_id,
+                        agent_ids=new_agent_ids,
+                        configured_providers=['azure'],
+                        current_provider='azure',
+                        user_id=jwt_user_id
+                    )
+                    print(f"[Post-commit] Created LLM configurations for {len(created_configs)} new agents in workspace {workspace_id}")
+
+                    # Populate model_assignments for new agents so the UI shows them for the default model
+                    try:
+                        azure_creds = workspace_provider_credentials_service.get_provider_credentials(workspace_id, 'azure')
+                        default_model = azure_creds.get('model') if azure_creds else None
+                        if default_model:
+                            workspace_provider_credentials_service.set_model_assignments(
+                                workspace_id=workspace_id,
+                                provider_name='azure',
+                                model_name=default_model,
+                                agent_ids=new_agent_ids,
+                                user_id=jwt_user_id,
+                            )
+                            print(f"[Post-commit] Set model_assignments for '{default_model}' with {len(new_agent_ids)} new agents")
+                    except Exception as ma_error:
+                        print(f"[Post-commit] Failed to set model_assignments for new agents: {ma_error}")
+
+            except Exception as agent_llm_config_error:
+                print(f"[Post-commit] Failed to create agent LLM configurations: {agent_llm_config_error}")
+                # Don't fail workspace update if LLM config fails, just log it
+
         return {"response": "Workspace updated"}
     except Exception as e:
         session.rollback()
@@ -1525,6 +1601,64 @@ def delete_workspace(workspace_id):
             print(f"[Post-commit] Failed to delete LLM configurations: {llm_config_error}")
             # Don't fail workspace deletion if LLM config cleanup fails, just log it
         
+        # Delete workflow artifacts and job states from npd_workflow_db
+        def _delete_workflow_data(ws_id):
+            try:
+                from common_adapters.configurableAI.llm_router_config_store import _get_mongo_client
+                client = _get_mongo_client()
+                db_name = getenv("MONGODB_WORKFLOW_DATABASE_NAME", "npd_workflow_db")
+                workflow_db = client[db_name]
+
+                jobs_collection = workflow_db[getenv("WORKFLOW_COLLECTION_NAME", "workflow_jobs")]
+                artifacts_collection = workflow_db[getenv("WORKFLOW_ARTIFACT_COLLECTION_NAME", "workflow_artifacts")]
+
+                # Get all job_ids for this workspace
+                job_docs = jobs_collection.find({"workspace_id": str(ws_id)}, {"job_id": 1, "_id": 0})
+                job_ids = [doc["job_id"] for doc in job_docs if doc.get("job_id")]
+
+                # Delete artifacts for those jobs
+                if job_ids:
+                    art_result = artifacts_collection.delete_many({"job_id": {"$in": job_ids}})
+                    print(f"[Workflow Cleanup] Deleted {art_result.deleted_count} artifact docs for workspace {ws_id}")
+
+                # Delete workflow job states
+                jobs_result = jobs_collection.delete_many({"workspace_id": str(ws_id)})
+                print(f"[Workflow Cleanup] Deleted {jobs_result.deleted_count} workflow jobs for workspace {ws_id}")
+            except Exception as wf_err:
+                print(f"[Workflow Cleanup] Failed for workspace {ws_id}: {wf_err}")
+
+        threading.Thread(target=_delete_workflow_data, args=(workspace_id,), daemon=True).start()
+
+        # Fire-and-forget: delete AMS artifacts for this workspace in background
+        def _delete_ams_artifacts(ws_id):
+            try:
+                ams_base_url = getenv("AMS_BACKEND_URL", "https://amsstudio-backend-dev.azurewebsites.net/api")
+                resp = requests.post(
+                    f"{ams_base_url}/mt/delete_workspace",
+                    data={"workspace_id": ws_id},
+                    timeout=90,
+                )
+                print(f"[AMS Cleanup] workspace {ws_id}: status={resp.status_code}, body={resp.text[:200]}")
+            except Exception as ams_err:
+                print(f"[AMS Cleanup] Failed to delete AMS artifacts for workspace {ws_id}: {ams_err}")
+
+        threading.Thread(target=_delete_ams_artifacts, args=(workspace_id,), daemon=True).start()
+        
+        # Fire-and-forget: delete salesforce_techspec artifacts for this workspace in background
+        def _delete_salesforce_techspec_artifacts(ws_id):
+            try:
+                salesforce_base_url = getenv("SALESFORCE_TECHSPEC_URL", "https://forgex-dev-salesforce-techspec.azurewebsites.net")
+                resp = requests.post(
+                    f"{salesforce_base_url}/api/workspace/delete",
+                    json={"workspace_id": str(ws_id)},
+                    timeout=90,
+                )
+                print(f"[Salesforce TechSpec Cleanup] workspace {ws_id}: status={resp.status_code}, body={resp.text[:200]}")
+            except Exception as sf_err:
+                print(f"[Salesforce TechSpec Cleanup] Failed to delete salesforce_techspec artifacts for workspace {ws_id}: {sf_err}")
+
+        threading.Thread(target=_delete_salesforce_techspec_artifacts, args=(workspace_id,), daemon=True).start()
+        
         return {"response": "Workspace deleted (set inactive)"}
     except Exception as e:
         session.rollback()
@@ -1535,7 +1669,7 @@ def delete_workspace(workspace_id):
 
 @mcp.tool()
 @require_auth
-def fetch_workspace_details(workspace_id):
+def fetch_workspace_details(workspace_id) -> ToolResult:
     '''
     Fetch all information about a workspace, including master table, mappings, and all tool/agent/user details.
     Args:
@@ -1618,7 +1752,9 @@ def fetch_workspace_details(workspace_id):
                     agent_dict['type'] = 'agent'
                     agents.append(agent_dict)
 
-                return {
+                return ToolResult(
+                    content=[],
+                    structured_content={
                     "workspace": ws_info,
                     "industry": None,
                     "industry_name": None,
@@ -1629,7 +1765,7 @@ def fetch_workspace_details(workspace_id):
                     "agents": agents,
                     "users": [],
                     "knowledge_bases": []
-                }
+                })
             else:
                 return {"error": "Workspace not found or inactive"}
 
