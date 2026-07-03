@@ -8,6 +8,7 @@ from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 from bson.objectid import ObjectId
 from configparser import ConfigParser
+from kbcurator.utils.blob_sas import refresh_source_url
 
 # Load .env file if it exists (for local development)
 env_path = os.path.abspath(os.path.join(os.getcwd(), '.env'))
@@ -115,11 +116,28 @@ class SessionHistoryManager:
 
     def get_recent_sessions(self, workspace_id, user_id, limit=5):
         try:
-            
+            # Ensure consistent types with persisted docs.
+            # Most callers pass ints (see message_gpt), but some tools pass strings.
+            try:
+                workspace_id = int(workspace_id) if workspace_id is not None else workspace_id
+            except (TypeError, ValueError):
+                pass
+            try:
+                user_id = int(user_id) if user_id is not None else user_id
+            except (TypeError, ValueError):
+                pass
+
             query = {"workspace_id": workspace_id, "user_id": user_id}
             sessions = self.chat_collection.distinct("session_id", query)
             sessions = [str(s) for s in sessions if s]
-            return sessions[-limit:] if sessions else ["No sessions found"]
+
+            # Preserve existing behavior for the common case where callers want the
+            # last N sessions, but allow limit<=0 to mean "return all".
+            if not sessions:
+                return ["No sessions found"]
+            if not limit or int(limit) <= 0:
+                return sessions
+            return sessions[-int(limit):]
         except Exception as e:
             logging.error(f"Error in get_recent_sessions: {e}")
             return ["Error fetching sessions"]
@@ -136,17 +154,29 @@ class SessionHistoryManager:
 
     def load_history(self, workspace_id, user_id, session_id):
         try:
+            # Ensure consistent types with persisted docs.
+            try:
+                workspace_id = int(workspace_id) if workspace_id is not None else workspace_id
+            except (TypeError, ValueError):
+                pass
+            try:
+                user_id = int(user_id) if user_id is not None else user_id
+            except (TypeError, ValueError):
+                pass
+
             query = {"workspace_id": workspace_id, "user_id": user_id, "session_id": session_id}
             messages = list(self.chat_collection.find(query).sort("timestamp", 1))
             return [
                 {
-                    "role": m["role"], 
-                    "content": m["content"], 
-                    "timestamp": m["timestamp"], 
+                    "role": m["role"],
+                    "content": m["content"],
+                    "timestamp": m["timestamp"],
                     "session_id": m["session_id"],
                     "task_ids": m.get("tasks", None),  # Fixed: read from "tasks" not "task_ids"
-                    "sources": m.get("sources", [])     # Added: return sources field
-                } 
+                    # Re-mint a fresh SAS download URL from the persisted blob
+                    # coordinates so links served from old sessions never expire.
+                    "sources": [refresh_source_url(s) for s in m.get("sources", [])]
+                }
                 for m in messages
             ]
         except Exception as e:
