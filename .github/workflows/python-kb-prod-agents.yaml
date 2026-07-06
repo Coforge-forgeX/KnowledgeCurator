@@ -3,17 +3,17 @@ on:
   workflow_dispatch: 
   push:
     branches:
-      - main
+      - sei-onprem-main
     paths:    
       - 'src/kbcurator/**'
       - 'Dockerfile'
       - '.github/workflows/python-kb-prod-agents.yaml'
    
 env:
-  AZURE_WEBAPP_NAME: forgeX2-kb                     
+  AZURE_WEBAPP_NAME: forgex-auronova-kb                     
   REGISTRY: ${{ secrets.registry }}
-  DOCKER_IMAGE_NAME: prod2-poly-kbcurator
-  rg_name: ${{ secrets.PROD_RG_NAME }}
+  DOCKER_IMAGE_NAME: auronova-kbcurator
+  rg_name: ${{ secrets.DEV_RG_NAME }}
   subscription_id: ${{ secrets.subscription_id }}
 
 jobs:
