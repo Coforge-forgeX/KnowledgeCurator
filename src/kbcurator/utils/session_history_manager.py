@@ -211,11 +211,18 @@ class SessionHistoryManager:
                 "user_id": user_id,
                 "session_id": session_id
             }
+            now = datetime.utcnow()
             update_data = {
                 "$set": {
                     "title": title,
-                    "timestamp": datetime.utcnow()
-                }
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "timestamp": now,
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                },
             }
             result = self.context_collection.update_one(filter_query, update_data, upsert=True)
             
@@ -239,6 +246,111 @@ class SessionHistoryManager:
                 "status": "error",
                 "message": str(e)
             }
+
+    def ensure_conversation_metadata(self, workspace_id, user_id, session_id, title, timestamp=None):
+        """Create conversation metadata only once; do not overwrite existing title/time."""
+        try:
+            now = timestamp or datetime.utcnow()
+            filter_query = {
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "session_id": session_id,
+            }
+            update_data = {
+                "$setOnInsert": {
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "title": title,
+                    "timestamp": now,
+                }
+            }
+            result = self.context_collection.update_one(filter_query, update_data, upsert=True)
+            return {
+                "status": "success",
+                "created": bool(result.upserted_id),
+            }
+        except Exception as e:
+            logging.error(f"Error in ensure_conversation_metadata: {e}")
+            return {
+                "status": "error",
+                "message": str(e),
+            }
+
+    def get_recent_conversation_summaries(self, workspace_id, user_id, limit=5):
+        """Return conversation summaries with backward-compatible fallback to chat history."""
+        try:
+            try:
+                workspace_id = int(workspace_id) if workspace_id is not None else workspace_id
+            except (TypeError, ValueError):
+                pass
+            try:
+                user_id = int(user_id) if user_id is not None else user_id
+            except (TypeError, ValueError):
+                pass
+
+            query = {"workspace_id": workspace_id, "user_id": user_id}
+
+            summaries_by_session = {}
+
+            # 1) Primary source: contexts collection (new sessions)
+            for doc in self.context_collection.find(query):
+                session_id = doc.get("session_id")
+                if not session_id:
+                    continue
+                summaries_by_session[str(session_id)] = {
+                    "session_id": str(session_id),
+                    "time": doc.get("timestamp"),
+                    "title": doc.get("title"),
+                }
+
+            # 2) Fallback source: chat history first user message/time (older sessions)
+            # Group by session and capture earliest user message timestamp and content.
+            pipeline = [
+                {
+                    "$match": {
+                        "workspace_id": workspace_id,
+                        "user_id": user_id,
+                        "role": "user",
+                    }
+                },
+                {"$sort": {"timestamp": 1}},
+                {
+                    "$group": {
+                        "_id": "$session_id",
+                        "first_time": {"$first": "$timestamp"},
+                        "first_message": {"$first": "$content"},
+                    }
+                },
+            ]
+
+            for row in self.chat_collection.aggregate(pipeline):
+                session_id = row.get("_id")
+                if not session_id:
+                    continue
+                session_key = str(session_id)
+                if session_key in summaries_by_session:
+                    if not summaries_by_session[session_key].get("title"):
+                        summaries_by_session[session_key]["title"] = row.get("first_message")
+                    if not summaries_by_session[session_key].get("time"):
+                        summaries_by_session[session_key]["time"] = row.get("first_time")
+                else:
+                    summaries_by_session[session_key] = {
+                        "session_id": session_key,
+                        "time": row.get("first_time"),
+                        "title": row.get("first_message"),
+                    }
+
+            summaries = list(summaries_by_session.values())
+            summaries.sort(key=lambda s: s.get("time") or datetime.min, reverse=True)
+
+            if limit and int(limit) > 0:
+                summaries = summaries[:int(limit)]
+
+            return summaries
+        except Exception as e:
+            logging.error(f"Error in get_recent_conversation_summaries: {e}")
+            return []
 
     def get_conversation_title(self, workspace_id, user_id, session_id):
         """Retrieve the conversation title from the context collection.
