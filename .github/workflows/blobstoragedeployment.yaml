@@ -1,9 +1,9 @@
 name: Build Docker Image and Upload to Blob
 
 on:
-  # push:
-  #   branches:
-  #     - sei-onprem-main
+  push:
+    branches:
+      - sei-onprem-main
   workflow_dispatch:
 
 env:
