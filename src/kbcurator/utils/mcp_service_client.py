@@ -10,6 +10,7 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from kbcurator.utils.db import db
 from kbcurator.utils.constants import WorkspaceType
+from urllib.parse import urlparse
 
 # Load .env file if it exists (for local development)
 env_path = os.path.abspath(os.path.join(os.getcwd(), '.env'))
@@ -25,7 +26,7 @@ class MCPServiceClient:
     def __init__(self, server_url, industry, sub_industry, knowledge_bases, token: str | None = None):
         # self.host = host #host
         # self.port = port #port
-        self.server_url = server_url #server_url
+        self.server_url = self._resolve_server_url(server_url)
         self.industry = industry #industry
         self.sub_industry = sub_industry #sub_industry
         self.knowledge_bases = knowledge_bases 
@@ -37,6 +38,26 @@ class MCPServiceClient:
             
         self.obj = MCPClient(server_url=self.server_url, token=token)
         self._token = token
+
+    def _resolve_server_url(self, server_url: str | None) -> str:
+        """Resolve and normalize Streamable HTTP MCP URL."""
+        raw = (server_url or "").strip()
+
+        if not raw:
+            raw = (os.getenv("KC_SERVICE_URL") or "").strip()
+
+        if not raw:
+            raw = (os.getenv("KBCURATOR_URL") or "").strip()
+
+        if raw and not raw.startswith(("http://", "https://")):
+            raw = f"http://{raw}"
+
+        parsed = urlparse(raw)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return raw
+
+        # Safe fallback for local runs.
+        return "http://127.0.0.1:8002/mcp"
 
     def _workspace_id_to_alpha(self, workspace_id) -> str:
         digit_map = {
@@ -266,7 +287,7 @@ class MCPServiceClient:
             }
 
             tool_name = "query_rag"
-            print("Connected to MCP server for RAG query.")
+            print(f"Connected to MCP server for RAG query at: {self.server_url}")
             token = self._token if self._token else ""
             async with Client(
                 transport=StreamableHttpTransport(
@@ -284,6 +305,14 @@ class MCPServiceClient:
             
             # Check if response has structured format with sources
             if text_value and isinstance(text_value, dict):
+                if "error" in text_value:
+                    error_text = str(text_value.get("error") or "Unknown RAG error")
+                    print(f"RAG query returned error: {error_text}")
+                    return {
+                        "response": f"Error: {error_text}",
+                        "task_ids": []
+                    }
+
                 if "sources" in text_value:
                     # Return full structured response with sources
                     return {

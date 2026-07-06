@@ -63,9 +63,26 @@ azure_embedding_api_version = os.getenv('AZURE_OPENAI_EMBEDDING_MODEL_API_VERSIO
 azure_embedding_deployement_name = os.getenv('AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL')
  
  
-os.environ["NEO4J_URI"] = os.getenv("NEO4J_DATABASE_NEO4J_BOLT_URI", "bolt://localhost:7687") or "bolt://localhost:7687"
+def _normalize_neo4j_uri(uri: str | None) -> str:
+    """Normalize Neo4j URI for local single-instance setups."""
+    value = (uri or "").strip()
+    if not value:
+        return "bolt://localhost:7687"
+
+    # Local single-instance Neo4j often fails with routing protocol (neo4j://).
+    if value.startswith("neo4j://") and ("localhost" in value or "127.0.0.1" in value):
+        return "bolt://" + value[len("neo4j://"):]
+
+    return value
+
+
+os.environ["NEO4J_URI"] = _normalize_neo4j_uri(
+    os.getenv("NEO4J_DATABASE_NEO4J_BOLT_URI", "bolt://localhost:7687")
+)
 os.environ["NEO4J_USERNAME"] = os.getenv("NEO4J_DATABASE_NEO4J_USER") or ""
 os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_DATABASE_NEO4J_PASSWORD") or ""
+# Use a stable DB by default; workspace isolation is handled by LightRAG workspace/keying.
+os.environ["NEO4J_DATABASE"] = os.getenv("NEO4J_DATABASE_NAME", "neo4j") or "neo4j"
  
 # os.environ["POSTGRES_HOST"] = os.getenv("POSTGRESQL_DATABASE_HOST") or ""
 # os.environ["POSTGRES_HOST"] = "forgexpostgresql.postgres.database.azure.com"
@@ -73,10 +90,26 @@ os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_DATABASE_NEO4J_PASSWORD") or ""
 # os.environ["POSTGRES_PASSWORD"] = os.getenv("POSTGRESQL_DATABASE_PASSWORD") or ""
 # os.environ["POSTGRES_DATABASE"] = os.getenv("POSTGRESQL_DATABASE_DATABASE") or ""
 
-os.environ["POSTGRES_HOST"] = os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_HOST") or ""
-os.environ["POSTGRES_USER"] = os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_USER") or ""
-os.environ["POSTGRES_PASSWORD"] = os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_PASSWORD") or ""
-os.environ["POSTGRES_DATABASE"] = os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_DATABASE") or ""
+os.environ["POSTGRES_HOST"] = (
+    os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_HOST")
+    or os.getenv("POSTGRESQL_DATABASE_HOST")
+    or ""
+)
+os.environ["POSTGRES_USER"] = (
+    os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_USER")
+    or os.getenv("POSTGRESQL_DATABASE_USER")
+    or ""
+)
+os.environ["POSTGRES_PASSWORD"] = (
+    os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_PASSWORD")
+    or os.getenv("POSTGRESQL_DATABASE_PASSWORD")
+    or ""
+)
+os.environ["POSTGRES_DATABASE"] = (
+    os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_DATABASE")
+    or os.getenv("POSTGRESQL_DATABASE_DATABASE")
+    or ""
+)
  
 embedding_dim = int(os.getenv("OLLAMA_MODEL_EMBEDDING_MODEL_DIMS", "1024"))
 max_token_size = int(os.getenv("OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS", "8192"))
@@ -303,10 +336,14 @@ def generate_download_url_for_file(
 
 async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = None) -> LightRAG:
     data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
-    lightrag_database = ''.join(char for char in f"{domain}{kb_name}" if char.isalpha())
-    os.environ['NEO4J_DATABASE'] = lightrag_database
-    print(''.join(char for char in f"{domain}{kb_name}" if char.isalpha()))
-    rag = LightRAG(
+    lightrag_workspace = ''.join(char for char in f"{domain}{kb_name}" if char.isalpha()) or "defaultworkspace"
+
+    # Keep Neo4j DB stable (usually "neo4j"); per-workspace DBs may not exist locally.
+    os.environ['NEO4J_DATABASE'] = os.getenv("NEO4J_DATABASE_NAME", "neo4j") or "neo4j"
+    print(lightrag_workspace)
+
+    def _build_rag(graph_storage: str = "Neo4JStorage") -> LightRAG:
+        return LightRAG(
             working_dir=data_dir,
             llm_model_func=llm_model_func,
             embedding_func=EmbeddingFunc(
@@ -314,13 +351,54 @@ async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = 
                 max_token_size=max_token_size,
                 func=embedding_func
             ),
-            graph_storage="Neo4JStorage",
-            workspace = lightrag_database,
+            graph_storage=graph_storage,
+            workspace=lightrag_workspace,
             vector_storage="PGVectorStorage",
             chunk_token_size=1000,
             chunk_overlap_token_size=200,
         )
-    await rag.initialize_storages()
+
+    rag = _build_rag("Neo4JStorage")
+    try:
+        await rag.initialize_storages()
+    except Exception as e:
+        error_text = str(e).lower()
+        retried = False
+
+        # Retry once with bolt protocol if routing endpoint is unavailable.
+        current_uri = os.environ.get("NEO4J_URI", "")
+        if "routing information" in error_text and current_uri.startswith("neo4j://"):
+            os.environ["NEO4J_URI"] = current_uri.replace("neo4j://", "bolt://", 1)
+            retried = True
+
+        # Retry once with default DB if requested DB is unavailable.
+        if "database" in error_text and "not available" in error_text:
+            if os.environ.get("NEO4J_DATABASE") != "neo4j":
+                os.environ["NEO4J_DATABASE"] = "neo4j"
+                retried = True
+
+        if not retried:
+            # If Neo4j is unavailable locally, fall back to file-based graph storage
+            # so search can still run with vector/chunk context.
+            neo4j_down_markers = [
+                "couldn't connect",
+                "unable to retrieve routing information",
+                "connection refused",
+                "database neo4j",
+                "not available",
+            ]
+            if any(marker in error_text for marker in neo4j_down_markers):
+                print("Neo4j unavailable. Falling back to NetworkXStorage for graph layer.")
+                rag = _build_rag("NetworkXStorage")
+                await rag.initialize_storages()
+                initialize_share_data()
+                await initialize_pipeline_status()
+                return rag
+            raise
+
+        rag = _build_rag()
+        await rag.initialize_storages()
+
     initialize_share_data()
     await initialize_pipeline_status()
     return rag
