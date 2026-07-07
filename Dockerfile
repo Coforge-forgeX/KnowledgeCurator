@@ -35,6 +35,6 @@ RUN pip install gunicorn uvicorn
 RUN playwright install --with-deps chromium
 
 # Expose FastAPI port
-EXPOSE 8000
+EXPOSE 9000
 
-CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker kbcurator.server.main:http_app --bind 0.0.0.0:${PORT:-8000} --workers 4 --timeout 120"]
+CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker kbcurator.server.main:http_app --bind 0.0.0.0:${PORT:-9000}"]

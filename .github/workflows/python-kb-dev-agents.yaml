@@ -5,14 +5,13 @@ on:
   push:
     branches:
       - development
-      - dev_arsh2
     paths:    
       - 'src/kbcurator/**'
       - 'Dockerfile'
       - '.github/workflows/python-kb-dev-agents.yaml'
    
 env:
-  AZURE_WEBAPP_NAME: forgex-dev-kb
+  AZURE_WEBAPP_NAME: forgeX-dev-kb                     
   REGISTRY: ${{ secrets.registry }}
   DOCKER_IMAGE_NAME: dev-kbcurator
   rg_name: ${{ secrets.DEV_RG_NAME }}
@@ -74,17 +73,6 @@ jobs:
           --name ${{ env.AZURE_WEBAPP_NAME }} \
           --resource-group ${{ env.rg_name }} \
           --set siteConfig.http20Enabled=false
-
-    - name: Configure App Settings (Port and Environment)
-      run: |
-        az webapp config appsettings set \
-          --name ${{ env.AZURE_WEBAPP_NAME }} \
-          --resource-group ${{ env.rg_name }} \
-          --settings \
-            WEBSITES_PORT=8000 \
-            PORT=8000 \
-            PYTHONUNBUFFERED=1 \
-            WEBSITES_CONTAINER_START_TIME_LIMIT=1800
 
     - name: Restart App Service
       run: |
