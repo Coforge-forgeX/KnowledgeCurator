@@ -1,5 +1,6 @@
 from fastmcp import FastMCP
 from contextlib import asynccontextmanager
+import inspect
 from typing import AsyncIterator
 from kbcurator.utils.mongodb_singleton import get_mongodb_client
 import logging
@@ -59,4 +60,26 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
         except Exception:
             pass
 
-mcp = FastMCP("kbCuratorAdapter", lifespan=lifespan)
+def _create_mcp_server() -> FastMCP:
+    kwargs = {"lifespan": lifespan}
+    signature = inspect.signature(FastMCP.__init__)
+
+    # Older FastMCP variants auto-enable localhost-only host validation.
+    # Explicit non-local host prevents 421 Invalid Host header on Azure.
+    if "host" in signature.parameters:
+        kwargs["host"] = "0.0.0.0"
+
+    if "transport_security" in signature.parameters:
+        try:
+            from mcp.server.transport_security import TransportSecuritySettings
+
+            kwargs["transport_security"] = TransportSecuritySettings(
+                enable_dns_rebinding_protection=False
+            )
+        except Exception:
+            pass
+
+    return FastMCP("kbCuratorAdapter", **kwargs)
+
+
+mcp = _create_mcp_server()
