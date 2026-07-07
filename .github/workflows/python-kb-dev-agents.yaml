@@ -67,13 +67,6 @@ jobs:
           --resource-group ${{ env.rg_name }} \
           --set siteConfig.healthCheckPath="/health"
 
-    - name: Disable HTTP/2 (avoid 421 Misdirected Request)
-      run: |
-        az webapp update \
-          --name ${{ env.AZURE_WEBAPP_NAME }} \
-          --resource-group ${{ env.rg_name }} \
-          --set siteConfig.http20Enabled=false
-
     - name: Restart App Service
       run: |
         az webapp restart \
