@@ -424,7 +424,7 @@ class CookieWrapperApp:
 
 
 # Wrap the MCP app with the cookie layer
-http_app = CookieWrapperApp(base_app)
+http_app = base_app
 
 
 # ---------------------------
