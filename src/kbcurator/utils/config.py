@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     HTTP_FORWARDED_COUNT: Optional[int] = Field(1, env="HTTP_FORWARDED_COUNT")
     WEBSITE_PRESERVE_HOST_HEADER: Optional[bool] = Field(None, env="WEBSITE_PRESERVE_HOST_HEADER")
     WEBSITES_ENABLE_APP_SERVICE_STORAGE: Optional[bool] = Field(None, env="WEBSITES_ENABLE_APP_SERVICE_STORAGE")
-    WEBSITES_PORT: Optional[int] = Field(9000, env="WEBSITES_PORT")
+    WEBSITES_PORT: Optional[int] = Field(8000, env="WEBSITES_PORT")
     PO_HOST: Optional[str] = Field(None, env="PO_HOST")
     PO_PORT: Optional[int] = Field(None, env="PO_PORT")
     REQUIRED_SCOPE: Optional[str] = Field(None, env="REQUIRED_SCOPE")
