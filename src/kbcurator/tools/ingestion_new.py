@@ -1,4 +1,4 @@
-from datasets import Dataset
+# from datasets import Dataset
 import os
 from dotenv import load_dotenv
 import time
@@ -20,7 +20,7 @@ from docx import Document
 import io
 import numpy as np
 from PIL import Image
-import pytesseract
+# import pytesseract
 import fitz
 import uuid
 from typing import Optional, List, Dict
@@ -84,7 +84,7 @@ embedding_dim = int(os.getenv("OLLAMA_MODEL_EMBEDDING_MODEL_DIMS", "1024"))
 max_token_size = int(os.getenv("OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS", "8192"))
 base_url = os.getenv("OLLAMA_MODEL_BASE_URL")
  
-pytesseract.pytesseract.tesseract_cmd = r'C:\Users\aalok\AppData\Local\Programs\Tesseract-OCR\tesseract.exe'
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Users\aalok\AppData\Local\Programs\Tesseract-OCR\tesseract.exe'
 
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], **kwargs
