@@ -337,13 +337,16 @@ def generate_download_url_for_file(
 async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = None) -> LightRAG:
     data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
     lightrag_workspace = ''.join(char for char in f"{domain}{kb_name}" if char.isalpha()) or "defaultworkspace"
+    disable_pgvector = os.getenv("LIGHTRAG_DISABLE_PGVECTOR", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
 
     # Keep Neo4j DB stable (usually "neo4j"); per-workspace DBs may not exist locally.
     os.environ['NEO4J_DATABASE'] = os.getenv("NEO4J_DATABASE_NAME", "neo4j") or "neo4j"
     print(lightrag_workspace)
 
-    def _build_rag(graph_storage: str = "Neo4JStorage") -> LightRAG:
-        return LightRAG(
+    def _build_rag(graph_storage: str = "Neo4JStorage", use_pgvector: bool = True) -> LightRAG:
+        kwargs = dict(
             working_dir=data_dir,
             llm_model_func=llm_model_func,
             embedding_func=EmbeddingFunc(
@@ -353,17 +356,50 @@ async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = 
             ),
             graph_storage=graph_storage,
             workspace=lightrag_workspace,
-            vector_storage="PGVectorStorage",
             chunk_token_size=1000,
             chunk_overlap_token_size=200,
         )
+        if use_pgvector:
+            kwargs["vector_storage"] = "PGVectorStorage"
+        return LightRAG(**kwargs)
 
-    rag = _build_rag("Neo4JStorage")
+    rag = _build_rag("Neo4JStorage", use_pgvector=not disable_pgvector)
     try:
         await rag.initialize_storages()
     except Exception as e:
         error_text = str(e).lower()
         retried = False
+
+        pgvector_error_markers = [
+            "unknown type: public.vector",
+            "extension \"vector\" is not allow-listed",
+            "could not create vector extension",
+        ]
+        if any(marker in error_text for marker in pgvector_error_markers):
+            print("PGVector unavailable. Falling back to default local vector storage.")
+            try:
+                rag = _build_rag("Neo4JStorage", use_pgvector=False)
+                await rag.initialize_storages()
+                initialize_share_data()
+                await initialize_pipeline_status()
+                return rag
+            except Exception as fallback_err:
+                fallback_text = str(fallback_err).lower()
+                neo4j_down_markers = [
+                    "couldn't connect",
+                    "unable to retrieve routing information",
+                    "connection refused",
+                    "database neo4j",
+                    "not available",
+                ]
+                if any(marker in fallback_text for marker in neo4j_down_markers):
+                    print("Neo4j unavailable and PGVector disabled. Falling back to NetworkXStorage + local vector storage.")
+                    rag = _build_rag("NetworkXStorage", use_pgvector=False)
+                    await rag.initialize_storages()
+                    initialize_share_data()
+                    await initialize_pipeline_status()
+                    return rag
+                raise
 
         # Retry once with bolt protocol if routing endpoint is unavailable.
         current_uri = os.environ.get("NEO4J_URI", "")
@@ -377,27 +413,40 @@ async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = 
                 os.environ["NEO4J_DATABASE"] = "neo4j"
                 retried = True
 
+        neo4j_down_markers = [
+            "couldn't connect",
+            "unable to retrieve routing information",
+            "connection refused",
+            "database neo4j",
+            "not available",
+            "timed out trying to establish connection",
+        ]
+
         if not retried:
             # If Neo4j is unavailable locally, fall back to file-based graph storage
             # so search can still run with vector/chunk context.
-            neo4j_down_markers = [
-                "couldn't connect",
-                "unable to retrieve routing information",
-                "connection refused",
-                "database neo4j",
-                "not available",
-            ]
             if any(marker in error_text for marker in neo4j_down_markers):
                 print("Neo4j unavailable. Falling back to NetworkXStorage for graph layer.")
-                rag = _build_rag("NetworkXStorage")
+                rag = _build_rag("NetworkXStorage", use_pgvector=not disable_pgvector)
                 await rag.initialize_storages()
                 initialize_share_data()
                 await initialize_pipeline_status()
                 return rag
             raise
 
-        rag = _build_rag()
-        await rag.initialize_storages()
+        try:
+            rag = _build_rag(use_pgvector=not disable_pgvector)
+            await rag.initialize_storages()
+        except Exception as retry_err:
+            retry_text = str(retry_err).lower()
+            if any(marker in retry_text for marker in neo4j_down_markers):
+                print("Neo4j retry failed. Falling back to NetworkXStorage for graph layer.")
+                rag = _build_rag("NetworkXStorage", use_pgvector=not disable_pgvector)
+                await rag.initialize_storages()
+                initialize_share_data()
+                await initialize_pipeline_status()
+                return rag
+            raise
 
     initialize_share_data()
     await initialize_pipeline_status()

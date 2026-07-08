@@ -10,7 +10,7 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from kbcurator.utils.db import db
 from kbcurator.utils.constants import WorkspaceType
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 # Load .env file if it exists (for local development)
 env_path = os.path.abspath(os.path.join(os.getcwd(), '.env'))
@@ -49,11 +49,21 @@ class MCPServiceClient:
         if not raw:
             raw = (os.getenv("KBCURATOR_URL") or "").strip()
 
+        # If scheme is omitted, default to HTTPS for cloud hosts and HTTP for local hosts.
         if raw and not raw.startswith(("http://", "https://")):
-            raw = f"http://{raw}"
+            local_hosts = ("localhost", "127.0.0.1")
+            raw = f"http://{raw}" if raw.startswith(local_hosts) else f"https://{raw}"
 
         parsed = urlparse(raw)
         if parsed.scheme in {"http", "https"} and parsed.netloc:
+            path = (parsed.path or "").rstrip("/")
+
+            # Many deployments expose health/status at root, while MCP JSON-RPC lives at /mcp.
+            # Force /mcp only when no explicit path is provided.
+            if not path:
+                parsed = parsed._replace(path="/mcp")
+                return urlunparse(parsed)
+
             return raw
 
         # Safe fallback for local runs.
@@ -274,14 +284,13 @@ class MCPServiceClient:
         # kb_name = f"{self.sub_industry}/{workspace_id_alpha}"
         
         try: 
-            arguments = {
+            base_arguments = {
                 "domain": self.industry,
                 "kb_name": kb_name,
                 "question": user_message,
                 "history": history,
                 "knowledge_bases": self.knowledge_bases,
                 "user_prompt": "",
-                "mode": "mix",
                 "workspace_id": workspace_id,  # ADD THIS
                 "role_id": role_id              # ADD THIS
             }
@@ -289,19 +298,33 @@ class MCPServiceClient:
             tool_name = "query_rag"
             print(f"Connected to MCP server for RAG query at: {self.server_url}")
             token = self._token if self._token else ""
-            async with Client(
-                transport=StreamableHttpTransport(
-                    url=self.server_url,
-                    headers={"Authorization": token},
-                ),
-            ) as client:
-                response = await client.call_tool(
-                    name=tool_name,
-                    arguments=arguments
-                )
+            async def _call_query_with_mode(mode: str):
+                arguments = {**base_arguments, "mode": mode}
+                async with Client(
+                    transport=StreamableHttpTransport(
+                        url=self.server_url,
+                        headers={"Authorization": token},
+                    ),
+                ) as client:
+                    resp = await client.call_tool(
+                        name=tool_name,
+                        arguments=arguments,
+                    )
+                return resp
+
+            response = await _call_query_with_mode("mix")
             print("Received response from MCP server for RAG query.")
-                
+
             text_value = response.structured_content
+
+            # Fallback for environments where pgvector type is unavailable upstream.
+            if isinstance(text_value, dict) and "error" in text_value:
+                first_error = str(text_value.get("error") or "")
+                if "unknown type: public.vector" in first_error.lower():
+                    print("Detected pgvector type error. Retrying query_rag with mode='global'.")
+                    response = await _call_query_with_mode("global")
+                    text_value = response.structured_content
+                    print("Received fallback response from MCP server for RAG query.")
             
             # Check if response has structured format with sources
             if text_value and isinstance(text_value, dict):
