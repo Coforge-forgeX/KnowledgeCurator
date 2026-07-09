@@ -15,13 +15,13 @@ from kbcurator.server.server import mcp
 import psycopg2
 
 from azure.storage.blob import BlobServiceClient
-from PyPDF2 import PdfReader
+# from PyPDF2 import PdfReader
 from docx import Document
 import io
 import numpy as np
-from PIL import Image
+# from PIL import Image
 # import pytesseract
-import fitz
+# import fitz
 import uuid
 from typing import Optional, List, Dict
 from lightrag.operate import get_keywords_from_query
