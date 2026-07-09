@@ -191,10 +191,18 @@ class SessionHistoryManager:
                 "session_id": session_id
             }
             
+            # Delete messages from chat collection
             delete_result = self.chat_collection.delete_many(query)
+            
+            # Delete metadata from context collection to remove from sidebar
+            # Use full query with workspace_id and user_id for consistency
+            context_delete_result = self.context_collection.delete_one(query)
+            
+            total_deleted = delete_result.deleted_count + context_delete_result.deleted_count
+            
             return {
-                "deleted_count": delete_result.deleted_count,
-                "status": "success" if delete_result.deleted_count > 0 else "no records found"
+                "deleted_count": total_deleted,
+                "status": "success" if total_deleted > 0 else "no records found"
             }
         except Exception as e:
             logging.error(f"Error in delete_session: {e}")
