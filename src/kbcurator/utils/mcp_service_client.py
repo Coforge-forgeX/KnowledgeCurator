@@ -203,7 +203,7 @@ class MCPServiceClient:
     #         print("An error occurred while processing your request.")
     #         return "Unable to process your request at this time. Please try again later."
 
-    async def query_rag(self, intent, user_message, history, workspace_id, role_id):
+    async def query_rag(self, intent, user_message, history, workspace_id, role_id, agent_id=None):
         print(f"Calling MCP tool for intent: {intent} with message: {user_message}")
         
         # Initialize kb_name
@@ -261,8 +261,9 @@ class MCPServiceClient:
                 "knowledge_bases": self.knowledge_bases,
                 "user_prompt": "",
                 "mode": "mix",
-                "workspace_id": workspace_id,  # ADD THIS
-                "role_id": role_id              # ADD THIS
+                "workspace_id": str(workspace_id),  # Convert to string for MCP tool
+                "role_id": role_id,
+                "agent_id": agent_id
             }
 
             tool_name = "query_rag"
@@ -334,8 +335,8 @@ class MCPServiceClient:
                     "file_contents": file_contents,
                     "domain": self.industry,
                     "kb_name": kb_name,
-                    "workspace_id": workspace_id,
-                    "user_id": user_id,
+                    "workspace_id": str(workspace_id),  # Convert to string for MCP tool
+                    "user_id": str(user_id),  # Convert to string for MCP tool
                     "expiry_years": 10
                 }
 

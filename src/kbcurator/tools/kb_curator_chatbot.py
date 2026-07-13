@@ -10,7 +10,8 @@ from datetime import datetime
 # Third-party and internal imports
 sys.path.append("../utils")
 from kbcurator.utils.prompt_builder import PromptBuilder
-from kbcurator.utils.azurecustomllm import AzureCustomLLM
+from kbcurator.utils.llm_helper import get_llm_response_with_context_async
+from kbcurator.tools.llm_router_tool import _build_manager_from_db
 from kbcurator.utils.classifier import classifier
 from kbcurator.utils.mcp_service_client import MCPServiceClient
 from kbcurator.server.server import mcp
@@ -31,8 +32,6 @@ from fastmcp.server.dependencies import get_http_headers
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
-
-llm_classifier = AzureCustomLLM()
 
 class IntentDetector:
     """
@@ -62,9 +61,8 @@ class IntentDetector:
             "greeting": ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening'],
             "help": ['help', 'assist me', 'support', 'i need help', 'can you help me','what can you do','what are your capabilities']
         }
-        self.llm_classifier = AzureCustomLLM()
 
-    def detect_intent(self, user_message: str) -> str:
+    async def detect_intent(self, user_message: str, workspace_id: int, agent_id: Optional[int] = None) -> str:
         # Build a prompt with examples for each intent
         prompt = """
             You are an intent classifier for a chatbot. Classify the user message into one of these intents:
@@ -86,9 +84,12 @@ class IntentDetector:
         
         prompt += f"\n\nUser message: \"{user_message}\"\nIntent:"
 
-        response = self.llm_classifier._call(
-            input=user_message,
-            sys_prompt=prompt
+        print(f"MY agent Id: {agent_id}")
+        response = await get_llm_response_with_context_async(
+            workspace_id=workspace_id,
+            user_input=user_message,
+            sys_prompt=prompt,
+            agent_id=agent_id
         )
 
         # print(f"Response from classifier is {response}")
@@ -167,9 +168,9 @@ def resolve_indexed_filename(requested_filename: str, indexed_files: Dict[str, l
 
     return None
 
-async def get_parsed_data(message: str) -> json:
+async def get_parsed_data(message: str, workspace_id: int, agent_id: Optional[int] = None) -> json:
     parser_prompt = PromptBuilder.get_parser_prompt(message)
-    parsed_data = await classifier(message, parser_prompt)
+    parsed_data = await classifier(message, parser_prompt, workspace_id=workspace_id, agent_id=agent_id)
     print(f"Parsed data from classifier: {parsed_data[:10]}")
     parsed_data = json.loads(parsed_data)
     return parsed_data
@@ -205,6 +206,7 @@ class Chatbot:
             workspace_id: int, 
             user_id: int, 
             role_id: int, 
+            agent_id: str | int,
             session_id: str, 
             token: str | None,
             can_curate_kb: bool,
@@ -232,6 +234,7 @@ class Chatbot:
         self.file_names = file_names
         self.file_contents = file_contents
         self.mode = mode
+        self.agent_id = agent_id
         self.task_id = None
         self.token = token
         self.can_curate_kb = bool(can_curate_kb)
@@ -320,7 +323,7 @@ class Chatbot:
                 if self.file_names:
                     intent = 'upload_file'
                 else:
-                    intent = self.intent_detector.detect_intent(message)
+                    intent = await self.intent_detector.detect_intent(message, workspace_id=self.workspace_id, agent_id=self.agent_id)
                     if intent in ['help']:
                         intent = 'help'
                     elif intent in ['greeting']:
@@ -328,7 +331,7 @@ class Chatbot:
                     else:
                         intent = 'search_kb'
             elif self.mode.upper() == 'UPDATE':
-                intent = self.intent_detector.detect_intent(message)
+                intent = await self.intent_detector.detect_intent(message, workspace_id=self.workspace_id, agent_id=self.agent_id)
             else:
                 intent = 'search_kb'
 
@@ -359,7 +362,7 @@ class Chatbot:
         #     return "Sorry, something went wrong while processing your request. Please try again"
             print(f"Detected intent: {intent} for message: {message[:50]}")
 
-            intent_response = await self.route_intent(intent, message, context)
+            intent_response = await self.route_intent(intent, message, context, self.agent_id)
             print("Query RAG response: ", str(intent_response)[:50])
             
             # Handle different response types
@@ -421,7 +424,7 @@ class Chatbot:
             print(f"Error processing message: {e}")
             return "Sorry, something went wrong while processing your request. Please try again"
         
-    async def route_intent(self, intent: str, message: str, context: ChatbotContext):
+    async def route_intent(self, intent: str, message: str, context: ChatbotContext, agent_id: str | int):
         """Route to the appropriate handler based on detected intent."""
         restricted_intents = {
             "upload_file",
@@ -478,10 +481,15 @@ class Chatbot:
         # Extract search query
         try:
             print(f"Inside Search kb {message}")
+            try:
+                _provider = _build_manager_from_db(self.workspace_id, self.agent_id).get_current_provider()
+                print(f"LLM provider for search (workspace_id={self.workspace_id}): {_provider}")
+            except Exception as _e:
+                print(f"Could not resolve LLM provider for search: {_e}")
             history = self.session.load_history(self.workspace_id, self.user_id, self.session_id)
             history = history[-5:]
             # print(f"History: {history}, type: {type(history)}")
-            assistant_message = await self.mcp_tool_obj.query_rag('Search',message, history, self.workspace_id, self.role_id)
+            assistant_message = await self.mcp_tool_obj.query_rag('Search',message, history, self.workspace_id, self.role_id, agent_id=self.agent_id)
             print(f"Query RAG response type: {type(assistant_message)}")
             
             # Check if response is structured (dict with sources) or plain text
@@ -506,7 +514,7 @@ class Chatbot:
 
     async def handle_delete_entity(self, message: str, context: ChatbotContext, intent: str) -> str:
         try:
-            parsed_data = await get_parsed_data(message)
+            parsed_data = await get_parsed_data(message, workspace_id=self.workspace_id, agent_id=self.agent_id)
             print(f"Parsed data for deletion: {parsed_data}")
 
             delet_args = { 
@@ -526,7 +534,7 @@ class Chatbot:
     async def handle_add_entity(self, message: str, context: ChatbotContext, intent: str) -> str:
         # Add entity logic here
         try:
-            parsed_data = await get_parsed_data(message)
+            parsed_data = await get_parsed_data(message, workspace_id=self.workspace_id, agent_id=self.agent_id)
             print(f"Parsed data for addition: {parsed_data}")
 
             add_args = { 
@@ -1122,6 +1130,7 @@ async def message_gpt(
     industry: str,
     sub_industry: str,
     mode: Optional[str],
+    agent_id: str | int,
     knowledge_bases: Optional[list[str]] = None,
     file_names: Optional[List[str]] = None,
     file_contents: Optional[List[str]] = None
@@ -1148,6 +1157,12 @@ async def message_gpt(
     if not valid_scope:
         return {"error": scope_err}
 
+    # Convert string IDs to integers for internal use
+    workspace_id = int(workspace_id)
+    user_id = int(user_id)
+    role_id = int(role_id)
+    agent_id = int(agent_id)
+
     try:
         token = get_http_headers(include_all=True).get('authorization',"") or get_http_headers().get('Authorization',"")
         if token:
@@ -1166,6 +1181,7 @@ async def message_gpt(
             file_names=file_names, 
             file_contents=file_contents, 
             mode=mode,
+            agent_id=agent_id,
             token=token
             )
         response = await bot.process_message(user_message)
@@ -1194,7 +1210,11 @@ def get_conversation_history(workspace_id: str = None, user_id: str = None, limi
         return {"error": "workspace_id is required for authentication."}
 
     # Validate user access to workspace
-    valid, err = validate_user_workspace_access(workspace_id=workspace_id)
+    # Note: validate_user_workspace_access requires both user_id and workspace_id.
+    valid, err = validate_user_workspace_access(
+        user_id=user_id,
+        workspace_id=workspace_id,
+    )
     if not valid:
         return {"error": err}
 
@@ -1223,58 +1243,59 @@ def get_conversation_history(workspace_id: str = None, user_id: str = None, limi
     finally:
         pass
 
+    # Mongo history is stored with integer workspace_id/user_id (see message_gpt).
+    # Normalize IDs so callers can pass strings (typical JSON payloads).
     try:
-        if limit == 5:
-            con_hist = session.get_recent_sessions(workspace_id, user_id, limit=limit)
-            last_messages = []
-            for ses in con_hist:
-                logger.info(f"Session ID: {ses}")
-                history = session.load_history(workspace_id, user_id, ses)
-                # Fetch the conversation title from context collection
-                title = session.get_conversation_title(workspace_id, user_id, ses)
-                if history and len(history) >= 2:
-                    last_msg = history[-2]
-                    last_messages.append({
-                        "role": last_msg.get("role"),
-                        "content": last_msg.get("content"),
-                        "task_ids": last_msg.get("task_ids") if last_msg.get("task_ids") else None,
-                        "session_id": ses,
-                        "title": title,
-                        "time_modified": last_msg.get("timestamp")
-                    })
-            return {"response": last_messages}
-        else:
-            # No threshold: return last user query AND response for each file
-            res = session.get_recent_sessions(workspace_id, user_id, limit=0)
-            conversations = []
-            for ses in res:
-                data = session.load_history(workspace_id, user_id, ses)
-                # Fetch the conversation title from context collection
-                title = session.get_conversation_title(workspace_id, user_id, ses)
-                logger.info(f"Data for session {ses}: {data}")
-                assistant_msg = next((msg for msg in reversed(data) if msg.get("role") == "assistant"), None) if isinstance(data, list) else None
-                if isinstance(data, list) and len(data) >= 2: 
-                    user_msg = next((msg for msg in reversed(data) if msg.get("role") == "user"), None)
-                    last_msg = data[-1]
-                    time_modified_str = last_msg.get("timestamp", "N/A")
-                    conversations.append({
-                        "session_id": ses,
-                        "time_modified": time_modified_str,
-                        "title": title,
-                        "user": user_msg["content"] if user_msg else None,
-                        "assistant": assistant_msg["content"] if assistant_msg else None,
-                        "task_ids": assistant_msg.get("task_ids") if assistant_msg else None
-                    })
-                else:
-                    conversations.append({
-                        "session_id": ses,
-                        "time_modified": "N/A",
-                        "title": title,
-                        "user": None,
-                        "assistant": None,
-                        "task_ids": assistant_msg.get("task_ids") if assistant_msg else None
-                    })
-            return {"response": conversations}
+        workspace_id_q = int(workspace_id) if workspace_id is not None else workspace_id
+    except (TypeError, ValueError):
+        workspace_id_q = workspace_id
+    try:
+        user_id_q = int(user_id) if user_id is not None else user_id
+    except (TypeError, ValueError):
+        user_id_q = user_id
+
+    try:
+        # Treat `limit` as:
+        # - when provided: number of recent sessions to summarize
+        # - when omitted/0: return all sessions
+        sessions_limit = 0 if (limit is None) else int(limit)
+        con_hist = session.get_recent_sessions(workspace_id_q, user_id_q, limit=sessions_limit)
+
+        # SessionHistoryManager.get_recent_sessions may return a sentinel string list.
+        if not con_hist or (len(con_hist) == 1 and con_hist[0] in ["No sessions found", "Error fetching sessions"]):
+            return {"response": []}
+
+        conversations = []
+        for ses in con_hist:
+            if not ses or ses in ["No sessions found", "Error fetching sessions"]:
+                continue
+            data = session.load_history(workspace_id_q, user_id_q, ses)
+            title = session.get_conversation_title(workspace_id_q, user_id_q, ses)
+
+            if not isinstance(data, list) or not data:
+                conversations.append({
+                    "session_id": ses,
+                    "time_modified": "N/A",
+                    "title": title,
+                    "user": None,
+                    "assistant": None,
+                    "task_ids": None,
+                })
+                continue
+
+            assistant_msg = next((msg for msg in reversed(data) if msg.get("role") == "assistant"), None)
+            user_msg = next((msg for msg in reversed(data) if msg.get("role") == "user"), None)
+            last_msg = data[-1] if data else {}
+            conversations.append({
+                "session_id": ses,
+                "time_modified": last_msg.get("timestamp", "N/A"),
+                "title": title,
+                "user": user_msg.get("content") if user_msg else None,
+                "assistant": assistant_msg.get("content") if assistant_msg else None,
+                "task_ids": assistant_msg.get("task_ids") if assistant_msg else None,
+            })
+
+        return {"response": conversations}
     except Exception as e:
         return {"error":f"Error occurred while retrieving conversation history: {e}"}
 
