@@ -13,6 +13,7 @@ from lightrag.kg.shared_storage import initialize_share_data, initialize_pipelin
 import aiohttp
 from kbcurator.server.server import mcp
 import psycopg2
+
 from azure.storage.blob import BlobServiceClient
 from PyPDF2 import PdfReader
 from docx import Document
@@ -33,6 +34,7 @@ import zipfile
 import tempfile
 from azure.storage.blob import BlobServiceClient, ContentSettings
 from azure.storage.blob import generate_blob_sas, BlobSasPermissions
+from kbcurator.utils.blob_sas import build_sas_url
 from datetime import datetime, timedelta
 import base64
 from azure.core.credentials import AzureKeyCredential
@@ -41,7 +43,7 @@ from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.async_configs import BrowserConfig, CrawlerRunConfig, CacheMode, DefaultMarkdownGenerator
 from kbcurator.utils.azurecustomllm import AzureCustomLLM
-from kbcurator.utils.azurecustomllm import AzureCustomLLM
+from kbcurator.utils.llm_helper import get_llm_response, get_llm_response_async
 from kbcurator.utils.access_validation import validate_user_workspace_access
 from kbcurator.utils.request_context import request_var
 from kbcurator.utils.db import db
@@ -275,20 +277,27 @@ def generate_download_url_for_file(
                 try:
                     if blob_client.exists():
                         print(f"✓ File found in {container_type} container: {blob_path}")
-                        
-                        sas_token = generate_blob_sas(
-                            account_name=blob_service_client.account_name,
+
+                        # Mint a fresh SAS via the shared helper (timezone-aware
+                        # UTC expiry + clock-skew buffer).
+                        download_url = build_sas_url(
                             container_name=container_name,
-                            blob_name=blob_path,
-                            account_key=blob_service_client.credential.account_key,
-                            permission=BlobSasPermissions(read=True),
-                            expiry=datetime.now() + timedelta(days=expiry_days),
-                            content_disposition=f'attachment; filename="{file_name}"'
+                            blob_path=blob_path,
+                            file_name=file_name,
+                            expiry_days=expiry_days,
                         )
-                        
-                        download_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{container_name}/{blob_path}?{sas_token}"
+                        if not download_url:
+                            print(f"Failed to mint SAS for: {file_path}")
+                            return None
                         print(f"Generated download URL for: {file_path}")
-                        return download_url
+                        # Return coordinates too so callers can persist them and
+                        # re-mint the URL later instead of storing an expiring link.
+                        return {
+                            "download_url": download_url,
+                            "container_name": container_name,
+                            "blob_path": blob_path,
+                            "download_name": file_name,
+                        }
                 except Exception as e:
                     # Log but continue trying other paths
                     print(f"Error checking blob {blob_path}: {e}")
@@ -303,6 +312,10 @@ def generate_download_url_for_file(
 
 async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = None) -> LightRAG:
     data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+    
+    # Ensure the directory exists
+    os.makedirs(data_dir, exist_ok=True)
+    
     lightrag_database = ''.join(char for char in f"{domain}{kb_name}" if char.isalpha())
     os.environ['NEO4J_DATABASE'] = lightrag_database
     print(''.join(char for char in f"{domain}{kb_name}" if char.isalpha()))
@@ -335,7 +348,8 @@ async def query_rag(
     history: Optional[list] = None,
     mode: str = 'mix',
     workspace_id: Optional[str] = None,  # ADD THIS
-    role_id: Optional[int] = None        # ADD THIS
+    role_id: Optional[int] = None,       # ADD THIS
+    agent_id: Optional[int] = None       # agent-specific LLM config
 ) -> dict:
     """
     Query the RAG system with a question and optional user prompt.
@@ -361,6 +375,10 @@ async def query_rag(
         workspace_id_alpha = ''.join(result)
         if workspace_id_alpha and workspace_id_alpha not in knowledge_bases:
             knowledge_bases.append(workspace_id_alpha)
+
+    # If no knowledge bases and no kb_name, cannot query — return early
+    if not knowledge_bases and not kb_name:
+        return {"error": "No knowledge base configured. Please set domain/kb_name or knowledge_bases."}
             
 
     if history is None:
@@ -497,7 +515,6 @@ When handling relationships with timestamps:
             "history:", history[:10]
         )
         if knowledge_bases:
-            llm_summarize = AzureCustomLLM(temperature=0)
             results = {}
             kb_graph_refs = []
 
@@ -505,7 +522,7 @@ When handling relationships with timestamps:
             # during parallel initialization. Query execution remains parallel below.
             rag_map = {}
             for kb in knowledge_bases:
-                rag_map[kb] = await initialize_rag(domain=domain, kb_name=kb_name+kb)
+                rag_map[kb] = await initialize_rag(domain=domain, kb_name=(kb_name or '') + kb)
 
             async def query_single_kb(kb):
                 try:
@@ -533,7 +550,7 @@ When handling relationships with timestamps:
                     results[kb] = response
                     kb_graph_refs.append(f"Knowledge Base: {kb}")
 
-            # Summarize the results using AzureCustomLLM
+            # Summarize the results using LLM Router
             summary_prompt = user_prompt
             
             for kb, resp in results.items():
@@ -545,32 +562,52 @@ When handling relationships with timestamps:
             summary_prompt += "\n---\nReferences:\n"
             for i, kb in enumerate(results.keys(), 1):
                 summary_prompt += f"[{i}] {kb}\n"
-            summary = llm_summarize._call(
-                input=summary_prompt
-            )
+            
+            # Use LLM Router with workspace_id
+            print(f"📝 [Multi-KB Summary] Using LLM Router for workspace_id={workspace_id}")
+            try:
+                ws_id = int(workspace_id) if workspace_id else None
+                if ws_id:
+                    summary = await get_llm_response_async(workspace_id=ws_id, prompt=summary_prompt, agent_id=agent_id)
+                else:
+                    # Fallback: try to get from context or raise error
+                    raise ValueError("workspace_id is required for LLM calls")
+            except Exception as e:
+                print(f"❌ Error generating summary with LLM Router: {e}")
+                summary = f"Error generating summary: {str(e)}"
 
             
             
-            # Parse references from the summary and generate download URLs
+            # Parse references from the original RAG responses and generate download URLs
             original_kb_name = kb_name.split('/')[0] if '/' in kb_name else kb_name
             sources = []
-            parsed_refs = parse_references_from_response(summary)  # Parse from summary, not response
+            
+            # Collect references from all KB responses instead of the LLM summary
+            all_parsed_refs = []
+            for kb, resp in results.items():
+                if isinstance(resp, str):  # Only process string responses, skip error dicts
+                    kb_refs = parse_references_from_response(resp)
+                    all_parsed_refs.extend(kb_refs)
+            
+            print(f"Parsed {len(all_parsed_refs)} references from original RAG responses")
 
-            print(f"Parsed {len(parsed_refs)} references from LightRAG response")
-
-            for ref in parsed_refs:
+            for ref in all_parsed_refs:
                 citation = ref['citation_number']
                 file_path = ref['file_path']
                 
                 print(f"Processing reference {citation}: {file_path}")
                 
-                download_url = generate_download_url_for_file(domain, original_kb_name, file_path,workspace_id=workspace_id,
+                dl = generate_download_url_for_file(domain, original_kb_name, file_path,workspace_id=workspace_id,
                 role_id=role_id)
-                
-                if download_url:
+
+                if dl:
                     sources.append({
                         "file_name": f"{citation} {os.path.basename(file_path)}",
-                        "download_url": download_url
+                        "download_url": dl["download_url"],
+                        # Persist coordinates so the link can be re-minted later.
+                        "container_name": dl["container_name"],
+                        "blob_path": dl["blob_path"],
+                        "download_name": dl["download_name"],
                     })
                     print(f"Added source: {citation} {os.path.basename(file_path)}")
                 else:
@@ -635,13 +672,17 @@ When handling relationships with timestamps:
                 print(f"   Domain: {domain}, KB: {original_kb_name}, WorkspaceID: {workspace_id}, RoleID: {role_id}")
                 
                 # Use ORIGINAL kb_name for blob path (not the modified one)
-                download_url = generate_download_url_for_file(domain, original_kb_name, file_path,workspace_id=workspace_id,
+                dl = generate_download_url_for_file(domain, original_kb_name, file_path,workspace_id=workspace_id,
                 role_id=role_id)
-                
-                if download_url:
+
+                if dl:
                     sources.append({
                         "file_name": f"{citation} {os.path.basename(file_path)}",
-                        "download_url": download_url
+                        "download_url": dl["download_url"],
+                        # Persist coordinates so the link can be re-minted later.
+                        "container_name": dl["container_name"],
+                        "blob_path": dl["blob_path"],
+                        "download_name": dl["download_name"],
                     })
                     print(f"✓ Generated URL for {citation}")
                 else:
@@ -1316,10 +1357,18 @@ async def lightrag_indexing_tool(
             return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
  
         chunks = chunk_text(content, chunk_size=2000)
+        print(f"Total Chunks: {len(chunks)}")
+        print(f"[DEBUG] File path passed to LightRAG: '{file_path}'")
+        print(f"[DEBUG] file_path type: {type(file_path)}")
+        
+        # Ensure file_path uses forward slashes (for consistency across OS)
+        normalized_file_path = file_path.replace('\\', '/') if file_path else file_path
+        print(f"[DEBUG] Normalized file_path: '{normalized_file_path}'")
+        
         for idx, chunk in enumerate(chunks):
-            await rag.ainsert(input=chunk, file_paths=[file_path])
-            #await ctx.debug(f"Progress: {idx+1}/{len(chunks)}")
-        return {"status": "success", "file": file_path, "chunks": len(chunks)}
+            await rag.ainsert(input=chunk, file_paths=[normalized_file_path])
+            print(f"Chunk {idx+1}/{len(chunks)} indexed for: {normalized_file_path}")
+        return {"status": "success", "file": normalized_file_path, "chunks": len(chunks)}
     except Exception as e:
         return {"error": str(e)}    
  
@@ -1486,11 +1535,21 @@ async def upload_and_index_tool(
             if tid:
                 update_file_task_status(tid, "failed")
 
-    # Kick off one background coroutine per file
+    # Prepare one background worker that processes files sequentially.
+    # This avoids concurrent LightRAG writes to the same KB, which can
+    # cause lock contention and misleading per-file indexing status timing.
     print("Starting background upload and indexing tasks for files:", file_names)
     print("length file_contents", len(file_contents))
+    print(f"[DEBUG] upload_path parameter: '{upload_path}'")
+    print(f"[DEBUG] container_name parameter: '{container_name}'")
+    print(f"[DEBUG] domain parameter: '{domain}'")
+    print(f"[DEBUG] kb_name parameter: '{kb_name}'")
+    
+    queued_jobs = []
     for fname, fcontent in zip(file_names, file_contents):
         per_file_path = f"{upload_path}/{fname}" if upload_path and fname else None
+        print(f"[DEBUG] File '{fname}' -> path: '{per_file_path}'")
+        
         # Compute human-readable size with units for storage in file_tasks.file_size
         _bytes = _estimate_content_size_bytes(fcontent)
         estimated_size = _format_size_with_unit(_bytes)
@@ -1510,7 +1569,104 @@ async def upload_and_index_tool(
             "file_path": per_file_path,
             "task_id": tid,
         })
-        asyncio.create_task(background_upload_then_index_single(fname, fcontent, per_file_path, tid))
+
+        queued_jobs.append((fname, fcontent, per_file_path, tid))
+
+    async def background_upload_all_then_index_sequentially(jobs):
+        # Phase 1: Upload ALL files in parallel
+        async def upload_single(fname, fcontent, fpath, tid):
+            try:
+                if not tid:
+                    print(f"No task id created for file {fname}; aborting upload.")
+                    return (fname, fcontent, fpath, tid, False)
+
+                update_file_task_status(tid, "uploading")
+                upload_result = await upload_files_and_get_urls(
+                    container_name,
+                    upload_path or "",
+                    [fname],
+                    [fcontent],
+                    expiry_years=expiry_years,
+                )
+
+                per_file_error = False
+                if isinstance(upload_result, dict):
+                    if upload_result.get("error"):
+                        per_file_error = True
+                    else:
+                        v = upload_result.get(fname)
+                        if isinstance(v, str) and v.startswith("Error:"):
+                            per_file_error = True
+
+                if per_file_error:
+                    update_file_task_status(tid, "failed")
+                    print("Upload failed for task_id:", tid, "result:", upload_result)
+                    return (fname, fcontent, fpath, tid, False)
+
+                update_file_task_status(tid, "uploaded")
+                print("Upload complete for task_id:", tid)
+                return (fname, fcontent, fpath, tid, True)
+            except Exception as e:
+                tb = traceback.format_exc()
+                print(f"Upload error for task_id {tid}: {e}\n{tb}")
+                if tid:
+                    update_file_task_status(tid, "failed")
+                return (fname, fcontent, fpath, tid, False)
+
+        upload_tasks = [
+            upload_single(fname, fcontent, fpath, tid)
+            for fname, fcontent, fpath, tid in jobs
+        ]
+        upload_results = await asyncio.gather(*upload_tasks)
+
+        # Phase 2: Index only successfully uploaded files, one at a time
+        for fname, fcontent, fpath, tid, upload_ok in upload_results:
+            if not upload_ok:
+                continue
+            try:
+                update_file_task_status(tid, "indexing")
+                if not fpath:
+                    update_file_task_status(tid, "failed")
+                    continue
+
+                print(f"[DEBUG] Calling lightrag_indexing_tool with file_path: '{fpath}'")
+                print(f"[DEBUG] upload_path was: '{upload_path}'")
+                print(f"[DEBUG] fname was: '{fname}'")
+                
+                result = await lightrag_indexing_tool(
+                    container_name=container_name,
+                    domain=domain,
+                    kb_name=kb_name,
+                    file_path=fpath,
+                )
+
+                if isinstance(result, dict) and result.get("error"):
+                    error_msg = str(result.get("error"))
+                    if (
+                        'already exists' in error_msg
+                        or 'No new unique documents' in error_msg
+                        or 'No documents to process' in error_msg
+                    ):
+                        print("File indexing already completed or nothing to index for task_id:", tid)
+                        update_file_task_status(tid, "indexed")
+                    else:
+                        print("Indexing failed for task_id:", tid, "error:", error_msg)
+                        update_file_task_status(tid, "failed")
+                else:
+                    update_file_task_status(tid, "indexed")
+                    print("Indexing complete for task_id:", tid)
+
+            except Exception as e:
+                tb = traceback.format_exc()
+                error_msg = str(e) or "Unknown error (exception has no message)"
+                if 'already exists' in error_msg or 'No new unique documents' in error_msg or 'No documents to process' in error_msg:
+                    print("File indexing already completed or nothing to index for task_id:", tid)
+                    update_file_task_status(tid, "indexed")
+                else:
+                    print(f"Error during background indexing: {error_msg}\nTraceback:\n{tb}")
+                    update_file_task_status(tid, "failed")
+
+    asyncio.create_task(background_upload_all_then_index_sequentially(queued_jobs))
 
     # Immediately inform client that tasks started (avoid MCP timeout)
     await ctx.debug("Upload(s) started in background. Use the returned task_ids to poll status.")
@@ -2714,19 +2870,36 @@ async def edit_entity_in_kg(
  
 @mcp.tool()
 async def edit_relation_in_kg(
-    domain: Optional[str] = None,
-    kb_name: Optional[str] = None,
+    domain: Optional[str] = None,           # Other
+    kb_name: Optional[str] = None,          # Demo Instances/
+    knowledge_bases: Optional[list] = None, # [Cards, Payments]
+    workspace_id: Optional[str] = None,     # 753
     source_entity_name: Optional[str] = None,
     target_entity_name: Optional[str] = None,
     updated_data: Optional[dict] = None,
 ):
     try:
-        rag = await initialize_rag(domain=domain, kb_name=kb_name)
-        return await rag.aedit_relation(
-            source_entity=source_entity_name,
-            target_entity=target_entity_name,
-            updated_data=updated_data,
-        )
+        knowledge_bases = list(knowledge_bases) if knowledge_bases else []
+        if workspace_id:
+            digit_map = {
+                '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+                '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
+            }
+            workspace_id_alpha = ''.join(
+                c if c.isalpha() else digit_map[c]
+                for c in str(workspace_id) if c.isalpha() or c.isdigit()
+            )
+            knowledge_bases.append(workspace_id_alpha)
+
+        results = {}
+        for kg in knowledge_bases:
+            rag = await initialize_rag(domain=domain, kb_name=kb_name + kg)
+            results[kg] = await rag.aedit_relation(
+                source_entity=source_entity_name,
+                target_entity=target_entity_name,
+                updated_data=updated_data,
+            )
+        return results
     except Exception as e:
         return {"error": str(e)}
    
