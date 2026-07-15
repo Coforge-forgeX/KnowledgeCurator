@@ -1338,8 +1338,19 @@ def load_conversation(workspace_id: str, user_id: str, session_id: str) -> Dict[
     finally:
         pass
 
+    # Mongo history is stored with integer workspace_id/user_id (see message_gpt).
+    # Normalize IDs so callers can pass strings (typical JSON payloads).
     try:
-        response = session.load_history(workspace_id, user_id, session_id)
+        workspace_id_q = int(workspace_id) if workspace_id is not None else workspace_id
+    except (TypeError, ValueError):
+        workspace_id_q = workspace_id
+    try:
+        user_id_q = int(user_id) if user_id is not None else user_id
+    except (TypeError, ValueError):
+        user_id_q = user_id
+
+    try:
+        response = session.load_history(workspace_id_q, user_id_q, session_id)
         return {"response": response}
     except Exception as e:
         return {"error": f"Error occurred while loading conversation: {e}"}
@@ -1383,8 +1394,19 @@ def delete_conversation(workspace_id: str, user_id: str, session_id: str) -> Dic
     finally:
         pass
 
+    # Mongo history is stored with integer workspace_id/user_id (see message_gpt).
+    # Normalize IDs so callers can pass strings (typical JSON payloads).
     try:
-        response = session.delete_session(workspace_id, user_id, session_id)
+        workspace_id_q = int(workspace_id) if workspace_id is not None else workspace_id
+    except (TypeError, ValueError):
+        workspace_id_q = workspace_id
+    try:
+        user_id_q = int(user_id) if user_id is not None else user_id
+    except (TypeError, ValueError):
+        user_id_q = user_id
+
+    try:
+        response = session.delete_session(workspace_id_q, user_id_q, session_id)
         return {"response": response}
     except Exception as e:
         return {"error": f"Error occurred while deleting conversation: {e}"}
