@@ -1,14 +1,14 @@
-ï»¿"""
-LLM Router Tool â€” Admin-managed provider configuration.
+"""
+LLM Router Tool — Admin-managed provider configuration.
 
 Admin-only tools:
-    admin_configure_llm_provider   â€” store credentials + enable for chosen agents
-    admin_list_llm_providers       â€” list what is configured in this workspace
-    admin_remove_llm_provider      â€” deactivate a provider from the workspace
+    admin_configure_llm_provider   — store credentials + enable for chosen agents
+    admin_list_llm_providers       — list what is configured in this workspace
+    admin_remove_llm_provider      — deactivate a provider from the workspace
 
 Authenticated-user tools:
-    switch_llm_provider            â€” toggle between already-configured providers
-    test_llm_generation            â€” smoke-test the active provider
+    switch_llm_provider            — toggle between already-configured providers
+    test_llm_generation            — smoke-test the active provider
 
 Credential source: MongoDB config documents (`chatbot_db.llm_router_config`).
 Environment variables are used only to bootstrap MongoDB connectivity.
@@ -34,6 +34,8 @@ from common_adapters.configurableAI import (
 from fastmcp.exceptions import ToolError, ValidationError
 
 logger = logging.getLogger(__name__)
+GENERIC_LLM_ERROR_MESSAGE = "Unable to process the request at the moment. Please try again later."
+
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +120,7 @@ async def _validate_llm_credentials(
         logger.error(f"LLM credential validation failed for provider '{provider}': {e}")
         return {
             "success": False,
-            "error": f"LLM credential validation failed: {str(e)}",
+            "error": GENERIC_LLM_ERROR_MESSAGE,
             "details": "Please check your API key, endpoint, model name, and ensure the service is accessible.",
         }
 
@@ -148,7 +150,7 @@ async def admin_configure_llm_provider(
     For EXISTING providers: only provide the fields you want to update.
 
     Args:
-        provider:         Provider name â€” 'azure' or 'quasar'.
+        provider:         Provider name — 'azure' or 'quasar'.
         workspace_id:     Workspace to configure.
         agent_ids:        List of agent IDs to configure this model for. When provided,
                          this model will be configured ONLY for these agents (others removed).
@@ -338,7 +340,7 @@ async def admin_configure_llm_provider(
                 logger.error(f"Model removal failures: {removal_failures}")
                 # Continue but track the failures
 
-            # Store modelâ†’agents assignment in provider_credentials (for UI display)
+            # Store model?agents assignment in provider_credentials (for UI display)
             workspace_provider_credentials_service.set_model_assignments(
                 workspace_id=workspace_id,
                 provider_name=provider,
@@ -418,7 +420,7 @@ async def admin_configure_llm_provider(
 
     except Exception as e:
         logger.error(f"admin_configure_llm_provider error: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": GENERIC_LLM_ERROR_MESSAGE}
 
 
 @mcp.tool()
@@ -504,7 +506,7 @@ async def admin_list_llm_providers(
 
     except Exception as e:
         logger.error(f"admin_list_llm_providers error: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": GENERIC_LLM_ERROR_MESSAGE}
 
 
 
@@ -540,7 +542,7 @@ async def admin_remove_llm_provider(
 
     provider = provider.lower().strip()
 
-    # Protect the default azure provider â€” it must never be fully removed
+    # Protect the default azure provider — it must never be fully removed
     if provider == "azure" and model is None:
         raise ToolError(
             "Cannot remove the Azure provider. "
@@ -566,7 +568,7 @@ async def admin_remove_llm_provider(
             removed_from_agents = model_assignments.get(model) or []
 
             if not updated_models:
-                # No models left â€” deactivate the entire provider
+                # No models left — deactivate the entire provider
                 workspace_provider_credentials_service.deactivate_provider_credentials(
                     workspace_id=workspace_id,
                     provider_name=provider,
@@ -601,7 +603,7 @@ async def admin_remove_llm_provider(
 
         if len(active_provider_names) <= 1:
             raise ToolError(
-                f"Cannot remove provider '{provider}' â€” it is the only configured provider for this workspace. "
+                f"Cannot remove provider '{provider}' — it is the only configured provider for this workspace. "
                 "At least one LLM provider must always remain configured."
             )
 
@@ -683,7 +685,7 @@ async def list_available_llm_providers(
             
             # Skip providers that have no active credentials in this workspace
             if not creds or not creds.get("is_active", True):
-                logger.debug(f"Provider '{provider}' listed in config but has no active credentials in workspace {workspace_id} â€” hiding from user.")
+                logger.debug(f"Provider '{provider}' listed in config but has no active credentials in workspace {workspace_id} — hiding from user.")
                 continue
             
             # Get configured models for this agent and provider
@@ -691,7 +693,7 @@ async def list_available_llm_providers(
             
             # Skip providers with no configured models for this agent
             if not agent_provider_models:
-                logger.debug(f"Provider '{provider}' has no configured models for agent {agent_id} â€” skipping.")
+                logger.debug(f"Provider '{provider}' has no configured models for agent {agent_id} — skipping.")
                 continue
             
             # Safely extract endpoint host for display
@@ -757,7 +759,7 @@ async def list_available_llm_providers(
         }
     except Exception as e:
         logger.error(f"list_available_llm_providers error: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": GENERIC_LLM_ERROR_MESSAGE}
 
 
 @mcp.tool()
@@ -888,4 +890,5 @@ async def test_llm_generation(
         }
     except Exception as e:
         logger.error(f"test_llm_generation error: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": GENERIC_LLM_ERROR_MESSAGE}
+
