@@ -28,7 +28,7 @@ from kbcurator.utils.access_validation import (
 from kbcurator.utils.request_context import request_var
 # from tools.userManagementSystem import Session, UserMap
 from kbcurator.utils.db import db
-from fastmcp.server.dependencies import get_http_headers
+from fastmcp.server.dependencies import get_http_headers 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
