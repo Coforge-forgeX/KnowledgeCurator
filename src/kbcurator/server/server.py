@@ -8,6 +8,7 @@ load_dotenv()
 from common_adapters.langfuse_instrumentation import flush as langfuse_flush
 from common_adapters.sharepoint import SharePointClientManagerAsync
 from common_adapters.cache import CacheFactory
+from common_adapters.cancel_convesation import cancel_conversation
 from kbcurator.utils.session_history_manager import (
     SessionHistoryManager, 
     UserConfigManager
@@ -60,3 +61,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
             pass
 
 mcp = FastMCP("kbCuratorAdapter", lifespan=lifespan)
+
+# Expose tool name `cancel_conversation` so the UI can stop in-flight requests.
+mcp.tool()(cancel_conversation)

@@ -5,6 +5,7 @@ import ast
 from dotenv import load_dotenv
 import json
 import psycopg2
+import asyncio
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 # Third-party and internal imports
@@ -26,6 +27,15 @@ from kbcurator.utils.access_validation import (
     validate_chatbot_request_scope,
 )
 from kbcurator.utils.request_context import request_var
+
+# Cancellation support (used by UI Stop button via `cancel_conversation` MCP tool)
+from common_adapters.cancel_convesation import (
+    CancelledError,
+    is_cancelled,
+    register_task,
+    unregister_task,
+    clear_cancellation,
+)
 # from tools.userManagementSystem import Session, UserMap
 from kbcurator.utils.db import db
 from fastmcp.server.dependencies import get_http_headers
@@ -302,7 +312,44 @@ class Chatbot:
             return []
 
     async def process_message(self, message: str):
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("No current asyncio task")
+
+        # Frontend sends cancel using conversation_id == session_id.
+        conversation_id = str(self.session_id)
+        register_task(conversation_id=conversation_id, task=task)
+
+        cancel_watcher: asyncio.Task | None = None
+
+        async def _cancel_watch() -> None:
+            try:
+                while True:
+                    if await is_cancelled(conversation_id=conversation_id):
+                        task.cancel()
+                        return
+                    await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                return
+
+        async def _await_with_cancellation(coro, *, poll_interval: float = 0.1):
+            """Await a coroutine while polling cancellation for responsive STOP behavior."""
+            op_task = asyncio.create_task(coro)
+            try:
+                while True:
+                    if op_task.done():
+                        return await op_task
+                    if await is_cancelled(conversation_id=conversation_id):
+                        op_task.cancel()
+                        raise asyncio.CancelledError()
+                    await asyncio.sleep(poll_interval)
+            finally:
+                if not op_task.done():
+                    op_task.cancel()
+
         try:
+            cancel_watcher = asyncio.create_task(_cancel_watch())
+
             print(f"Inside Process message: {message}")
             context = self.get_or_create_context(self.session_id)
             insert_id = self.session.append_message(self.workspace_id, self.user_id, self.session_id, "user", message, [])
@@ -369,7 +416,7 @@ class Chatbot:
         #     return "Sorry, something went wrong while processing your request. Please try again"
             print(f"Detected intent: {intent} for message: {message[:50]}")
 
-            intent_response = await self.route_intent(intent, message, context, self.agent_id)
+            intent_response = await _await_with_cancellation(self.route_intent(intent, message, context, self.agent_id))
             print("Query RAG response: ", str(intent_response)[:50])
             
             # Handle different response types
@@ -427,9 +474,16 @@ class Chatbot:
             
             # print(f"Updated context history length: {context.conversation_history}")
             return response
+        except (asyncio.CancelledError, CancelledError):
+            return {"Request cancelled."}
         except Exception as e:
             print(f"Error processing message: {e}")
             return "Sorry, something went wrong while processing your request. Please try again"
+        finally:
+            if cancel_watcher is not None:
+                cancel_watcher.cancel()
+            unregister_task(conversation_id=conversation_id)
+            clear_cancellation(conversation_id=conversation_id)
         
     async def route_intent(self, intent: str, message: str, context: ChatbotContext, agent_id: str | int):
         """Route to the appropriate handler based on detected intent."""
@@ -496,7 +550,22 @@ class Chatbot:
             history = self.session.load_history(self.workspace_id, self.user_id, self.session_id)
             history = history[-5:]
             # print(f"History: {history}, type: {type(history)}")
-            assistant_message = await self.mcp_tool_obj.query_rag('Search',message, history, self.workspace_id, self.role_id, agent_id=self.agent_id)
+            # Check for cancellation before starting long-running RAG.
+            if await is_cancelled(conversation_id=str(self.session_id)):
+                raise asyncio.CancelledError()
+
+            assistant_message = await self.mcp_tool_obj.query_rag(
+                'Search',
+                message,
+                history,
+                self.workspace_id,
+                self.role_id,
+                agent_id=self.agent_id,
+            )
+
+            # Check cancellation again right after the call.
+            if await is_cancelled(conversation_id=str(self.session_id)):
+                raise asyncio.CancelledError()
             print(f"Query RAG response type: {type(assistant_message)}")
             
             # Check if response is structured (dict with sources) or plain text
@@ -516,6 +585,8 @@ class Chatbot:
                 # Backward compatibility: plain text response
                 print(f"Plain text response: {str(assistant_message)[:50]}")
                 return str(assistant_message)
+        except (asyncio.CancelledError, CancelledError):
+            return {"response": "Request cancelled.", "cancelled": True}
         except Exception as e:
             return (f"Error occurred while handling search: {e}")
 
@@ -1194,11 +1265,15 @@ async def message_gpt(
         response = await bot.process_message(user_message)
         #return {"response": response}
         # Check if response is structured with sources
+        # Cancellation should return plain text, not a JSON object.
+        if isinstance(response, dict) and response.get("cancelled") is True:
+            return {"response": response.get("response", "Request cancelled.")}
+
         if isinstance(response, dict) and ("sources" in response or "task_ids" in response):
             return {
                 "response": response.get("response", ""),
                 "sources": response.get("sources", []),
-             #   "sources": response.get("task_ids", [])
+              #   "sources": response.get("task_ids", [])
                 "task_ids":response.get("task_ids",[])
             }
         else:
