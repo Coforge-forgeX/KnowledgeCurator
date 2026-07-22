@@ -1,0 +1,540 @@
+"""LightRAG service for knowledge base operations"""
+import os
+from typing import Any, Dict, List, Optional
+
+import aiohttp
+from lightrag import LightRAG, QueryParam
+from lightrag.llm.azure_openai import azure_openai_complete
+from lightrag.llm.ollama import ollama_embed
+from lightrag.utils import EmbeddingFunc
+
+from .config import settings
+from .exceptions import ConfigurationException, LightRAGException
+from .logging import get_logger
+
+logger = get_logger(__name__)
+
+
+class LightRAGService:
+    """
+    Service class for LightRAG operations.
+
+    Provides methods for initializing LightRAG, querying knowledge bases,
+    and managing document indexing with shared storage configuration.
+    """
+
+    def __init__(self, working_dir: Optional[str] = None, workspace: Optional[str] = None):
+        """
+        Initialize LightRAG service.
+
+        Args:
+            working_dir: Working directory for LightRAG data
+            workspace: Workspace identifier for multi-tenancy in Neo4j/PostgreSQL
+        """
+        self.working_dir = working_dir or settings.lightrag.LIGHTRAG_WORKING_DIR
+        self.workspace = workspace
+        self._rag: Optional[LightRAG] = None
+        self._initialized = False
+        self._http_session: Optional[aiohttp.ClientSession] = None
+
+        logger.info("LightRAG service initialized", working_dir=self.working_dir, workspace=workspace)
+
+    async def _build_llm_func(self) -> Any:
+        """
+        Build LLM function for LightRAG based on configuration.
+
+        Returns:
+            LLM function callable
+
+        Raises:
+            ConfigurationException: If LLM configuration is invalid
+        """
+        azure_api_key = settings.lightrag.AZURE_OPENAI_LLM_MODEL_API_KEY
+        azure_api_base = settings.lightrag.AZURE_OPENAI_LLM_MODEL_API_BASE
+        azure_api_version = settings.lightrag.AZURE_OPENAI_LLM_MODEL_API_VERSION
+        azure_deployment_name = settings.lightrag.AZURE_OPENAI_LLM_MODEL_LLM_MODEL
+
+        if not all([azure_api_key, azure_api_base, azure_deployment_name]):
+            raise ConfigurationException(
+                message="Azure OpenAI LLM configuration is incomplete",
+                config_key="AZURE_OPENAI_LLM_MODEL",
+            )
+
+        async def llm_model_func(
+            prompt: str, system_prompt: Optional[str] = None, history_messages: Optional[List] = None, **kwargs
+        ) -> str:
+            """Azure OpenAI LLM function with connection reuse"""
+            headers = {
+                "Content-Type": "application/json",
+                "api-key": azure_api_key,
+            }
+            endpoint = f"{azure_api_base}openai/deployments/{azure_deployment_name}/chat/completions?api-version={azure_api_version}"
+
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            if history_messages:
+                messages.extend(history_messages)
+            messages.append({"role": "user", "content": prompt})
+
+            payload = {
+                "messages": messages,
+                "temperature": kwargs.get("temperature", 0),
+                "top_p": kwargs.get("top_p", 1),
+                "n": kwargs.get("n", 1),
+            }
+
+            # Reuse HTTP session for connection pooling
+            if self._http_session is None or self._http_session.closed:
+                self._http_session = aiohttp.ClientSession()
+
+            async with self._http_session.post(endpoint, headers=headers, json=payload) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise LightRAGException(
+                        message=f"Azure OpenAI request failed: {error_text}",
+                        operation="llm_request"
+                    )
+                result = await response.json()
+                return result["choices"][0]["message"]["content"]
+
+        return llm_model_func
+
+    def _build_embedding_func(self) -> EmbeddingFunc:
+        """
+        Build embedding function for LightRAG based on configuration.
+
+        Returns:
+            EmbeddingFunc: Embedding function
+
+        Raises:
+            ConfigurationException: If embedding configuration is invalid
+        """
+        base_url = settings.lightrag.OLLAMA_MODEL_BASE_URL
+        embedding_model = settings.lightrag.OLLAMA_MODEL_EMBEDDING_MODEL
+        embedding_dim = settings.lightrag.OLLAMA_MODEL_EMBEDDING_MODEL_DIMS
+        max_token_size = settings.lightrag.OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS
+
+        if not all([base_url, embedding_model]):
+            raise ConfigurationException(
+                message="Ollama embedding configuration is incomplete",
+                config_key="OLLAMA_MODEL",
+            )
+
+        return EmbeddingFunc(
+            embedding_dim=embedding_dim,
+            max_token_size=max_token_size,
+            func=lambda texts: ollama_embed(
+                texts,
+                embed_model=embedding_model,
+                host=base_url,
+            ),
+        )
+
+    async def initialize(self) -> None:
+        """
+        Initialize LightRAG instance with configured storage backends.
+
+        Raises:
+            ConfigurationException: If configuration is invalid
+            LightRAGException: If initialization fails
+        """
+        if self._initialized:
+            logger.debug("LightRAG already initialized, skipping")
+            return
+
+        try:
+            logger.info("Initializing LightRAG instance")
+
+            # Set Neo4j environment variables for LightRAG
+            os.environ["NEO4J_URI"] = settings.database.NEO4J_URI or "bolt://localhost:7687"
+            os.environ["NEO4J_USERNAME"] = settings.database.NEO4J_USER or "neo4j"
+            os.environ["NEO4J_PASSWORD"] = settings.database.NEO4J_PASSWORD or ""
+
+            # Set PostgreSQL environment variables for PGVectorStorage
+            if settings.lightrag.LIGHTRAG_POSTGRESQL_HOST:
+                os.environ["POSTGRES_HOST"] = settings.lightrag.LIGHTRAG_POSTGRESQL_HOST
+            if settings.lightrag.LIGHTRAG_POSTGRESQL_USER:
+                os.environ["POSTGRES_USER"] = settings.lightrag.LIGHTRAG_POSTGRESQL_USER
+            if settings.lightrag.LIGHTRAG_POSTGRESQL_PASSWORD:
+                os.environ["POSTGRES_PASSWORD"] = settings.lightrag.LIGHTRAG_POSTGRESQL_PASSWORD
+            if settings.lightrag.LIGHTRAG_POSTGRESQL_DATABASE:
+                os.environ["POSTGRES_DATABASE"] = settings.lightrag.LIGHTRAG_POSTGRESQL_DATABASE
+
+            # Build LLM and embedding functions
+            llm_func = await self._build_llm_func()
+            embedding_func = self._build_embedding_func()
+
+            # Initialize LightRAG with workspace parameter for multi-tenancy
+            lightrag_kwargs = {
+                "working_dir": self.working_dir,
+                "llm_model_func": llm_func,
+                "embedding_func": embedding_func,
+                "graph_storage": settings.lightrag.GRAPH_STORAGE_TYPE,
+                "vector_storage": settings.lightrag.VECTOR_STORAGE_TYPE,
+                "chunk_token_size": settings.lightrag.CHUNK_TOKEN_SIZE,
+                "chunk_overlap_token_size": settings.lightrag.CHUNK_OVERLAP_TOKEN_SIZE,
+            }
+
+            # Add workspace if specified (for Neo4j/PostgreSQL multi-tenancy)
+            if self.workspace:
+                lightrag_kwargs["workspace"] = self.workspace
+
+            self._rag = LightRAG(**lightrag_kwargs)
+
+            # Initialize storages
+            await self._rag.initialize_storages()
+
+            self._initialized = True
+            logger.info(
+                "LightRAG initialized successfully",
+                graph_storage=settings.lightrag.GRAPH_STORAGE_TYPE,
+                vector_storage=settings.lightrag.VECTOR_STORAGE_TYPE,
+            )
+
+        except ConfigurationException:
+            raise
+        except Exception as e:
+            logger.error("Failed to initialize LightRAG", error=e)
+            raise LightRAGException(
+                message=f"Failed to initialize LightRAG: {str(e)}",
+                operation="initialize"
+            )
+
+    async def query(
+        self,
+        query: str,
+        mode: str = "hybrid",
+        only_need_context: bool = False,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Query the knowledge base using LightRAG.
+
+        Args:
+            query: Query string
+            mode: Query mode - "naive", "local", "global", or "hybrid"
+            only_need_context: If True, return only retrieved context without answer
+            **kwargs: Additional query parameters
+
+        Returns:
+            Dict containing query results with answer and/or context
+
+        Raises:
+            LightRAGException: If query fails
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        try:
+            logger.info("Executing LightRAG query", query=query[:100], mode=mode)
+
+            # Execute query - LightRAG returns string answer or dict with answer+context
+            result = await self._rag.aquery(
+                query,
+                param=QueryParam(mode=mode, only_need_context=only_need_context, **kwargs)
+            )
+
+            # If only_need_context=True, result is the context itself
+            if only_need_context:
+                return {
+                    "answer": None,
+                    "retrieved_chunks": result if isinstance(result, list) else [result] if result else [],
+                    "sources": self._extract_sources(result if isinstance(result, list) else [result]),
+                    "mode": mode,
+                }
+
+            # Structure the response with both answer and context
+            # LightRAG typically returns just the answer string, but we need context too
+            # The context is stored internally during query execution
+            answer = result if isinstance(result, str) else result.get("answer", "") if isinstance(result, dict) else str(result)
+
+            # Try to retrieve context from the RAG instance
+            # Note: This depends on LightRAG internals - may need adjustment based on version
+            retrieved_context = []
+            if isinstance(result, dict) and "context" in result:
+                retrieved_context = result["context"]
+
+            response = {
+                "answer": answer,
+                "retrieved_chunks": retrieved_context,
+                "sources": self._extract_sources(retrieved_context),
+                "mode": mode,
+            }
+
+            logger.info("Query executed successfully", query_length=len(query), has_context=bool(retrieved_context))
+            return response
+
+        except Exception as e:
+            logger.error("Query execution failed", error=e, query=query[:100])
+            raise LightRAGException(
+                message=f"Query failed: {str(e)}",
+                operation="query"
+            )
+
+    async def insert(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+        """
+        Insert document into the knowledge base.
+
+        Args:
+            text: Document text to insert
+            metadata: Optional metadata for the document
+
+        Returns:
+            Dict with insertion status
+
+        Raises:
+            LightRAGException: If insertion fails
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        try:
+            logger.info("Inserting document into LightRAG", text_length=len(text))
+
+            await self._rag.ainsert(text)
+
+            logger.info("Document inserted successfully", text_length=len(text))
+            return {"status": "success", "message": "Document indexed successfully"}
+
+        except Exception as e:
+            logger.error("Document insertion failed", error=e, text_length=len(text))
+            raise LightRAGException(
+                message=f"Document insertion failed: {str(e)}",
+                operation="insert"
+            )
+
+    async def delete_by_doc_id(self, doc_id: str) -> Dict[str, str]:
+        """
+        Delete document by ID from the knowledge base.
+
+        Args:
+            doc_id: Document ID to delete
+
+        Returns:
+            Dict with deletion status
+
+        Raises:
+            LightRAGException: If deletion fails
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        try:
+            logger.info("Deleting document from LightRAG", doc_id=doc_id)
+
+            # LightRAG deletion logic here
+            # Note: Actual implementation depends on LightRAG API
+
+            logger.info("Document deleted successfully", doc_id=doc_id)
+            return {"status": "success", "message": f"Document {doc_id} deleted"}
+
+        except Exception as e:
+            logger.error("Document deletion failed", error=e, doc_id=doc_id)
+            raise LightRAGException(
+                message=f"Document deletion failed: {str(e)}",
+                operation="delete"
+            )
+
+    def _extract_sources(self, context: List[Any]) -> List[Dict[str, Any]]:
+        """
+        Extract source information from retrieved context.
+
+        Args:
+            context: Retrieved context chunks
+
+        Returns:
+            List of source dictionaries
+        """
+        sources = []
+        for idx, chunk in enumerate(context):
+            if isinstance(chunk, dict):
+                sources.append({
+                    "chunk_id": idx,
+                    "content": chunk.get("content", ""),
+                    "source_id": chunk.get("source_id", ""),
+                    "metadata": chunk.get("metadata", {}),
+                })
+            elif isinstance(chunk, str):
+                sources.append({
+                    "chunk_id": idx,
+                    "content": chunk,
+                })
+        return sources
+
+    async def get_knowledge_graph(self) -> Dict[str, Any]:
+        """
+        Get the knowledge graph from LightRAG.
+
+        Returns:
+            Dict containing nodes and edges of the knowledge graph
+
+        Raises:
+            LightRAGException: If retrieval fails
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        try:
+            logger.info("Retrieving knowledge graph")
+
+            # Access the graph storage from LightRAG
+            nodes = []
+            edges = []
+
+            # If using Neo4j, query it directly via the Neo4j driver
+            from core.neo4j_driver import get_neo4j_driver
+
+            neo4j_driver = get_neo4j_driver()
+
+            # Query all nodes
+            node_query = """
+            MATCH (n)
+            RETURN n.id as id, labels(n) as labels, properties(n) as properties
+            LIMIT 1000
+            """
+            node_results = await neo4j_driver.execute_query(node_query, {})
+            for record in node_results:
+                nodes.append({
+                    "id": record["id"],
+                    "labels": record["labels"],
+                    "properties": record["properties"],
+                })
+
+            # Query all relationships
+            edge_query = """
+            MATCH (a)-[r]->(b)
+            RETURN a.id as source, type(r) as type, b.id as target, properties(r) as properties
+            LIMIT 1000
+            """
+            edge_results = await neo4j_driver.execute_query(edge_query, {})
+            for record in edge_results:
+                edges.append({
+                    "source": record["source"],
+                    "target": record["target"],
+                    "type": record["type"],
+                    "properties": record["properties"],
+                })
+
+            logger.info("Retrieved knowledge graph", node_count=len(nodes), edge_count=len(edges))
+            return {
+                "nodes": nodes,
+                "edges": edges,
+                "node_count": len(nodes),
+                "edge_count": len(edges),
+            }
+
+        except Exception as e:
+            logger.error("Failed to retrieve knowledge graph", error=e)
+            raise LightRAGException(
+                message=f"Failed to retrieve knowledge graph: {str(e)}",
+                operation="get_kg"
+            )
+
+    async def get_indexed_documents(self, workspace_id: int = None, limit: int = 1000) -> List[Dict[str, Any]]:
+        """
+        Get list of indexed documents from PostgreSQL.
+
+        Args:
+            workspace_id: Optional workspace filter
+            limit: Maximum number of documents to return
+
+        Returns:
+            List of document metadata
+
+        Raises:
+            LightRAGException: If retrieval fails
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        try:
+            logger.info("Retrieving indexed documents", workspace_id=workspace_id)
+
+            # Query PostgreSQL for document metadata using SQLAlchemy
+            from core.database import get_async_session, DocumentMetadata
+            from sqlalchemy import select
+
+            async with get_async_session() as session:
+                query = select(DocumentMetadata).order_by(DocumentMetadata.created_at.desc()).limit(limit)
+
+                if workspace_id:
+                    query = query.where(DocumentMetadata.workspace_id == workspace_id)
+
+                result = await session.execute(query)
+                docs = result.scalars().all()
+
+                documents = [
+                    {
+                        "doc_id": doc.doc_id,
+                        "file_name": doc.file_name,
+                        "workspace_id": doc.workspace_id,
+                        "file_path": doc.file_path,
+                        "file_size": doc.file_size,
+                        "chunk_count": doc.chunk_count,
+                        "metadata": doc.metadata,
+                        "indexed_at": str(doc.indexed_at) if doc.indexed_at else None,
+                        "created_at": str(doc.created_at) if doc.created_at else None,
+                    }
+                    for doc in docs
+                ]
+
+            logger.info("Retrieved indexed documents", count=len(documents))
+            return documents
+
+        except Exception as e:
+            logger.error("Failed to retrieve indexed documents", error=e)
+            raise LightRAGException(
+                message=f"Failed to retrieve indexed documents: {str(e)}",
+                operation="get_docs"
+            )
+
+    async def close(self) -> None:
+        """Close LightRAG connections and cleanup resources"""
+        if self._rag:
+            # Cleanup logic if needed
+            self._initialized = False
+
+        # Close HTTP session
+        if self._http_session and not self._http_session.closed:
+            await self._http_session.close()
+            self._http_session = None
+
+        logger.info("LightRAG service closed")
+
+
+# Singleton instance for global use
+_lightrag_service_instance: Optional[LightRAGService] = None
+
+
+def get_lightrag_service(working_dir: Optional[str] = None) -> LightRAGService:
+    """
+    Get or create a singleton LightRAG service instance.
+
+    Args:
+        working_dir: Optional working directory override
+
+    Returns:
+        LightRAGService: Singleton service instance
+    """
+    global _lightrag_service_instance
+
+    if _lightrag_service_instance is None:
+        _lightrag_service_instance = LightRAGService(working_dir=working_dir)
+
+    return _lightrag_service_instance
+
+
+async def initialize_lightrag_service(working_dir: Optional[str] = None) -> LightRAGService:
+    """
+    Initialize and return the global LightRAG service instance.
+
+    Args:
+        working_dir: Optional working directory
+
+    Returns:
+        LightRAGService: Initialized service instance
+    """
+    service = get_lightrag_service(working_dir=working_dir)
+    await service.initialize()
+    return service

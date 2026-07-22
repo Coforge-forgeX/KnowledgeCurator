@@ -1,0 +1,135 @@
+[project]
+name = "kb-rest-service"
+version = "0.1.0"
+description = "Knowledge Base REST API for forgeX"
+requires-python = ">=3.10"
+dependencies = [
+    "common-adapters @ git+https://github.com/Coforge-forgeX/forgexpackages.git@main",
+    "azure-functions==1.18.0",
+    "pydantic==2.0.0",
+    "pydantic-settings==2.0.0",
+    "python-dotenv==1.2.2",
+    "sqlalchemy==2.0.51",
+    "psycopg2-binary==2.9.12",
+    "pymongo==4.17.0",
+    "certifi==2026.6.17",
+    "redis==5.0.0",
+    "neo4j==6.2.0",
+    "azure-storage-blob==12.30.0",
+    "azure-storage-queue==12.9.0",
+    "PyJWT==2.13.0",
+    "passlib[argon2]==1.7.4",
+    "argon2-cffi==25.1.0",
+    "aiohttp==3.14.1",
+    "lightrag-hku==1.4.16",
+    "structlog==24.1.0",
+    "numpy==2.3.5",
+    "requests==2.34.2",
+    "gunicorn==26.0.0",
+    "msal==1.37.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit",
+    "black",
+    "isort",
+    "flake8",
+    "mypy",
+    "bandit",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "httpx",
+    "faker",
+    "types-requests",
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | __pycache__
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 88
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+src_paths = ["src", "tests"]
+known_first_party = ["core", "shared", "functions"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+disallow_untyped_decorators = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+ignore_missing_imports = true
+strict_optional = false
+
+[[tool.mypy.overrides]]
+module = "azure.functions.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q --strict-markers --strict-config"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E203", "W503", "E501"]
+per-file-ignores = [
+    "__init__.py:F401",
+    "tests/*:S101",
+]
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    ".eggs",
+    "*.egg",
+    "build",
+    "dist",
+]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "__pycache__"]
+skips = ["B101", "B601"]
