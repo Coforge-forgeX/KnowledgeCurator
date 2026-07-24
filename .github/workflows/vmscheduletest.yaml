@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
+  push:
+    branches:
+      - development
+    paths:
+      - '.github/workflows/vmscheduletest.yaml'
 
 jobs:
   start-vm:
