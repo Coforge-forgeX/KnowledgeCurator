@@ -1,0 +1,25 @@
+name: VM Schedule Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - development
+    paths:
+      - '.github/workflows/vmscheduletest.yaml'
+
+jobs:
+  stop-vm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Stop VM
+        run: |
+          az vm deallocate \
+            --resource-group forgeXdev \
+            --name vmscheduletest
