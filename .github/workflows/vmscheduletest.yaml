@@ -1,15 +1,12 @@
-name: VM Schedule Test
+name: VM Start Test
 
 on:
+  schedule:
+    - cron: '*/10 * * * *'
   workflow_dispatch:
-  push:
-    branches:
-      - development
-    paths:
-      - '.github/workflows/vmscheduletest.yaml'
 
 jobs:
-  stop-vm:
+  start-vm:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,8 +15,16 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Stop VM
+      - name: Start VM
         run: |
-          az vm deallocate \
+          az vm start \
             --resource-group forgeXdev \
             --name vmscheduletest
+
+      - name: Verify VM Status
+        run: |
+          az vm get-instance-view \
+            --resource-group forgeXdev \
+            --name vmscheduletest \
+            --query "instanceView.statuses[?starts_with(code,'PowerState/')].displayStatus" \
+            -o tsv
