@@ -13,6 +13,10 @@ from kbcurator.utils.auth import create_jwt_token, verify_jwt_token, create_refr
 from kbcurator.utils.request_context import request_var
 from sqlalchemy import select, func as sql_func
 from datetime import datetime, timezone
+from common_adapters.trustai import  TrustAIWorkspaceIntegration
+from common_adapters.trustai.database  import TrustAIDatabaseManager
+import os
+from urllib.parse import quote_plus
 
 # --- New Import for Password Hashing ---
 from passlib.hash import argon2
@@ -745,6 +749,7 @@ def _extract_workspace_payload(payload: dict) -> dict:
         'kb_ids': payload.get('kb_ids', []),
         'kb_title': payload.get('kb_title', None),
         'kb_description': payload.get('kb_description', None),
+        'trustai_config': payload.get('trustai_config',None)
     }
 
 
@@ -932,10 +937,66 @@ def _add_workspace_mappings(session, workspace_id: int, fields: dict, kb_ids: li
         for tid in tool_ids
     ])
 
+#trustai helper method
+def get_postgres_connection_string(database_env: str = "POSTGRESQL_DATABASE_DATABASE",) -> str | None:
+    """
+    Builds a PostgreSQL SQLAlchemy connection string from environment variables.
+    Returns:
+    Connection string if all required values are present.
+    None if any required value is missing or an error occurs.
+    """
+    try:
+        host = os.getenv("POSTGRESQL_DATABASE_HOST")
+        port = os.getenv("POSTGRESQL_DATABASE_PORT", "5432")
+        database = os.getenv(database_env)
+        user = os.getenv("POSTGRESQL_DATABASE_USER")
+        password = os.getenv("POSTGRESQL_DATABASE_PASSWORD")
+        if not all([host, port, database, user, password]):
+            return None
+        password = quote_plus(password)
+        return (
+            f"postgresql+psycopg2://"
+            f"{user}:{password}"
+            f"@{host}:{port}/{database}"
+            f"?sslmode=require"
+        )
+    except Exception:
+        return None
+    
+async def register_workspace_with_trustai(workspace_id, trustai_config, db_url, agent_ids, user_id):
+    """
+    Register workspace with TrustAI during workspace creation.
+    
+    Args:
+        workspace_id: UUID string of the workspace
+        trustai_config: Configuration dict from UI
+        db_url: PostgreSQL connection string
+    """
+    # Create database manager
+    db_manager = TrustAIDatabaseManager(db_url)
+    db_manager.initialize_tables()
+    
+    # Create workspace integration
+    integration = TrustAIWorkspaceIntegration(db_manager)
+    
+    result = await integration.register_workspace(
+    workspace_id=workspace_id,
+    trustai_config=trustai_config,
+    agent_ids=agent_ids,
+    user_id=user_id)
+    print("\n" + "="*60)
+    print("REGISTRATION COMPLETE")
+    print("="*60)
+    print(f"\nWORKSPACE ID: {workspace_id}")
+    print(f"\nApp ID: {result['app_id']}")
+    print(f"API Key: {result['api_key'][:20]}...")
+    print(f"Agent IDs: {result['agent_ids']}")
+    print(f"User ID: {result['user_id']}")
+    return result
 
 @mcp.tool()
 @require_auth
-def create_workspace(payload):
+async def create_workspace(payload):
     """
     Create a new workspace and map agents/tools/users as per the payload from frontend.
     Args:
@@ -952,6 +1013,8 @@ def create_workspace(payload):
         workspace_name = fields['workspace_name']
         namespace = fields['namespace']
         workspace_desc = fields['workspace_desc']
+        #trustai integration
+        trustai_config = fields['trustai_config']
 
         normalized_keyword, kb_ids, validation_error = _validate_workspace_type_and_kbs(session, claims, fields)
         if validation_error:
@@ -989,7 +1052,25 @@ def create_workspace(payload):
         except Exception as mapping_error:
             print(f"[Transaction] Failed to add workspace mappings: {mapping_error}")
             raise Exception(f"Failed to add workspace mappings: {str(mapping_error)}")
-
+        
+        
+        #workspace registration with trustai
+        if trustai_config:
+            agent_ids = fields.get('agent_ids') or []
+            db_url = get_postgres_connection_string()
+            # print(f"trustai_config\n:{trustai_config}")
+            if not db_url:
+                print("POSTGRESQL environment vairables not configured!!!")
+                raise ValueError("POSTGRESQL environment vairables not configured!!! Please check you env variable and try again...")
+            try:
+                trustai_config['application']['name'] = workspace_id
+                print(f"[updated] trustai_config\n:{trustai_config}")
+                response = await register_workspace_with_trustai(workspace_id,trustai_config,db_url,agent_ids,creator_id)
+            
+            except Exception as e:
+                print(f"Error while registering workspace with TRUSTAI: {e}")
+                raise Exception("Failed to create the workspace. Please try again.")
+            
         session.commit()
 
         # Seed workspace-level Azure credentials from environment if present.
