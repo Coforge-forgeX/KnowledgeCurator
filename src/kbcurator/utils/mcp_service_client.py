@@ -29,12 +29,16 @@ class MCPServiceClient:
         self.server_url = self._resolve_server_url(server_url)
         self.industry = industry #industry
         self.sub_industry = sub_industry #sub_industry
-        self.knowledge_bases = knowledge_bases 
+        # Normalize KB list: preserve user-provided ordering but drop empty/None tokens.
+        # The server uses these tokens to build per-KB LightRAG workspaces; appending "" creates
+        # a phantom workspace and wastes initialization time.
         if knowledge_bases is None:
-            self.knowledge_bases = [""] #knowledge_bases
+            self.knowledge_bases = []
         else:
-            self.knowledge_bases = list(knowledge_bases)
-            self.knowledge_bases.append("") #knowledge_bases
+            self.knowledge_bases = [
+                str(kb).strip() for kb in knowledge_bases
+                if kb is not None and str(kb).strip()
+            ]
             
         self.obj = MCPClient(server_url=self.server_url, token=token)
         self._token = token
