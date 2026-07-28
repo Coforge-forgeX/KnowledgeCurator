@@ -18,6 +18,7 @@ from PyPDF2 import PdfReader
 from docx import Document
 import io
 import numpy as np
+
 from PIL import Image
 import pytesseract
 import fitz
@@ -111,7 +112,123 @@ os.environ["POSTGRES_DATABASE"] = (
     or ""
 )
  
-embedding_dim = int(os.getenv("OLLAMA_MODEL_EMBEDDING_MODEL_DIMS", "1024"))
+def _resolve_embedding_dim() -> int:
+    """Resolve embedding dimensions.
+
+    For Option 1 (keep existing 3072-d vectors in Postgres), we must keep
+    embedding_dim consistent with the existing `vector(N)` schema. If we request
+    a different dimension, LightRAG will attempt to ALTER the column type and/or
+    queries will fail with "different vector dimensions".
+
+    Rule:
+    - If Postgres already has lightrag_vdb_chunks.content_vector = vector(N), use N.
+    - Else fall back to env override or sensible defaults.
+    """
+    # 1) If schema exists, always match it.
+    # This prevents pgvector errors like "different vector dimensions 3072 and 1536".
+    try:
+        import psycopg2
+
+        host = os.environ.get("POSTGRES_HOST") or os.getenv("POSTGRESQL_DATABASE_HOST")
+        user = os.environ.get("POSTGRES_USER") or os.getenv("POSTGRESQL_DATABASE_USER")
+        password = os.environ.get("POSTGRES_PASSWORD") or os.getenv("POSTGRESQL_DATABASE_PASSWORD")
+        dbname = os.environ.get("POSTGRES_DATABASE") or os.getenv("POSTGRESQL_DATABASE_DATABASE_2") or os.getenv("POSTGRESQL_DATABASE_DATABASE")
+        port = int(os.getenv("POSTGRESQL_DATABASE_PORT", "5432"))
+
+        if host and user and password and dbname:
+            conn = psycopg2.connect(host=host, user=user, password=password, dbname=dbname, port=port)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT pg_catalog.format_type(a.atttypid,a.atttypmod) "
+                "FROM pg_attribute a "
+                "WHERE a.attname='content_vector' AND a.attrelid::regclass::text='lightrag_vdb_chunks'"
+            )
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            if row and isinstance(row[0], str) and row[0].startswith("vector("):
+                n = int(row[0].split("(", 1)[1].split(")", 1)[0])
+                return n
+    except Exception:
+        pass
+
+    # 2) Explicit override for operators.
+    raw = (os.getenv("AZURE_OPENAI_EMBEDDING_DIMS") or os.getenv("OLLAMA_MODEL_EMBEDDING_MODEL_DIMS") or "").strip()
+    if raw.isdigit():
+        return int(raw)
+
+    # 3) Defaults based on configured model.
+    model = (os.getenv("AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL") or "").strip().lower()
+    if model == "text-embedding-3-large":
+        return 3072
+    if model == "text-embedding-3-small":
+        return 1536
+
+    return 1024
+
+
+embedding_dim = _resolve_embedding_dim()
+
+
+def _effective_disable_pgvector() -> bool:
+    """Return whether PGVectorStorage should be disabled.
+
+    We generally want PGVectorStorage enabled because that's where your vectors live.
+    However:
+    - If LIGHTRAG_DISABLE_PGVECTOR=true is set by the environment, it disables PGVector.
+    - We allow LIGHTRAG_FORCE_PGVECTOR=true to override that.
+    - For vector(3072) schemas, pgvector index creation fails in this environment
+      (both HNSW and IVFFLAT report a 2000-dim cap). We keep PGVector enabled but
+      force POSTGRES_VECTOR_INDEX_TYPE='' to skip index creation and avoid startup noise.
+    """
+    disable = os.getenv("LIGHTRAG_DISABLE_PGVECTOR", "false").strip().lower() in {"1", "true", "yes", "on"}
+    force = os.getenv("LIGHTRAG_FORCE_PGVECTOR", "true").strip().lower() in {"1", "true", "yes", "on"}
+    if disable and force:
+        print("[INFO] LIGHTRAG_FORCE_PGVECTOR=true overriding LIGHTRAG_DISABLE_PGVECTOR")
+        disable = False
+
+    # If existing vectors are >2000 dims, disable *index creation* to avoid repeated failures.
+    try:
+        import psycopg2
+
+        host = os.environ.get("POSTGRES_HOST") or os.getenv("POSTGRESQL_DATABASE_HOST")
+        user = os.environ.get("POSTGRES_USER") or os.getenv("POSTGRESQL_DATABASE_USER")
+        password = os.environ.get("POSTGRES_PASSWORD") or os.getenv("POSTGRESQL_DATABASE_PASSWORD")
+        dbname = os.environ.get("POSTGRES_DATABASE") or os.getenv("POSTGRESQL_DATABASE_DATABASE_2") or os.getenv("POSTGRESQL_DATABASE_DATABASE")
+        port = int(os.getenv("POSTGRESQL_DATABASE_PORT", "5432"))
+
+        if host and user and password and dbname:
+            conn = psycopg2.connect(host=host, user=user, password=password, dbname=dbname, port=port)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT pg_catalog.format_type(a.atttypid,a.atttypmod) "
+                "FROM pg_attribute a "
+                "WHERE a.attname='content_vector' AND a.attrelid::regclass::text='lightrag_vdb_chunks'"
+            )
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+
+            if row and isinstance(row[0], str) and row[0].startswith("vector("):
+                try:
+                    dims = int(row[0].split("(", 1)[1].split(")", 1)[0])
+                    if dims > 2000:
+                        current = (os.getenv("POSTGRES_VECTOR_INDEX_TYPE") or "").strip().upper() or "HNSW"
+                        if current == "HNSW":
+                            # pgvector indexes (HNSW/IVFFLAT) do not support >2000 dimensions.
+                            # Keep pgvector enabled for storage/query, but skip index creation.
+                            os.environ["POSTGRES_VECTOR_INDEX_TYPE"] = ""
+                            print(
+                                f"[INFO] Detected pgvector schema {row[0]} (>2000 dims). "
+                                "Disabling pgvector index creation (POSTGRES_VECTOR_INDEX_TYPE='') because pgvector indexes don't support >2000 dims."
+                            )
+                except Exception:
+                    pass
+    except Exception:
+        # If inspection fails, keep configured behavior.
+        pass
+
+    return disable
 max_token_size = int(os.getenv("OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS", "8192"))
 base_url = os.getenv("OLLAMA_MODEL_BASE_URL")
  
@@ -157,7 +274,7 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
 
     endpoint = f"{azure_embedding_api_base}openai/deployments/{azure_embedding_deployement_name}/embeddings?api-version={azure_embedding_api_version}"
  
-    payload = {"input": texts,"dimensions": embedding_dim}
+    payload = {"input": texts, "dimensions": embedding_dim}
  
     async with aiohttp.ClientSession() as session:
         async with session.post(endpoint, headers=headers, json=payload) as response:
@@ -265,31 +382,44 @@ def generate_download_url_for_file(
         kb_parts = kb_name.split('/')
         base_kb_name = kb_parts[0]
         knowledge_base = kb_parts[1] if len(kb_parts) > 1 else None
+
+        # If kb_name doesn't include the knowledge_base folder, we can't infer it reliably here.
+        # Callers should pass kb_name as "<SubIndustry>/<KnowledgeBaseFolder>" (e.g. "Airline/Offer Order").
         
         # Build list of blob paths to try
-        blob_paths_to_try = []
-        
-        # Construct blob path based on what file_path contains
-        if file_path.startswith(domain):
-            # File path already has full path from LightRAG
-            blob_paths_to_try.append(file_path)
-        elif '/' in file_path and not file_path.startswith(domain):
-            # Partial path, prepend domain
-            blob_paths_to_try.append(f"{domain}/{file_path}")
-        else:
-            # Just filename, construct full paths with knowledge_bases level
-            if knowledge_base:
-                # New 3-level hierarchy: domain/kb_name/knowledge_bases/[workspace_id]/filename
-                if workspace_id and role_id != 34:
-                    # Workspace user pattern
-                    blob_paths_to_try.append(f"{domain}/{base_kb_name}/{knowledge_base}/{workspace_id}/{file_name}")
-                # SME or no workspace_id pattern
-                blob_paths_to_try.append(f"{domain}/{base_kb_name}/{knowledge_base}/{file_name}")
-            
-            # Fallback to old patterns (for backward compatibility)
-            blob_paths_to_try.append(f"{domain}/{base_kb_name}/{file_name}")  # Old SME pattern
-            if workspace_id:
-                blob_paths_to_try.append(f"{domain}/{base_kb_name}/{workspace_id}/{file_name}")  # Old workspace pattern
+        blob_paths_to_try: list[str] = []
+
+        # Normalize for comparisons
+        domain_norm = (domain or "").strip().lower()
+        fp_norm = file_path.lstrip("/\\")
+        fp_norm_lower = fp_norm.lower()
+
+        # 1) If file_path already includes domain prefix, try it as-is.
+        if domain_norm and fp_norm_lower.startswith(domain_norm + "/"):
+            blob_paths_to_try.append(fp_norm)
+
+        # 2) If file_path looks like a partial path (e.g. "Offer Order/Foo.pdf"),
+        # prepend "domain/kb_name/".
+        if "/" in fp_norm and not (domain_norm and fp_norm_lower.startswith(domain_norm + "/")):
+            blob_paths_to_try.append(f"{domain}/{base_kb_name}/{fp_norm}")
+            if workspace_id and role_id != 34:
+                blob_paths_to_try.append(f"{domain}/{base_kb_name}/{workspace_id}/{fp_norm}")
+
+        # 3) If only a filename was cited, try common storage layouts.
+        if knowledge_base:
+            # Observed layout: domain/kb_name/knowledge_base/filename
+            blob_paths_to_try.append(f"{domain}/{base_kb_name}/{knowledge_base}/{file_name}")
+            if workspace_id and role_id != 34:
+                blob_paths_to_try.append(f"{domain}/{base_kb_name}/{knowledge_base}/{workspace_id}/{file_name}")
+
+        # Legacy/fallback layouts
+        blob_paths_to_try.append(f"{domain}/{base_kb_name}/{file_name}")
+        if workspace_id and role_id != 34:
+            blob_paths_to_try.append(f"{domain}/{base_kb_name}/{workspace_id}/{file_name}")
+
+        # De-dupe while preserving order
+        seen = set()
+        blob_paths_to_try = [p for p in blob_paths_to_try if not (p in seen or seen.add(p))]
         
         # Try searching in both containers
         containers_to_search = [
@@ -336,10 +466,12 @@ def generate_download_url_for_file(
 
 async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = None) -> LightRAG:
     data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
-    lightrag_workspace = ''.join(char for char in f"{domain}{kb_name}" if char.isalpha()) or "defaultworkspace"
-    disable_pgvector = os.getenv("LIGHTRAG_DISABLE_PGVECTOR", "false").strip().lower() in {
-        "1", "true", "yes", "on"
-    }
+    # Workspace must stay stable across ingestion + query.
+    # In this project, the stored LightRAG workspace is derived from domain + kb_name token
+    # plus (optionally) the first knowledge_base folder token when provided.
+    kb_name_for_workspace = kb_name or ""
+    lightrag_workspace = ''.join(char for char in f"{domain}{kb_name_for_workspace}" if char.isalpha()) or "defaultworkspace"
+    disable_pgvector = _effective_disable_pgvector()
 
     # Keep Neo4j DB stable (usually "neo4j"); per-workspace DBs may not exist locally.
     os.environ['NEO4J_DATABASE'] = os.getenv("NEO4J_DATABASE_NAME", "neo4j") or "neo4j"
@@ -361,6 +493,9 @@ async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = 
         )
         if use_pgvector:
             kwargs["vector_storage"] = "PGVectorStorage"
+        else:
+            # Ensure a deterministic local fallback if pgvector is unavailable.
+            kwargs["vector_storage"] = "FaissVectorDBStorage"
         return LightRAG(**kwargs)
 
     rag = _build_rag("Neo4JStorage", use_pgvector=not disable_pgvector)
@@ -476,6 +611,34 @@ async def query_rag(
 
     if knowledge_bases is None:
         knowledge_bases = []
+
+    # Pass KB folder names through to blob URL generation by embedding them into kb_name
+    # when the base KB is provided as "Airline" and scopes contain folders like "Offer Order".
+    workspace_id_alpha = None
+    if workspace_id:
+        workspace_id_alpha = ''.join(
+            digit_map.get(c, c) if str(c).isdigit() else str(c)
+            for c in str(workspace_id)
+            if str(c).isalnum()
+        )
+
+    primary_kb = None
+    for kb in knowledge_bases:
+        text = (str(kb).strip() if kb is not None else "")
+        if not text:
+            continue
+        if workspace_id_alpha and text == workspace_id_alpha:
+            continue
+        primary_kb = text
+        break
+
+    # Keep LightRAG workspace stable (based on base kb_name) but preserve the folder
+    # for blob URL generation.
+    kb_name_for_urls = None
+    if primary_kb and kb_name and "/" not in kb_name:
+        kb_name_for_urls = f"{kb_name}/{primary_kb}"
+    else:
+        kb_name_for_urls = kb_name
 
     # workspace_id may be missing in some tool invocations; guard against None.
     if workspace_id:
@@ -617,69 +780,38 @@ When handling relationships with timestamps:
 
         print(
             "Domain:", domain, 
-            "kb_name:", kb_name, 
+            "kb_name:", kb_name_for_urls, 
             "knowledge_bases:", knowledge_bases,
             "question:", question, 
             "user_prompt:", user_prompt[:10], 
             "history:", history[:10]
         )
         if knowledge_bases:
-            llm_summarize = AzureCustomLLM(temperature=0)
-            results = {}
-            kb_graph_refs = []
+            # IMPORTANT:
+            # In this project, Postgres/Neo4j data is keyed by a single LightRAG workspace derived
+            # from domain + base kb_name (e.g. AirlineOfferOrder). The `knowledge_bases` tokens
+            # are folder scopes (e.g. "Offer Order") and/or workspace-id-alpha suffixes used by
+            # callers for isolation and blob paths, but they are NOT separate LightRAG workspaces.
+            # Querying per-token workspaces (kb_name+kb) causes empty reads.
 
-            # Initialize RAGs sequentially to avoid os.environ['NEO4J_DATABASE'] race condition
-            # during parallel initialization. Query execution remains parallel below.
-            rag_map = {}
-            for kb in knowledge_bases:
-                rag_map[kb] = await initialize_rag(domain=domain, kb_name=kb_name+kb)
-
-            async def query_single_kb(kb):
-                try:
-                    rag = rag_map[kb]
-                    response = await rag.aquery(
-                        question if question else "",
-                        param=QueryParam(
-                            mode=mode,
-                            top_k=2,
-                            conversation_history=history,
-                            user_prompt=user_prompt,
-                            stream=False
-                        )
-                    )
-                    return (kb, response, None)
-                except Exception as e:
-                    return (kb, None, str(e))
-
-            tasks = [query_single_kb(kb) for kb in knowledge_bases]
-            task_results = await asyncio.gather(*tasks)
-            for kb, response, error in task_results:
-                if error:
-                    results[kb] = {"error": error}
-                else:
-                    results[kb] = response
-                    kb_graph_refs.append(f"Knowledge Base: {kb}")
-
-            # Summarize the results using AzureCustomLLM
-            summary_prompt = user_prompt
-            
-            for kb, resp in results.items():
-                summary_prompt += f"### Knowledge Base: {kb}\n"
-                if isinstance(resp, dict) and 'error' in resp:
-                    summary_prompt += f"Error: {resp['error']}\n"
-                else:
-                    summary_prompt += f"Response: {str(resp)}\n"
-            summary_prompt += "\n---\nReferences:\n"
-            for i, kb in enumerate(results.keys(), 1):
-                summary_prompt += f"[{i}] {kb}\n"
-            summary = llm_summarize._call(
-                input=summary_prompt
+            # Query the actual stored workspace. If caller passed kb_name as "Airline/Offer Order",
+            # the stored workspace is typically "AirlineOfferOrder".
+            rag = await initialize_rag(domain=domain, kb_name=kb_name_for_urls or kb_name)
+            summary = await rag.aquery(
+                question if question else "",
+                param=QueryParam(
+                    mode=mode,
+                    top_k=2,
+                    conversation_history=history,
+                    user_prompt=user_prompt,
+                    stream=False,
+                ),
             )
 
             
             
             # Parse references from the summary and generate download URLs
-            original_kb_name = kb_name.split('/')[0] if '/' in kb_name else kb_name
+            original_kb_name = kb_name_for_urls.split('/')[0] if '/' in kb_name_for_urls else kb_name_for_urls
             sources = []
             parsed_refs = parse_references_from_response(summary)  # Parse from summary, not response
 
@@ -691,8 +823,13 @@ When handling relationships with timestamps:
                 
                 print(f"Processing reference {citation}: {file_path}")
                 
-                download_url = generate_download_url_for_file(domain, original_kb_name, file_path,workspace_id=workspace_id,
-                role_id=role_id)
+                download_url = generate_download_url_for_file(
+                    domain,
+                    kb_name_for_urls,
+                    file_path,
+                    workspace_id=workspace_id,
+                    role_id=role_id,
+                )
                 
                 if download_url:
                     sources.append({
@@ -716,7 +853,7 @@ When handling relationships with timestamps:
                 "sources": sources
             }
         else:
-            rag = await initialize_rag(domain=domain, kb_name=kb_name)
+            rag = await initialize_rag(domain=domain, kb_name=kb_name_for_urls or kb_name)
             response = await rag.aquery(
                 question if question else "",
                 param=QueryParam(
@@ -753,7 +890,7 @@ When handling relationships with timestamps:
                     print(f"  - {ref}")
             
             # Extract original kb_name without workspace suffix
-            original_kb_name = kb_name.split('/')[0] if '/' in kb_name else kb_name
+            original_kb_name = kb_name_for_urls.split('/')[0] if '/' in kb_name_for_urls else kb_name_for_urls
             for ref in parsed_refs:
                 citation = ref['citation_number']  # e.g., "[1]"
                 file_path = ref['file_path']
@@ -762,7 +899,7 @@ When handling relationships with timestamps:
                 print(f"   Domain: {domain}, KB: {original_kb_name}, WorkspaceID: {workspace_id}, RoleID: {role_id}")
                 
                 # Use ORIGINAL kb_name for blob path (not the modified one)
-                download_url = generate_download_url_for_file(domain, original_kb_name, file_path,workspace_id=workspace_id,
+                download_url = generate_download_url_for_file(domain, kb_name_for_urls, file_path,workspace_id=workspace_id,
                 role_id=role_id)
                 
                 if download_url:
