@@ -82,7 +82,8 @@ os.environ["NEO4J_URI"] = _normalize_neo4j_uri(
 )
 os.environ["NEO4J_USERNAME"] = os.getenv("NEO4J_DATABASE_NEO4J_USER") or ""
 os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_DATABASE_NEO4J_PASSWORD") or ""
-# Use a stable DB by default; workspace isolation is handled by LightRAG workspace/keying.
+# IMPORTANT: this deployment uses Neo4j multi-db (one DB per workspace).
+# Defaulting to "neo4j" will miss data stored in per-workspace databases.
 os.environ["NEO4J_DATABASE"] = os.getenv("NEO4J_DATABASE_NAME", "neo4j") or "neo4j"
  
 # os.environ["POSTGRES_HOST"] = os.getenv("POSTGRESQL_DATABASE_HOST") or ""
@@ -473,8 +474,12 @@ async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = 
     lightrag_workspace = ''.join(char for char in f"{domain}{kb_name_for_workspace}" if char.isalpha()) or "defaultworkspace"
     disable_pgvector = _effective_disable_pgvector()
 
-    # Keep Neo4j DB stable (usually "neo4j"); per-workspace DBs may not exist locally.
-    os.environ['NEO4J_DATABASE'] = os.getenv("NEO4J_DATABASE_NAME", "neo4j") or "neo4j"
+    # Neo4j multi-db: prefer per-workspace database if it exists.
+    neo4j_db_env = os.getenv("NEO4J_DATABASE_NAME")
+    if neo4j_db_env:
+        os.environ["NEO4J_DATABASE"] = neo4j_db_env
+    else:
+        os.environ["NEO4J_DATABASE"] = (lightrag_workspace or "neo4j").lower()
     print(lightrag_workspace)
 
     def _build_rag(graph_storage: str = "Neo4JStorage", use_pgvector: bool = True) -> LightRAG:
@@ -2589,10 +2594,10 @@ async def get_kb_knowledge_graph(
     question: Optional[str],
     role_id: Optional[int],
     workspace_id: Optional[int],
-    history: Optional[List] = [],
+    history: Optional[List] = None,
     mode: Optional[str] = "mix",
     user_prompt: Optional[str] = "",
-    knowledge_bases: Optional[List[str]] = []
+    knowledge_bases: Optional[List[str]] = None
 ) -> dict:
     """
     Get the knowledge graph for the specified workspace (domain_kb_name) or for provided knowledge bases.
@@ -2601,19 +2606,44 @@ async def get_kb_knowledge_graph(
     try:
         all_nodes = []
         all_edges = []
+        history = history or []
+
+        # Prevent SSE/HTTP responses from blowing up memory by returning a massive graph.
+        # Tight defaults to keep visualizations readable.
+        MAX_NODES_DEFAULT = 350
+        MAX_EDGES_DEFAULT = 900
+        try:
+            MAX_NODES = int(os.getenv("KG_MAX_NODES", str(MAX_NODES_DEFAULT)))
+        except Exception:
+            MAX_NODES = MAX_NODES_DEFAULT
+        try:
+            MAX_EDGES = int(os.getenv("KG_MAX_EDGES", str(MAX_EDGES_DEFAULT)))
+        except Exception:
+            MAX_EDGES = MAX_EDGES_DEFAULT
+
+        # Reduce clutter generically: limit seed entities and use shallow expansion.
+        MAX_SEED_LABELS = 2
+        # Limit how many nodes/edges we accept from each seed subgraph before merging.
+        # This prevents a single very dense seed from creating a hairball.
+        PER_SEED_NODES = 250
+        PER_SEED_EDGES = 600
         digit_map = {
             '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
             '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
         }
-        result = []
-        for c in str(workspace_id):
-            if c.isalpha():
-                result.append(c)
-            elif c.isdigit():
-                result.append(digit_map[c])
-        workspace_id_alpha = ''.join(result)
- 
-        knowledge_bases.append(workspace_id_alpha)
+        knowledge_bases = list(knowledge_bases) if knowledge_bases else []
+        workspace_id_alpha = None
+        if workspace_id is not None:
+            result = []
+            for c in str(workspace_id):
+                if c.isalpha():
+                    result.append(c)
+                elif c.isdigit():
+                    result.append(digit_map[c])
+            workspace_id_alpha = ''.join(result) or None
+
+        if workspace_id_alpha and workspace_id_alpha not in knowledge_bases:
+            knowledge_bases.append(workspace_id_alpha)
         print("[DEBUG] get_kb_knowledge_graph called with:", {
             "domain": domain,
             "kb_name": kb_name,
@@ -2631,16 +2661,27 @@ async def get_kb_knowledge_graph(
             }
         
         # If knowledge_bases are provided, query each and merge results
-        if knowledge_bases and isinstance(knowledge_bases, list) and len(knowledge_bases) > 0:
-            print(f"[DEBUG] Processing {len(knowledge_bases)} knowledge bases")
+        scopes = [s for s in knowledge_bases if isinstance(s, str) and s.strip()]
+        primary_scope = None
+        for s in scopes:
+            if workspace_id_alpha and s == workspace_id_alpha:
+                continue
+            primary_scope = s
+            break
+
+        kb_name_for_rag = kb_name
+        if primary_scope and kb_name and "/" not in kb_name:
+            kb_name_for_rag = f"{kb_name}/{primary_scope}"
+
+        if scopes and isinstance(scopes, list) and len(scopes) > 0:
+            print(f"[DEBUG] Processing {len(scopes)} knowledge bases")
 
             # Initialize RAGs sequentially to avoid os.environ['NEO4J_DATABASE'] race condition
             # during parallel initialization. Query execution remains parallel below.
             rag_map = {}
-            for kb in knowledge_bases:
-                combined_kb_name = f"{kb_name}{kb}"
-                print(f"[DEBUG] Initializing RAG for KB: domain={domain}, kb_name={combined_kb_name}")
-                rag_map[kb] = await initialize_rag(domain=domain, kb_name=combined_kb_name)
+            for kb in scopes:
+                print(f"[DEBUG] Initializing RAG for KB: domain={domain}, kb_name={kb_name_for_rag}")
+                rag_map[kb] = await initialize_rag(domain=domain, kb_name=kb_name_for_rag)
 
             semaphore = asyncio.Semaphore(3)  # Reduced concurrency for stability
 
@@ -2667,6 +2708,9 @@ async def get_kb_knowledge_graph(
                         
                         if not all_labels:
                             return kb, [], []
+
+                        # Cap seeds to keep the graph readable.
+                        all_labels = [li for li in all_labels if (li.get("entity_name") or "").strip()][:MAX_SEED_LABELS]
                         
                         # Process labels with controlled parallelism
                         label_semaphore = asyncio.Semaphore(3)
@@ -2678,10 +2722,11 @@ async def get_kb_knowledge_graph(
                                     return None, None
                                 try:
                                     print(f"[DEBUG] Fetching graph for label: {label}")
-                                    graph = await rag.get_knowledge_graph(label, 2, None)
+                                    graph = await rag.get_knowledge_graph(label, 1, None)
                                     if graph:
                                         print(f"[DEBUG] Graph for label '{label}': nodes={len(graph.nodes)}, edges={len(graph.edges)}")
-                                        return graph.nodes, graph.edges
+                                        # Per-seed cap to keep graphs readable.
+                                        return list(graph.nodes)[:PER_SEED_NODES], list(graph.edges)[:PER_SEED_EDGES]
                                     return None, None
                                 except Exception as e:
                                     print(f"[ERROR] Exception fetching graph for label '{label}': {e}")
@@ -2702,6 +2747,12 @@ async def get_kb_knowledge_graph(
                                     nodes.extend([dict(node) for node in node_list])
                                 if edge_list:
                                     edges.extend([dict(edge) for edge in edge_list])
+
+                        # Cap per-KB to keep memory bounded.
+                        if len(nodes) > MAX_NODES:
+                            nodes = nodes[:MAX_NODES]
+                        if len(edges) > MAX_EDGES:
+                            edges = edges[:MAX_EDGES]
                         
                         print(f"[DEBUG] KB '{kb}' produced {len(nodes)} nodes and {len(edges)} edges")
                         return kb, nodes, edges
@@ -2715,7 +2766,7 @@ async def get_kb_knowledge_graph(
             # Process all KBs in parallel with controlled concurrency
             print(f"[DEBUG] Starting parallel processing of {len(knowledge_bases)} KBs")
             kb_results = await asyncio.gather(
-                *[fetch_graph_for_kb(kb) for kb in knowledge_bases],
+                *[fetch_graph_for_kb(kb) for kb in scopes],
                 return_exceptions=True
             )
             
@@ -2731,12 +2782,33 @@ async def get_kb_knowledge_graph(
             # Deduplicate nodes and edges
             unique_nodes = {node.get('id', str(i)): node for i, node in enumerate(all_nodes)}
             all_nodes = list(unique_nodes.values())
+
+            unique_edges = {}
+            for i, e in enumerate(all_edges):
+                if not isinstance(e, dict):
+                    unique_edges[str(i)] = e
+                    continue
+                k = (
+                    e.get("id")
+                    or f"{e.get('source') or e.get('from') or ''}|{e.get('target') or e.get('to') or ''}|{e.get('type') or e.get('relation') or ''}"
+                )
+                if k not in unique_edges:
+                    unique_edges[k] = e
+            all_edges = list(unique_edges.values())
+
+            # Final cap to prevent SSE memory errors.
+            if len(all_nodes) > MAX_NODES:
+                all_nodes = all_nodes[:MAX_NODES]
+            if len(all_edges) > MAX_EDGES:
+                all_edges = all_edges[:MAX_EDGES]
             
             print(f"[DEBUG] Final merged result: {len(all_nodes)} nodes, {len(all_edges)} edges")
             
             return {
                 "status": "success",
-                "knowledge_bases": knowledge_bases,
+                "knowledge_bases": scopes,
+                "kb_name_for_rag": kb_name_for_rag,
+                "message": f"Returned capped graph: nodes={len(all_nodes)}/{MAX_NODES} edges={len(all_edges)}/{MAX_EDGES}",
                 "nodes": all_nodes,
                 "edges": all_edges,
             }
@@ -2787,10 +2859,10 @@ async def get_kb_knowledge_graph(
                         return None, None
                     try:
                         print(f"[DEBUG] Fetching graph for label: {label}")
-                        graph = await rag.get_knowledge_graph(label, 2, None)
+                        graph = await rag.get_knowledge_graph(label, 1, None)
                         if graph:
                             print(f"[DEBUG] Graph for label '{label}': nodes={len(graph.nodes)}, edges={len(graph.edges)}")
-                            return graph.nodes, graph.edges
+                            return list(graph.nodes)[:PER_SEED_NODES], list(graph.edges)[:PER_SEED_EDGES]
                         return None, None
                     except Exception as e:
                         print(f"[ERROR] Exception fetching graph for label '{label}': {e}")
