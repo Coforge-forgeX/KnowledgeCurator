@@ -11,6 +11,8 @@ from lightrag.llm.ollama import ollama_model_complete, ollama_embed
 from lightrag.llm.azure_openai import azure_openai_complete
 from lightrag.kg.shared_storage import initialize_share_data, initialize_pipeline_status
 import aiohttp
+import ssl
+import certifi
 from kbcurator.server.server import mcp
 import psycopg2
 from azure.storage.blob import BlobServiceClient
@@ -235,6 +237,19 @@ base_url = os.getenv("OLLAMA_MODEL_BASE_URL")
  
 pytesseract.pytesseract.tesseract_cmd = r'C:\Users\aalok\AppData\Local\Programs\Tesseract-OCR\tesseract.exe'
 
+
+def _azure_ssl_ctx():
+    """TLS settings for Azure OpenAI.
+
+    Some local/dev machines don't have a complete system trust store.
+    Prefer certifi for verification; allow opt-out via AZURE_OPENAI_SSL_VERIFY=0.
+    """
+
+    verify = os.getenv("AZURE_OPENAI_SSL_VERIFY", "1").strip().lower() not in ("0", "false", "no")
+    if not verify:
+        return False  # aiohttp accepts False to disable verification
+    return ssl.create_default_context(cafile=certifi.where())
+
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
@@ -258,8 +273,10 @@ async def llm_model_func(
         "n": kwargs.get("n", 1),
     }
  
-    async with aiohttp.ClientSession() as session:
-        async with session.post(endpoint, headers=headers, json=payload) as response:
+    ssl_ctx = _azure_ssl_ctx()
+    timeout = aiohttp.ClientTimeout(total=float(os.getenv("AZURE_OPENAI_HTTP_TIMEOUT_S", "60")))
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(endpoint, headers=headers, json=payload, ssl=ssl_ctx) as response:
             if response.status != 200:
                 raise ValueError(
                     f"Request failed with status {response.status}: {await response.text()}"
@@ -277,8 +294,10 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
  
     payload = {"input": texts, "dimensions": embedding_dim}
  
-    async with aiohttp.ClientSession() as session:
-        async with session.post(endpoint, headers=headers, json=payload) as response:
+    ssl_ctx = _azure_ssl_ctx()
+    timeout = aiohttp.ClientTimeout(total=float(os.getenv("AZURE_OPENAI_HTTP_TIMEOUT_S", "60")))
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(endpoint, headers=headers, json=payload, ssl=ssl_ctx) as response:
             if response.status != 200:
                 raise ValueError(
                     f"Request failed with status {response.status}: {await response.text()}"
@@ -592,6 +611,70 @@ async def initialize_rag(domain: Optional[str] = None, kb_name: Optional[str] = 
     await initialize_pipeline_status()
     return rag
 
+
+async def get_rag(domain: Optional[str] = None, kb_name: Optional[str] = None) -> LightRAG:
+    """Get a cached LightRAG instance.
+
+    Initializing LightRAG (Postgres/Neo4j + worker pools) is expensive and should
+    not run on every query.
+    """
+
+    key = (str(domain or ""), str(kb_name or ""))
+    rag = _RAG_CACHE.get(key)
+    if rag is not None:
+        return rag
+    rag = await initialize_rag(domain=domain, kb_name=kb_name)
+    _RAG_CACHE[key] = rag
+    return rag
+
+
+def _coerce_history_for_lightrag(history: Optional[list]) -> list:
+    """LightRAG expects a list for conversation_history.
+
+    Some callers pass [] or None; keep it stable and never use a mutable default.
+    """
+    return history if isinstance(history, list) else []
+
+
+def _build_compact_query_for_rag(question: str, max_chars: int = 1200) -> str:
+    """Reduce very long prompts to improve retrieval latency/quality.
+
+    This is a pragmatic heuristic: retrieval works better (and faster) when the query
+    is shorter and more keyword-dense. Keep the start (usually title/summary) and the
+    tail (often contains the direct ask) to preserve intent.
+    """
+    q = (question or "").strip()
+    if len(q) <= max_chars:
+        return q
+    head = q[: int(max_chars * 0.7)].rstrip()
+    tail = q[-int(max_chars * 0.3) :].lstrip()
+    return f"{head}\n\n...[truncated for retrieval]...\n\n{tail}"
+
+
+def _should_include_sources() -> bool:
+    """Whether to generate SAS URLs for cited sources.
+
+    Defaulting this to false significantly reduces tail latency because SAS URL
+    generation does Azure calls per reference.
+    """
+    return os.getenv("KB_INCLUDE_SOURCES", "0") not in ("0", "false", "False")
+
+
+def _rag_top_k(mode: str) -> int:
+    """Tune top_k by mode via env override.
+
+    Defaults are conservative to reduce token/context load.
+    """
+    env = os.getenv("KB_QUERY_TOP_K")
+    if env:
+        try:
+            v = int(env)
+            return max(1, min(v, 50))
+        except Exception:
+            pass
+    # mix/global benefit from slightly higher top_k; local usually OK lower.
+    return 6 if (mode or "").lower() in ("mix", "global") else 4
+
 @mcp.tool()
 async def query_rag(
     domain: Optional[str] = None, 
@@ -608,6 +691,32 @@ async def query_rag(
     Query the RAG system with a question and optional user prompt.
     If knowledge_bases is provided, query each and aggregate results.
     """
+
+    # -------- latency tracing (prints to terminal) --------
+    import time
+    from datetime import datetime, timezone
+
+    def _ts() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    _t0 = time.perf_counter()
+
+    def _t(step: str, **meta):
+        dt = time.perf_counter() - _t0
+        meta_s = (" " + " ".join(f"{k}={v}" for k, v in meta.items())) if meta else ""
+        print(f"[KB][timing] {step} dt_s={dt:.3f}{meta_s} at={_ts()}")
+
+    _t(
+        "query_rag_start",
+        domain=domain,
+        kb_name=kb_name,
+        mode=mode,
+        kb_count=(len(knowledge_bases) if knowledge_bases else 0),
+        q_chars=(len(question or "") if question else 0),
+    )
+
+    # Optional: skip generating blob download URLs for sources to reduce latency.
+    include_sources = _should_include_sources()
 
     digit_map = {
             '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
@@ -664,8 +773,55 @@ async def query_rag(
         question = ""
     if question:
         question = question.strip()
+    # Strip IDE/client-injected environment blocks.
+    if "<environment_details>" in question:
+        question = question.split("<environment_details>", 1)[0].strip()
+
+    # Optional fast-return: if the KB has no indexed content, skip expensive LLM synthesis.
+    # This avoids spending seconds just to return the standard [no-context] answer.
+    # Generic (non-hardcoded) check: if the vector store has no chunks, we know there is no context.
+    if os.getenv("KB_FAST_NO_CONTEXT", "1") in ("1", "true", "True"):
+        try:
+            # Use Postgres chunk count as a cheap proxy for "KB has content".
+            host = os.getenv("POSTGRESQL_DATABASE_HOST") or os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_HOST")
+            user = os.getenv("POSTGRESQL_DATABASE_USER") or os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_USER")
+            password = os.getenv("POSTGRESQL_DATABASE_PASSWORD") or os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_PASSWORD")
+            dbname = os.getenv("POSTGRESQL_DATABASE_DATABASE") or os.getenv("POSTGRESQL_DATABASE_DATABASE_2") or os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_DATABASE")
+            port = int(os.getenv("POSTGRESQL_DATABASE_PORT") or "5432")
+
+            if host and user and password and dbname:
+                import psycopg2
+                conn = psycopg2.connect(host=host, user=user, password=password, dbname=dbname, port=port)
+                cur = conn.cursor()
+                # If there are zero chunks, LightRAG will return [no-context] anyway.
+                cur.execute("SELECT 1 FROM lightrag_vdb_chunks LIMIT 1")
+                has_any = cur.fetchone() is not None
+                cur.close()
+                conn.close()
+
+                if not has_any:
+                    _t("query_rag_end", ok=1, fast_no_context=1)
+                    return {
+                        "LightRAG": "Sorry, I'm not able to provide an answer to that question.[no-context]",
+                        "response": "Sorry, I'm not able to provide an answer to that question.[no-context]",
+                        "sources": [],
+                    }
+        except Exception:
+            # If the fast check fails, fall back to normal behavior.
+            pass
+
+    # Prefer the pre-scoped kb_name (e.g. "Airline/Offer Order") to keep the cache key stable.
+    # If the caller already passed a scoped kb_name, do not re-derive it from knowledge_bases.
+    if kb_name and "/" in kb_name:
+        kb_name_for_urls = kb_name
+    # Keep the user ask, but avoid repeatedly appending the same suffix.
     if not question.endswith("Please provide detailed insights from official documents and reports."):
         question += " Please provide detailed insights from official documents and reports."
+
+    # Use a compact retrieval query to reduce latency and improve recall.
+    rag_query = _build_compact_query_for_rag(question)
+    rag_history = _coerce_history_for_lightrag(history)
+    top_k = _rag_top_k(mode)
     try:
         user_prompt = f"""---Role---
 
@@ -801,17 +957,22 @@ When handling relationships with timestamps:
 
             # Query the actual stored workspace. If caller passed kb_name as "Airline/Offer Order",
             # the stored workspace is typically "AirlineOfferOrder".
-            rag = await initialize_rag(domain=domain, kb_name=kb_name_for_urls or kb_name)
+            _t("before_get_rag", cache_key=f"{domain}|{kb_name_for_urls or kb_name}")
+            rag = await get_rag(domain=domain, kb_name=kb_name_for_urls or kb_name)
+            _t("after_get_rag")
             summary = await rag.aquery(
-                question if question else "",
+                rag_query if rag_query else "",
                 param=QueryParam(
                     mode=mode,
-                    top_k=2,
-                    conversation_history=history,
+                    top_k=top_k,
+                    enable_rerank=False,
+                    conversation_history=rag_history,
                     user_prompt=user_prompt,
                     stream=False,
                 ),
             )
+
+            _t("after_rag_aquery", chars=(len(summary) if isinstance(summary, str) else "n/a"))
 
             
             
@@ -820,7 +981,13 @@ When handling relationships with timestamps:
             sources = []
             parsed_refs = parse_references_from_response(summary)  # Parse from summary, not response
 
+            _t("after_parse_refs", refs=len(parsed_refs))
+
             print(f"Parsed {len(parsed_refs)} references from LightRAG response")
+
+            t_urls = time.perf_counter()
+            if not include_sources:
+                parsed_refs = []
 
             for ref in parsed_refs:
                 citation = ref['citation_number']
@@ -846,11 +1013,14 @@ When handling relationships with timestamps:
                     print(f"Skipped reference {citation}: Not a valid file or file not found")
 
             print(f"Final sources count: {len(sources)}")
+            _t("after_source_urls", refs=len(parsed_refs), urls=len(sources), dt_s=(time.perf_counter()-t_urls))
 
             # Remove the References section from summary before sending to UI
             #summary_clean = re.sub(r'\n*###\s*References\s*\n.*', '', summary, flags=re.DOTALL).strip()
             summary_clean = re.sub(r'(?i)\n*##+\s*References[\s\S]*$', '', summary).strip()
             print(f" Removed References section. Clean response length: {len(summary_clean)}")
+
+            _t("query_rag_end", ok=1)
 
             return {
                 "LightRAG": summary_clean,
@@ -858,17 +1028,22 @@ When handling relationships with timestamps:
                 "sources": sources
             }
         else:
-            rag = await initialize_rag(domain=domain, kb_name=kb_name_for_urls or kb_name)
+            _t("before_get_rag", cache_key=f"{domain}|{kb_name_for_urls or kb_name}")
+            rag = await get_rag(domain=domain, kb_name=kb_name_for_urls or kb_name)
+            _t("after_get_rag")
             response = await rag.aquery(
-                question if question else "",
+                rag_query if rag_query else "",
                 param=QueryParam(
                     mode=mode, 
-                    top_k=2, 
-                    conversation_history=history, 
+                    top_k=top_k, 
+                    enable_rerank=False,
+                    conversation_history=rag_history, 
                     user_prompt=user_prompt, 
                     stream=False
                 )
             )
+
+            _t("after_rag_aquery", chars=(len(response) if isinstance(response, str) else "n/a"))
 
             
 
@@ -889,6 +1064,8 @@ When handling relationships with timestamps:
             print("="*80)
             
             parsed_refs = parse_references_from_response(response)
+
+            _t("after_parse_refs", refs=len(parsed_refs))
             print(f"✓ Parsed {len(parsed_refs)} references")
             if parsed_refs:
                 for ref in parsed_refs:
@@ -896,6 +1073,10 @@ When handling relationships with timestamps:
             
             # Extract original kb_name without workspace suffix
             original_kb_name = kb_name_for_urls.split('/')[0] if '/' in kb_name_for_urls else kb_name_for_urls
+            t_urls = time.perf_counter()
+            if not include_sources:
+                parsed_refs = []
+
             for ref in parsed_refs:
                 citation = ref['citation_number']  # e.g., "[1]"
                 file_path = ref['file_path']
@@ -917,12 +1098,15 @@ When handling relationships with timestamps:
                     print(f"❌ FAILED to generate URL for {citation} - file not found in blob storage")
             
             print(f" Final sources count: {len(sources)}")
+            _t("after_source_urls", refs=len(parsed_refs), urls=len(sources), dt_s=(time.perf_counter()-t_urls))
             print("="*80)
             
             # Remove the References section from response before sending to UI
            # response_clean = re.sub(r'\n*###\s*References\s*\n.*', '', response, flags=re.DOTALL).strip()
             response_clean = re.sub(r'(?i)\n*##+\s*References[\s\S]*$', '', response).strip()
             print(f" Removed References section. Clean response length: {len(response_clean)}")
+
+            _t("query_rag_end", ok=1)
             
             # Return structured response similar to SSRS
             return {
@@ -4032,3 +4216,6 @@ async def clear_cache(doc_id):
         await rag.aclear_cache()
      except Exception as e:
         print(f"Error clearing cache': {e}")
+# Reuse initialized LightRAG instances across requests to avoid per-request
+# Postgres/Neo4j setup and worker pool initialization.
+_RAG_CACHE: dict[tuple[str, str], "LightRAG"] = {}
