@@ -13,10 +13,9 @@ from kbcurator.utils.auth import create_jwt_token, verify_jwt_token, create_refr
 from kbcurator.utils.request_context import request_var
 from sqlalchemy import select, func as sql_func
 from datetime import datetime, timezone
-from common_adapters.trustai import  TrustAIWorkspaceIntegration
-from common_adapters.trustai.database  import TrustAIDatabaseManager
 import os
 from urllib.parse import quote_plus
+import kbcurator.server.server as server
 
 # --- New Import for Password Hashing ---
 from passlib.hash import argon2
@@ -938,30 +937,7 @@ def _add_workspace_mappings(session, workspace_id: int, fields: dict, kb_ids: li
     ])
 
 #trustai helper method
-def get_postgres_connection_string(database_env: str = "POSTGRESQL_DATABASE_DATABASE",) -> str | None:
-    """
-    Builds a PostgreSQL SQLAlchemy connection string from environment variables.
-    Returns:
-    Connection string if all required values are present.
-    None if any required value is missing or an error occurs.
-    """
-    try:
-        host = os.getenv("POSTGRESQL_DATABASE_HOST")
-        port = os.getenv("POSTGRESQL_DATABASE_PORT", "5432")
-        database = os.getenv(database_env)
-        user = os.getenv("POSTGRESQL_DATABASE_USER")
-        password = os.getenv("POSTGRESQL_DATABASE_PASSWORD")
-        if not all([host, port, database, user, password]):
-            return None
-        password = quote_plus(password)
-        return (
-            f"postgresql+psycopg2://"
-            f"{user}:{password}"
-            f"@{host}:{port}/{database}"
-            f"?sslmode=require"
-        )
-    except Exception:
-        return None
+
     
 async def register_workspace_with_trustai(workspace_id, trustai_config, db_url, agent_ids, user_id):
     """
@@ -971,15 +947,8 @@ async def register_workspace_with_trustai(workspace_id, trustai_config, db_url, 
         workspace_id: UUID string of the workspace
         trustai_config: Configuration dict from UI
         db_url: PostgreSQL connection string
-    """
-    # Create database manager
-    db_manager = TrustAIDatabaseManager(db_url)
-    db_manager.initialize_tables()
-    
-    # Create workspace integration
-    integration = TrustAIWorkspaceIntegration(db_manager)
-    
-    result = await integration.register_workspace(
+    """ 
+    result = await server.trustai_workspace_integration.register_workspace(
     workspace_id=workspace_id,
     trustai_config=trustai_config,
     agent_ids=agent_ids,

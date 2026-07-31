@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 from kbcurator.utils.mongodb_singleton import get_mongodb_client
 import logging
+import os
+from urllib.parse import quote_plus
 from dotenv import load_dotenv
 load_dotenv()
 from common_adapters.langfuse_instrumentation import flush as langfuse_flush
@@ -13,17 +15,47 @@ from kbcurator.utils.session_history_manager import (
     SessionHistoryManager, 
     UserConfigManager
 )
-# Global variables
+from common_adapters.trustai import  TrustAIDatabaseManager
+from common_adapters.trustai.workspace_integration import TrustAIWorkspaceIntegration
 sharepoint_client_manager = None
 user_config_manager = None
+trustai_workspace_integration = None
+trustai_db_manager = None
 r = None
 session = None
 session_context = None
+
+#trustai helper method
+def get_postgres_connection_string(database_env: str = "POSTGRESQL_DATABASE_DATABASE",) -> str | None:
+    """
+    Builds a PostgreSQL SQLAlchemy connection string from environment variables.
+    Returns:
+    Connection string if all required values are present.
+    None if any required value is missing or an error occurs.
+    """
+    try:
+        host = os.getenv("POSTGRESQL_DATABASE_HOST")
+        port = os.getenv("POSTGRESQL_DATABASE_PORT", "5432")
+        database = os.getenv(database_env)
+        user = os.getenv("POSTGRESQL_DATABASE_USER")
+        password = os.getenv("POSTGRESQL_DATABASE_PASSWORD")
+        if not all([host, port, database, user, password]):
+            return None
+        password = quote_plus(password)
+        return (
+            f"postgresql+psycopg2://"
+            f"{user}:{password}"
+            f"@{host}:{port}/{database}"
+            f"?sslmode=require"
+        )
+    except Exception:
+        return None
+    
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[None]:
     # Initialize MongoDB singleton
     mongo_client = get_mongodb_client()
-    global r, sharepoint_client_manager, user_config_manager, session
+    global r, sharepoint_client_manager, user_config_manager, session, trustai_workspace_integration, trustai_db_manager
     try:
         # Initialize other services
         logging.info("🔧 Initializing services...")
@@ -45,7 +77,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
         logging.debug("Initializing session history manager...")
         session = SessionHistoryManager(mongo_client)
         logging.info("  ✅ Session history manager initialized")
-        
+
+        db_url = get_postgres_connection_string()
+        trustai_db_manager = TrustAIDatabaseManager(db_url)
+        trustai_workspace_integration = TrustAIWorkspaceIntegration(trustai_db_manager)
+        logging.info("  ✅ Trust AI Database & integration initialized")
     except Exception as e:
         logging.error(f"✗ Startup initialization failed: {e}")
     try:
