@@ -1,10 +1,11 @@
 """Shared request-payload validation primitives"""
 import json
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
-import azure.functions as func
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, validator
 from typing_extensions import Annotated
+
+from src.core.abstractions import AbstractRequest, AbstractResponse
 
 # Required, non-empty string (leading/trailing whitespace stripped)
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -24,7 +25,7 @@ class BasePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-def _extract_data(req: func.HttpRequest) -> dict:
+def _extract_data(req: AbstractRequest) -> dict:
     """Collect raw payload dict from request body (POST) or query params."""
     if req.method in ("POST", "DELETE", "PUT", "PATCH"):
         try:
@@ -35,10 +36,10 @@ def _extract_data(req: func.HttpRequest) -> dict:
             pass
         return {}
     # GET: use query string parameters
-    return dict(req.params)
+    return req.get_query_params()
 
 
-def _validation_error_response(exc: ValidationError) -> func.HttpResponse:
+def _validation_error_response(exc: ValidationError) -> AbstractResponse:
     """Build 400 response describing pydantic validation failures."""
     errors = [
         {
@@ -56,18 +57,20 @@ def _validation_error_response(exc: ValidationError) -> func.HttpResponse:
         "error": "VALIDATION_ERROR",
         "validation_errors": errors,
     }
-    return func.HttpResponse(
-        json.dumps(error_response, default=str),
+    return AbstractResponse(
+        body=json.dumps(error_response, default=str),
         status_code=400,
         mimetype="application/json",
     )
 
 
-def parse_request(req: func.HttpRequest, model: type[BaseModel]):
+def parse_request(
+    req: AbstractRequest, model: type[BaseModel]
+) -> Tuple[Optional[BaseModel], Optional[AbstractResponse]]:
     """Validate request against model.
 
     Returns (payload, None) on success or (None, error_response) with
-    400 func.HttpResponse when validation fails.
+    400 AbstractResponse when validation fails.
     """
     data = _extract_data(req)
     try:

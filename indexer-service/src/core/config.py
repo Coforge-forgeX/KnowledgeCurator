@@ -1,11 +1,27 @@
 """Application configuration management for Indexer Service"""
+import os
+from pathlib import Path
 from typing import Optional
 
-from pydantic import Field, validator
-from pydantic_settings import BaseSettings
+from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Get the absolute path to the .env file (in the project root)
+# Config file is in: services/indexer-service/src/core/config.py
+# .env file is in: services/indexer-service/.env
+_config_dir = Path(__file__).parent  # src/core/
+_project_root = _config_dir.parent.parent  # services/indexer-service/
+_env_file_path = _project_root / ".env"
+
+# Explicitly load .env file into os.environ before Pydantic initializes
+# This ensures environment variables are available when Settings is instantiated
+if _env_file_path.exists():
+    from dotenv import load_dotenv
+    load_dotenv(_env_file_path, override=False)
 
 
-class DatabaseSettings(BaseSettings):
+class DatabaseSettings(BaseModel):
     """Database configuration settings"""
 
     # PostgreSQL settings
@@ -22,6 +38,7 @@ class DatabaseSettings(BaseSettings):
     NEO4J_DATABASE_NEO4J_USER: str = Field(default="neo4j", env="NEO4J_DATABASE_NEO4J_USER")
     NEO4J_DATABASE_NEO4J_PASSWORD: str = Field(default="", env="NEO4J_DATABASE_NEO4J_PASSWORD")
 
+
     @property
     def postgresql_url(self) -> str:
         """Build PostgreSQL connection URL"""
@@ -37,7 +54,7 @@ class DatabaseSettings(BaseSettings):
         return self.NEO4J_DATABASE_NEO4J_BOLT_URI
 
 
-class StorageSettings(BaseSettings):
+class StorageSettings(BaseModel):
     """Storage configuration (multi-cloud support)"""
 
     # Storage provider
@@ -55,15 +72,17 @@ class StorageSettings(BaseSettings):
     AWS_REGION: str = Field(default="us-east-1", env="AWS_REGION")
 
 
-class AzureSettings(BaseSettings):
+
+class AzureSettings(BaseModel):
     """Azure-specific configuration settings"""
 
     # Azure Storage Queue
     AZURE_STORAGE_CONNECTION_STRING: str = Field(
-        default="UseDevelopmentStorage=true", env="AZURE_STORAGE_CONNECTION_STRING"
+        default="", env="AZURE_STORAGE_CONNECTION_STRING"
     )
     INDEXING_QUEUE_NAME: str = Field(default="kb-indexing-jobs", env="INDEXING_QUEUE_NAME")
     QUEUE_POLL_INTERVAL: int = Field(default=5, env="QUEUE_POLL_INTERVAL")
+
 
     # Azure Document Intelligence
     AZURE_DOC_INTELLIGENCE_ENDPOINT: Optional[str] = Field(
@@ -74,7 +93,7 @@ class AzureSettings(BaseSettings):
     )
 
 
-class LLMSettings(BaseSettings):
+class LLMSettings(BaseModel):
     """LLM and Embedding configuration"""
 
     # Azure OpenAI LLM
@@ -116,7 +135,8 @@ class LLMSettings(BaseSettings):
     )
 
 
-class ProcessingSettings(BaseSettings):
+
+class ProcessingSettings(BaseModel):
     """Document processing configuration"""
 
     # PDF processing
@@ -127,6 +147,76 @@ class ProcessingSettings(BaseSettings):
     # Cache directories
     INDEXER_CACHE_DIR: str = Field(default="./indexer_cache", env="INDEXER_CACHE_DIR")
     INDEXER_STATE_DIR: str = Field(default="./indexer_state", env="INDEXER_STATE_DIR")
+
+
+
+class LightRAGSettings(BaseModel):
+    """LightRAG configuration settings"""
+
+    WORKING_DIR: str = Field(default="./lightrag_data")
+    EMBEDDING_DIM: int = Field(default=3072)
+    MAX_TOKEN_SIZE: int = Field(default=8192)
+    CHUNK_TOKEN_SIZE: int = Field(default=1000)
+    CHUNK_OVERLAP_TOKEN_SIZE: int = Field(default=200)
+    GRAPH_STORAGE_TYPE: str = Field(default="Neo4JStorage")
+    VECTOR_STORAGE_TYPE: str = Field(default="PGVectorStorage")
+
+    # Azure OpenAI LLM settings (copy from LLMSettings for easier access)
+    AZURE_OPENAI_LLM_API_KEY: Optional[str] = Field(default=None)
+    AZURE_OPENAI_LLM_API_BASE: Optional[str] = Field(default=None)
+    AZURE_OPENAI_LLM_API_VERSION: str = Field(default="2024-12-01-preview")
+    AZURE_OPENAI_LLM_DEPLOYMENT: Optional[str] = Field(default=None)
+
+    # Azure OpenAI Embedding settings
+    AZURE_OPENAI_EMBEDDING_API_KEY: Optional[str] = Field(default=None)
+    AZURE_OPENAI_EMBEDDING_API_BASE: Optional[str] = Field(default=None)
+    AZURE_OPENAI_EMBEDDING_API_VERSION: str = Field(default="2024-02-01")
+    AZURE_OPENAI_EMBEDDING_DEPLOYMENT: Optional[str] = Field(default=None)
+
+    @model_validator(mode='before')
+    @classmethod
+    def load_from_env(cls, values):
+        """Load values from environment variables if not provided"""
+        import os
+
+        # Map of field names to environment variable names
+        env_map = {
+            'WORKING_DIR': 'LIGHTRAG_WORKING_DIR',
+            'EMBEDDING_DIM': 'LIGHTRAG_EMBEDDING_DIM',
+            'MAX_TOKEN_SIZE': 'LIGHTRAG_MAX_TOKEN_SIZE',
+            'CHUNK_TOKEN_SIZE': 'LIGHTRAG_CHUNK_TOKEN_SIZE',
+            'CHUNK_OVERLAP_TOKEN_SIZE': 'LIGHTRAG_CHUNK_OVERLAP_TOKEN_SIZE',
+            'GRAPH_STORAGE_TYPE': 'LIGHTRAG_GRAPH_STORAGE_TYPE',
+            'VECTOR_STORAGE_TYPE': 'LIGHTRAG_VECTOR_STORAGE_TYPE',
+            'AZURE_OPENAI_LLM_API_KEY': 'AZURE_OPENAI_LLM_MODEL_API_KEY',
+            'AZURE_OPENAI_LLM_API_BASE': 'AZURE_OPENAI_LLM_MODEL_API_BASE',
+            'AZURE_OPENAI_LLM_API_VERSION': 'AZURE_OPENAI_LLM_MODEL_API_VERSION',
+            'AZURE_OPENAI_LLM_DEPLOYMENT': 'AZURE_OPENAI_LLM_MODEL_LLM_MODEL',
+            'AZURE_OPENAI_EMBEDDING_API_KEY': 'AZURE_OPENAI_EMBEDDING_MODEL_API_KEY',
+            'AZURE_OPENAI_EMBEDDING_API_BASE': 'AZURE_OPENAI_EMBEDDING_MODEL_API_BASE',
+            'AZURE_OPENAI_EMBEDDING_API_VERSION': 'AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION',
+            'AZURE_OPENAI_EMBEDDING_DEPLOYMENT': 'AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL',
+        }
+
+        # Load from environment if not in values
+        for field_name, env_name in env_map.items():
+            if field_name not in values or values.get(field_name) is None:
+                env_value = os.getenv(env_name)
+                if env_value is not None:
+                    # Convert to int for numeric fields
+                    if field_name in ['EMBEDDING_DIM', 'MAX_TOKEN_SIZE', 'CHUNK_TOKEN_SIZE', 'CHUNK_OVERLAP_TOKEN_SIZE']:
+                        values[field_name] = int(env_value)
+                    else:
+                        values[field_name] = env_value
+
+        return values
+
+    # Ollama settings
+    OLLAMA_BASE_URL: str = Field(default="http://localhost:11434", env="OLLAMA_MODEL_BASE_URL")
+    OLLAMA_EMBEDDING_MODEL: str = Field(default="mxbai-embed-large", env="OLLAMA_MODEL_EMBEDDING_MODEL")
+    OLLAMA_EMBEDDING_DIMS: int = Field(default=1024, env="OLLAMA_MODEL_EMBEDDING_MODEL_DIMS")
+    OLLAMA_MAX_TOKENS: int = Field(default=8192, env="OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS")
+
 
 
 class Settings(BaseSettings):
@@ -148,22 +238,25 @@ class Settings(BaseSettings):
     MAX_RETRIES: int = Field(default=3, env="MAX_RETRIES")
 
     # Nested settings
-    database: DatabaseSettings = DatabaseSettings()
-    azure: AzureSettings = AzureSettings()
-    llm: LLMSettings = LLMSettings()
-    storage: StorageSettings = StorageSettings()
-    processing: ProcessingSettings = ProcessingSettings()
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    azure: AzureSettings = Field(default_factory=AzureSettings)
+    llm: LLMSettings = Field(default_factory=LLMSettings)
+    storage: StorageSettings = Field(default_factory=StorageSettings)
+    processing: ProcessingSettings = Field(default_factory=ProcessingSettings)
+    lightrag: LightRAGSettings = Field(default_factory=LightRAGSettings)
 
-    @validator("LOG_LEVEL")
+    @field_validator("LOG_LEVEL")
+    @classmethod
     def validate_log_level(cls, v):
         valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         if v.upper() not in valid_levels:
             raise ValueError(f"LOG_LEVEL must be one of {valid_levels}")
         return v.upper()
 
-    @validator("ENVIRONMENT")
+    @field_validator("ENVIRONMENT")
+    @classmethod
     def validate_environment(cls, v):
-        valid_envs = ["development", "staging", "production"]
+        valid_envs = ["dev", "stage", "prod"]
         if v.lower() not in valid_envs:
             raise ValueError(f"ENVIRONMENT must be one of {valid_envs}")
         return v.lower()
@@ -178,10 +271,12 @@ class Settings(BaseSettings):
         """Check if running in development environment"""
         return self.ENVIRONMENT == "development"
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="allow"  # Allow extra fields from nested settings
+    )
 
 
 # Global settings instance

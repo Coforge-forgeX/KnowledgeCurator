@@ -1,25 +1,50 @@
-git+https://github.com/Coforge-forgeX/forgexpackages.git@main#egg=common-adapters
-azure-functions==1.18.0
-pydantic==2.0.0
-pydantic-settings==2.0.0
+# Core framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+gunicorn==26.0.0
+
+# Data validation and configuration
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
 python-dotenv==1.2.2
+typing-extensions
+
+# Database
 sqlalchemy==2.0.51
+asyncpg==0.30.0
 psycopg2-binary==2.9.12
 pymongo==4.17.0
 motor==3.3.0
-certifi==2026.6.17
-redis==5.0.0
+greenlet==3.1.1
+
+# Graph database
 neo4j==6.2.0
-azure-storage-blob==12.30.0
-azure-storage-queue==12.9.0
-PyJWT==2.13.0
+
+# Caching
+redis==5.0.1
+
+# Authentication and security
+PyJWT[crypto]==2.13.0
 passlib[argon2]==1.7.4
 argon2-cffi==25.1.0
-aiohttp==3.14.1
-lightrag-hku==1.4.16
-structlog==24.1.0
-numpy==2.3.5
-requests==2.34.2
-gunicorn==26.0.0
+certifi==2026.6.17
 msal==1.37.0
-typing-extensions
+
+# Logging
+structlog==24.1.0
+
+# HTTP clients
+aiohttp==3.14.1
+requests==2.34.2
+
+# Cloud providers - Azure (default)
+azure-functions==1.18.0
+azure-storage-blob==12.30.0
+azure-storage-queue==12.9.0
+
+# RAG and AI
+lightrag-hku==1.4.16
+numpy==2.3.5
+
+# Internal packages
+git+https://github.com/Coforge-forgeX/forgexpackages.git@main#egg=common-adapters

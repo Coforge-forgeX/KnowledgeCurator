@@ -1,13 +1,12 @@
 """LLM router endpoint - TODO: Port from llm_router_tool.py"""
-import json
+from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
+from src.shared.payloads import parse_request
+from src.shared.response_utils import create_error_response
 
-import azure.functions as func
-
-from shared.payloads import parse_request
-from functions.api.llm_route.payloads import LLMRouteRequest
+from .payloads import LLMRouteRequest
 
 
-async def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+async def main(req: AbstractRequest, context: AbstractContext) -> AbstractResponse:
     """
     LLM router endpoint.
 
@@ -24,8 +23,9 @@ async def main(req: func.HttpRequest, context: func.Context) -> func.HttpRespons
         return error
 
     # TODO: Implement LLM routing logic from llm_router_tool.py
-    return func.HttpResponse(
-        json.dumps({"error": "TODO: Port from llm_router_tool.py"}),
+    return create_error_response(
+        message="TODO: Port from llm_router_tool.py",
+        error_code="NOT_IMPLEMENTED",
         status_code=501,
-        mimetype="application/json",
+        correlation_id=context.correlation_id,
     )

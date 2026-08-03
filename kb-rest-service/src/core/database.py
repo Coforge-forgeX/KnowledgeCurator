@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, JSON
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, JSON
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .config import settings
 from .logging import get_logger
@@ -36,56 +36,87 @@ class Workspace(Base):
     """
     __tablename__ = "workspace_master"
 
-    workspace_id = Column(Integer, primary_key=True)
-    workspace_name = Column(String(100), nullable=False)
-    workspace_desc = Column(Text)
-    namespace = Column(String(100))
-    is_active = Column(Boolean, default=True)
-    created_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    last_updated = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    workspace_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    workspace_desc: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    namespace: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    keywords: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    workspace_logo: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_date: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.utcnow())
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.utcnow())
 
 
 class FileTask(Base):
     """
     File/Document indexing task tracking.
-    Stores status of documents being indexed.
+    Stores status of documents being uploaded and indexed.
+
+    Status values:
+    - uploading: File being uploaded (default)
+    - pending: Queued for processing
+    - processing: Currently being indexed
+    - indexed: Successfully indexed
+    - completed: Fully completed
+    - failed: Indexing failed (see error_message)
     """
     __tablename__ = "file_tasks"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    container_name = Column(String(255))
-    upload_path = Column(String(500))
-    domain = Column(String(255))
-    kb_name = Column(String(255))
-    file_path = Column(String(500))
-    file_name = Column(String(255), nullable=False)
-    workspace_id = Column(Integer, nullable=False, index=True)
-    status = Column(String(50), default="pending", index=True)  # pending, processing, completed, failed
-    file_size = Column(Integer)
-    uploaded_by = Column(String(255))
-    error_message = Column(Text)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    container_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="Azure blob container name")
+    upload_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="Upload path prefix in blob storage")
+    file_path: Mapped[str] = mapped_column(Text, nullable=False, comment="Full blob path")
+    workspace_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="Workspace ID (INTEGER)")
+    status: Mapped[str] = mapped_column(
+        String(255),
+        default="uploading",
+        index=True,
+        comment="Task status: uploading, pending, processing, indexed, completed, failed"
+    )
+    file_size: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="Human-readable file size (e.g., '144.93 KB')")
+    uploaded_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="User full name who uploaded")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+        comment="Task creation timestamp"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        comment="Last update timestamp"
+    )
+    domain: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="Domain name")
+    kb_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="Knowledge base name")
+    # Linking columns (added via migration 001)
+    # file_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True, comment="Original file name")
+    # full_doc_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True, comment="Unique document ID for linking to lightrag")
 
 
 class DocumentMetadata(Base):
     """
-    Indexed document metadata.
-    Stores information about documents that have been indexed into LightRAG.
+    Master document metadata record (created via migration 002).
+    Links file_tasks to lightrag_vdb_chunks via full_doc_id.
+    Provides normalized document tracking with proper relationships.
     """
     __tablename__ = "document_metadata"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    doc_id = Column(String(255), unique=True, nullable=False, index=True)
-    file_name = Column(String(255), nullable=False)
-    workspace_id = Column(Integer, nullable=False, index=True)
-    file_path = Column(String(500))
-    file_size = Column(Integer)
-    chunk_count = Column(Integer)
-    metadata = Column(JSON)  # Additional metadata as JSON
-    indexed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    full_doc_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True, comment="Unique document ID linking to lightrag_vdb_chunks")
+    file_task_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True, comment="Reference to file_tasks.id")
+    workspace_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="Workspace ID")
+    kb_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True, comment="Knowledge base ID - populated only for documents uploaded to KG workspaces for sharing across workspaces")
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False, comment="Original filename")
+    file_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True, comment="Full blob path")
+    file_size_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="File size in bytes")
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True, comment="MD5/SHA256 hash for deduplication")
+    total_chunks: Mapped[int] = mapped_column(Integer, default=0, comment="Number of chunks in lightrag_vdb_chunks")
+    doc_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="Document type: pdf, docx, txt, etc.")
+    indexed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True, comment="When indexing completed")
+    doc_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, comment="Additional flexible metadata")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), comment="Creation timestamp")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), comment="Last update timestamp")
 
 
 class ConversationSession(Base):
@@ -96,15 +127,127 @@ class ConversationSession(Base):
     """
     __tablename__ = "conversation_sessions"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(255), unique=True, nullable=False, index=True)
-    workspace_id = Column(Integer, nullable=False, index=True)
-    user_id = Column(Integer, nullable=False, index=True)
-    title = Column(String(500))
-    message_count = Column(Integer, default=0)
-    is_active = Column(Boolean, default=True, index=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class User(Base):
+    """
+    User model - Basic user information.
+    Note: Full user management is in user-management service.
+    """
+    __tablename__ = "users"
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    namespace: Mapped[str] = mapped_column(String(100), nullable=False)
+    email_id: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    first_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    last_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    password: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    role_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_date: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Role(Base):
+    """
+    Role model - Role definitions.
+    """
+    __tablename__ = "role_master"
+
+    role_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    role_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    role_desc: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    workflow_stage: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_date: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class UserMap(Base):
+    """
+    User-Workspace mapping with role assignment.
+    Maps users to workspaces with specific roles.
+    """
+    __tablename__ = "workspace_users_mapping"
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    role_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    namespace: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    can_curate_kb: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_date: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Industry(Base):
+    """
+    Industry master table.
+    """
+    __tablename__ = "industry_master"
+
+    industry_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    industry_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_date: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class SubIndustry(Base):
+    """
+    Sub-industry master table.
+    """
+    __tablename__ = "subindustry_master"
+
+    subindustry_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subindustry_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    industry_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_date: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class KnowledgeBase(Base):
+    """
+    Knowledge base master table.
+    """
+    __tablename__ = "knowledge_base_master"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    industry_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sub_industry_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.utcnow())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.utcnow())
+
+
+class WorkspaceIndustryIntentMap(Base):
+    """
+    Workspace-Industry-Intent-KB mapping.
+    Links workspaces to knowledge bases via industry and intent.
+    """
+    __tablename__ = "workspace_industry_intent_mapping"
+
+    workspace_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    industry_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subindustry_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    intent_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    kb_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_date: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 # ============================================================================

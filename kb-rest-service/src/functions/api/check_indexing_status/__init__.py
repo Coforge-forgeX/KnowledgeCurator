@@ -1,27 +1,17 @@
 """Check Indexing Status API - Clean & Optimized"""
-import azure.functions as func
+from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
+from src.core.auth import get_user_id, require_auth
+from src.core.logging import get_logger
+from src.services.kb_service import get_kb_service
+from src.shared import ErrorMessages, create_error_response, create_success_response, parse_request
 
-from core import (
-    get_logger,
-    get_user_id,
-    require_auth,
-    azure_http_decorator,
-)
-from services.kb_service import get_kb_service
-from shared import (
-    ErrorMessages,
-    create_success_response,
-    create_error_response,
-    parse_request,
-)
 from .payloads import CheckIndexingStatusRequest
 
 logger = get_logger(__name__)
 
 
-@azure_http_decorator()
 @require_auth()
-async def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+async def main(req: AbstractRequest, context: AbstractContext) -> AbstractResponse:
     """Check indexing status for specific task IDs."""
     user_id = get_user_id(req)
 

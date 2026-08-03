@@ -1,31 +1,17 @@
 """Query Knowledge Base API - Following SOLID & Clean Architecture"""
-import azure.functions as func
-
-from core import (
-    get_logger,
-    get_user_id,
-    get_workspace_ids,
-    require_auth,
-    azure_http_decorator,
-    ValidationException,
-    AuthorizationException,
-)
-from services.kb_service import get_kb_service
-from shared import (
-    ErrorMessages,
-    SuccessMessages,
-    create_query_response,
-    create_error_response,
-    parse_request,
-)
-from shared.payloads import QueryRequestPayload
+from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
+from src.core.auth import get_user_id, get_workspace_ids, require_auth
+from src.core.exceptions import AuthorizationException, ValidationException
+from src.core.logging import get_logger
+from src.services.kb_service import get_kb_service
+from src.shared import ErrorMessages, create_error_response, create_query_response, parse_request
+from src.shared.payloads import QueryRequestPayload
 
 logger = get_logger(__name__)
 
 
-@azure_http_decorator()
 @require_auth()
-async def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+async def main(req: AbstractRequest, context: AbstractContext) -> AbstractResponse:
     """
     Query knowledge base endpoint.
 

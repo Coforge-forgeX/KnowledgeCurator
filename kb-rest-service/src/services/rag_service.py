@@ -338,11 +338,14 @@ class RAGService:
             queued_count = 0
             for task in tasks:
                 try:
+                    # Extract file_name from file_path (file_name removed from FileTask)
+                    file_name = os.path.basename(task.file_path) if task.file_path else None
+
                     await self._queue_document_for_indexing(
                         task_id=task.id,
                         workspace_id=workspace_id,
                         file_path=task.file_path,
-                        file_name=task.file_name,
+                        file_name=file_name,
                     )
                     queued_count += 1
                 except Exception as e:
@@ -408,21 +411,23 @@ class RAGService:
                     task = result.scalar_one_or_none()
 
                     if task:
+                        # Extract file_name from file_path (file_name removed from FileTask)
+                        file_name = os.path.basename(task.file_path) if task.file_path else None
+
                         # Queue existing task
                         await self._queue_document_for_indexing(
                             task_id=task.id,
                             workspace_id=workspace_id,
                             file_path=file_path,
-                            file_name=task.file_name,
+                            file_name=file_name,
                         )
                         task_ids.append(task.id)
                     else:
-                        # Create new task
+                        # Create new task (file_name removed from FileTask schema)
                         file_name = os.path.basename(file_path)
                         new_task = FileTask(
                             container_name=self.blob_container_name,
                             file_path=file_path,
-                            file_name=file_name,
                             workspace_id=workspace_id,
                             status="pending",
                             uploaded_by=str(user_id),
@@ -490,9 +495,12 @@ class RAGService:
                     task = result.scalar_one_or_none()
 
                     if task:
+                        # Extract file_name from file_path (file_name removed from FileTask)
+                        file_name = os.path.basename(task.file_path) if task.file_path else None
+
                         statuses.append({
                             "task_id": task.id,
-                            "file_name": task.file_name,
+                            "file_name": file_name,
                             "file_path": task.file_path,
                             "status": task.status,
                             "workspace_id": task.workspace_id,

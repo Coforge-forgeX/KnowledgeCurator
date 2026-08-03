@@ -1,35 +1,81 @@
+[build-system]
+requires = ["setuptools>=68.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "kb-rest-service"
-version = "0.1.0"
-description = "Knowledge Base REST API for forgeX"
+version = "1.0.0"
+description = "Multi-cloud knowledge base REST API service"
+readme = "README.md"
 requires-python = ">=3.10"
+authors = [
+    {name = "forgeX Architecture Team", email = "kartik.jain@coforge.com"},
+]
+keywords = ["fastapi", "knowledge-base", "multi-cloud", "azure", "aws", "gcp", "rag"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Framework :: FastAPI",
+]
+
 dependencies = [
-    "common-adapters @ git+https://github.com/Coforge-forgeX/forgexpackages.git@main",
-    "azure-functions==1.18.0",
-    "pydantic==2.0.0",
-    "pydantic-settings==2.0.0",
+    # Core framework
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.32.0",
+    "starlette==0.40.0",
+    "gunicorn==26.0.0",
+
+    # Data validation and configuration
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
     "python-dotenv==1.2.2",
+    "typing-extensions>=4.0.0",
+
+    # Database
     "sqlalchemy==2.0.51",
+    "asyncpg==0.30.0",
     "psycopg2-binary==2.9.12",
     "pymongo==4.17.0",
-    "certifi==2026.6.17",
-    "redis==5.0.0",
+    "motor==3.3.0",
+    "greenlet==3.1.1",
+
+    # Graph database
     "neo4j==6.2.0",
-    "azure-storage-blob==12.30.0",
-    "azure-storage-queue==12.9.0",
-    "PyJWT==2.13.0",
+
+    # Caching
+    "redis==5.0.1",
+
+    # Authentication and security
+    "PyJWT[crypto]==2.13.0",
     "passlib[argon2]==1.7.4",
     "argon2-cffi==25.1.0",
-    "aiohttp==3.14.1",
-    "lightrag-hku==1.4.16",
-    "structlog==24.1.0",
-    "numpy==2.3.5",
-    "requests==2.34.2",
-    "gunicorn==26.0.0",
+    "certifi==2026.6.17",
     "msal==1.37.0",
+
+    # Logging
+    "structlog==24.1.0",
+
+    # HTTP clients
+    "aiohttp==3.14.1",
+    "requests==2.34.2",
+
+    # Cloud providers - Azure (default)
+    "azure-functions==1.18.0",
+    "azure-storage-blob==12.30.0",
+    "azure-storage-queue==12.9.0",
+
+    # RAG and AI
+    "lightrag-hku==1.4.16",
+    "numpy==2.3.5",
+
+    # Internal packages
+    "common-adapters @ git+https://github.com/Coforge-forgeX/forgexpackages.git@main",
 ]
 
 [project.optional-dependencies]
+# Development dependencies
 dev = [
     "pre-commit",
     "black",
@@ -43,6 +89,22 @@ dev = [
     "httpx",
     "faker",
     "types-requests",
+]
+
+# Cloud storage providers (multi-cloud support)
+# Azure is included in base dependencies by default
+aws = [
+    "boto3>=1.34.0,<2.0",  # AWS S3 storage
+]
+
+gcp = [
+    "google-cloud-storage>=2.14.0,<3.0",  # GCP Cloud Storage
+]
+
+# Install all cloud providers (Azure + AWS + GCP)
+all-clouds = [
+    "boto3>=1.34.0,<2.0",
+    "google-cloud-storage>=2.14.0,<3.0",
 ]
 
 [tool.black]
@@ -75,7 +137,7 @@ force_grid_wrap = 0
 use_parentheses = true
 ensure_newline_before_comments = true
 src_paths = ["src", "tests"]
-known_first_party = ["core", "shared", "functions"]
+known_first_party = ["core", "shared", "functions", "services", "helpers", "models"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -133,3 +195,13 @@ exclude = [
 [tool.bandit]
 exclude_dirs = ["tests", ".venv", "__pycache__"]
 skips = ["B101", "B601"]
+
+[tool.pyright]
+include = ["src", "main.py"]
+extraPaths = ["src"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false

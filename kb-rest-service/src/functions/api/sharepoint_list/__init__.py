@@ -1,13 +1,12 @@
 """SharePoint list endpoint - TODO: Port from sharepoint_agent.py"""
-import json
+from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
+from src.shared.payloads import parse_request
+from src.shared.response_utils import create_error_response
 
-import azure.functions as func
-
-from shared.payloads import parse_request
-from functions.api.sharepoint_list.payloads import SharePointListRequest
+from .payloads import SharePointListRequest
 
 
-async def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+async def main(req: AbstractRequest, context: AbstractContext) -> AbstractResponse:
     """
     List SharePoint sites.
 
@@ -20,8 +19,9 @@ async def main(req: func.HttpRequest, context: func.Context) -> func.HttpRespons
         return error
 
     # TODO: Implement SharePoint listing logic from sharepoint_agent.py
-    return func.HttpResponse(
-        json.dumps({"error": "TODO: Port from sharepoint_agent.py"}),
+    return create_error_response(
+        message="TODO: Port from sharepoint_agent.py",
+        error_code="NOT_IMPLEMENTED",
         status_code=501,
-        mimetype="application/json",
+        correlation_id=context.correlation_id,
     )

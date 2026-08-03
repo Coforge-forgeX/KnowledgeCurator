@@ -1,29 +1,18 @@
 """List Indexed Documents API - Clean & Optimized"""
-import azure.functions as func
+from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
+from src.core.auth import get_user_id, get_workspace_ids, require_auth
+from src.core.exceptions import AuthorizationException
+from src.core.logging import get_logger
+from src.services.kb_service import get_kb_service
+from src.shared import ErrorMessages, create_error_response, create_success_response, parse_request
 
-from core import (
-    get_logger,
-    get_user_id,
-    get_workspace_ids,
-    require_auth,
-    azure_http_decorator,
-    AuthorizationException,
-)
-from services.kb_service import get_kb_service
-from shared import (
-    ErrorMessages,
-    create_success_response,
-    create_error_response,
-    parse_request,
-)
 from .payloads import ListIndexedDocumentsRequest
 
 logger = get_logger(__name__)
 
 
-@azure_http_decorator()
 @require_auth()
-async def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+async def main(req: AbstractRequest, context: AbstractContext) -> AbstractResponse:
     """List indexed documents for a workspace."""
     user_id = get_user_id(req)
     user_workspaces = get_workspace_ids(req)
@@ -40,16 +29,16 @@ async def main(req: func.HttpRequest, context: func.Context) -> func.HttpRespons
 
     try:
         kb_service = get_kb_service()
-        documents = await kb_service.get_indexed_documents(
+        result = await kb_service.get_indexed_documents(
             workspace_id=workspace_id,
             limit=payload.limit,
+            offset=payload.offset,
         )
 
         return create_success_response(
             message="Documents retrieved successfully",
             data={
-                "documents": documents,
-                "count": len(documents),
+                **result,  # includes: documents, total, limit, offset, has_more, page, total_pages
                 "workspace_id": workspace_id,
             },
             correlation_id=context.correlation_id,

@@ -13,8 +13,8 @@ The KB REST Service is a standalone microservice extracted from the monolithic K
 - ✅ **Multiple Storage Backends** - PostgreSQL, MongoDB, Redis, Neo4j, and Azure Blob Storage
 - ✅ **Queue-Based Indexing** - Asynchronous document indexing via Azure Queue Storage
 - ✅ **JWT Authentication** - Secure API endpoints with JWT token authentication
-- ✅ **Structured Logging** - JSON-formatted logs with correlation ID tracking
-- ✅ **Azure Functions** - Serverless deployment with Azure Functions v1 programming model
+- ✅ **Structured Logging** - Human-readable console logs for dev, JSON logs for production with correlation ID tracking
+- ✅ **Multi-Cloud Container** - Containerized deployment for Azure, AWS, GCP, or Kubernetes
 
 ## 🏗️ Architecture
 
@@ -73,7 +73,10 @@ kb-rest-service/
 │   │   ├── neo4j_driver.py       # Neo4j connection
 │   │   └── redis.py              # Redis management
 │   │
-│   ├── functions/                # Azure Functions (API endpoints)
+│   ├── adapters/                 # Platform adapters (FastAPI)
+│   │   └── fastapi_adapter.py   # Request/response wrappers
+│   │
+│   ├── functions/                # API endpoint handlers
 │   │   └── api/
 │   │       ├── kb_query/         # Query knowledge base
 │   │       ├── kb_index/         # Index documents
@@ -93,51 +96,75 @@ kb-rest-service/
 ├── .env.example                  # Environment variables template
 ├── pyproject.toml               # Project configuration
 ├── requirements.txt              # Python dependencies
-└── function_app.py              # Azure Functions app entry point
+├── main.py                      # FastAPI application entry point
+├── Dockerfile                   # Multi-stage container build
+└── docker-compose.yml           # Local development environment
 ```
 
 ## 🚀 Getting Started
 
 ### Prerequisites
 
-- Python 3.10 or higher
+- **Docker & Docker Compose** (recommended for local development)
+- OR Python 3.10+ (for non-containerized development)
+
+**Required Services** (auto-configured in docker-compose):
 - PostgreSQL database
 - MongoDB instance
 - Redis server
 - Neo4j database
-- Azure Storage Account (Blob + Queue)
+- Azure Storage Account (Blob + Queue) OR compatible alternative
 - Azure OpenAI or compatible LLM endpoint
 - Ollama (for embeddings)
 
-### Installation
+### Quick Start with Docker (Recommended)
 
-1. **Clone the repository**
+1. **Clone and navigate**
    ```bash
    git clone <repository-url>
    cd kb-rest-service
    ```
 
-2. **Create virtual environment**
+2. **Configure environment**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your configuration
+   ```
+
+3. **Start the service**
+   ```bash
+   docker-compose up --build
+   ```
+
+4. **Access the service**
+   - API: http://localhost:8081
+   - Health: http://localhost:8081/health
+   - Docs: http://localhost:8081/docs (if DEBUG=true)
+
+### Alternative: Local Python Installation
+
+1. **Create virtual environment**
    ```bash
    python -m venv .venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    ```
 
-3. **Install dependencies**
+2. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-4. **Configure environment variables**
+3. **Configure environment**
    ```bash
    cp .env.example .env
-   # Edit .env with your actual configuration
+   # Edit .env with your configuration
    ```
 
-5. **Initialize databases**
+4. **Run the service**
    ```bash
-   # Run database migrations (if applicable)
-   python scripts/init_db.py
+   python main.py
+   # OR
+   uvicorn main:app --reload --port 8080
    ```
 
 ### Configuration
@@ -169,17 +196,23 @@ AZURE_OPENAI_LLM_MODEL_API_BASE=https://your-resource.openai.azure.com/
 
 ### Running Locally
 
-#### Development Server
+#### Using Docker Compose (Recommended)
 ```bash
-func start
+docker-compose up --build
 ```
 
-#### With Hot Reload
+#### Using Python directly
 ```bash
-func start --python
+# Development mode with auto-reload
+uvicorn main:app --reload --port 8080
+
+# OR using the main.py script
+python main.py
 ```
 
-The service will be available at `http://localhost:7071/api/`
+The service will be available at:
+- Docker Compose: `http://localhost:8081`
+- Direct Python: `http://localhost:8080`
 
 ## 📚 API Documentation
 
@@ -195,14 +228,15 @@ Authorization: Bearer <your-jwt-token>
 
 #### Query Knowledge Base
 ```http
-POST /api/kb-query
+POST /query-kb
 Content-Type: application/json
 Authorization: Bearer <token>
 
 {
   "query": "What is LightRAG?",
   "mode": "hybrid",
-  "workspace_id": 1
+  "workspace_id": 1,
+  "only_need_context": false
 }
 ```
 
@@ -213,18 +247,20 @@ Authorization: Bearer <token>
   "answer": "LightRAG is...",
   "sources": [...],
   "retrieved_chunks": [...],
-  "timestamp": "2026-07-21T12:00:00Z"
+  "timestamp": "2026-07-21T12:00:00Z",
+  "correlation_id": "abc-123-def"
 }
 ```
 
-#### Index Document
+#### Upload Document
 ```http
-POST /api/kb-index
+POST /upload-document
 Content-Type: application/json
 Authorization: Bearer <token>
 
 {
-  "text": "Document content here...",
+  "file_content": "base64_encoded_content",
+  "filename": "document.pdf",
   "workspace_id": 1,
   "metadata": {
     "source": "manual",
@@ -237,11 +273,17 @@ Authorization: Bearer <token>
 ```json
 {
   "success": true,
-  "message": "Document queued for indexing",
-  "queue_message_id": "abc123",
-  "timestamp": "2026-07-21T12:00:00Z"
+  "message": "Document uploaded and queued for indexing",
+  "task_id": "abc123",
+  "timestamp": "2026-07-21T12:00:00Z",
+  "correlation_id": "abc-123-def"
 }
 ```
+
+#### API Documentation
+When running with `DEBUG=true`, interactive API documentation is available at:
+- Swagger UI: `http://localhost:8081/docs`
+- ReDoc: `http://localhost:8081/redoc`
 
 ## 🔧 Development
 
@@ -288,32 +330,49 @@ pytest tests/test_lightrag_service.py
 
 ## 📦 Deployment
 
-### Azure Functions Deployment
+This service is containerized and can be deployed to any platform that supports Docker containers.
 
-1. **Build and package**
-   ```bash
-   func azure functionapp publish <function-app-name>
-   ```
-
-2. **Configure environment variables in Azure**
-   ```bash
-   az functionapp config appsettings set \
-     --name <function-app-name> \
-     --resource-group <resource-group> \
-     --settings @.env
-   ```
-
-### Docker Deployment (Alternative)
+### Local Docker Deployment
 
 ```bash
 # Build image
 docker build -t kb-rest-service:latest .
 
 # Run container
-docker run -p 8080:80 \
+docker run -d \
+  --name kb-rest-service \
+  -p 8080:8080 \
   --env-file .env \
   kb-rest-service:latest
 ```
+
+### Cloud Deployment
+
+See **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** for detailed platform-specific instructions:
+
+- **Azure Container Apps** - Managed containers on Azure
+- **AWS App Runner** - Fully managed container deployment
+- **GCP Cloud Run** - Serverless container platform
+- **Kubernetes** - Deploy to any Kubernetes cluster (AKS, EKS, GKE)
+
+Quick example for Azure Container Apps:
+
+```bash
+# Build and push to Azure Container Registry
+az acr build --registry <acr-name> \
+  --image kb-rest-service:v1.0.0 .
+
+# Deploy to Container Apps
+az containerapp create \
+  --name kb-rest-service \
+  --resource-group <rg-name> \
+  --environment <env-name> \
+  --image <acr-name>.azurecr.io/kb-rest-service:v1.0.0 \
+  --target-port 8080 \
+  --ingress external
+```
+
+See deployment guide for complete instructions and other platforms.
 
 ## 🔐 Security
 
@@ -328,8 +387,24 @@ docker run -p 8080:80 \
 
 ### Logging
 
-Structured JSON logs with correlation IDs:
+The service supports two logging formats via the `LOG_FORMAT` environment variable:
 
+**Console Format (Development)**
+```bash
+LOG_FORMAT=console  # Human-readable with colors
+```
+
+Output example:
+```
+2026-07-21T12:00:00Z [info] Query executed successfully    app=kb-rest-service correlation_id=abc-123-def-456 user_id=42
+```
+
+**JSON Format (Production)**
+```bash
+LOG_FORMAT=json  # Structured for log aggregation
+```
+
+Output example:
 ```json
 {
   "app": "kb-rest-service",
@@ -343,10 +418,29 @@ Structured JSON logs with correlation IDs:
 }
 ```
 
+**Reducing Log Noise**
+
+In development mode, third-party library logs are automatically reduced to WARNING level to minimize clutter. Adjust `LOG_LEVEL` for your needs:
+```bash
+LOG_LEVEL=DEBUG    # Verbose (all logs)
+LOG_LEVEL=INFO     # Normal (default)
+LOG_LEVEL=WARNING  # Warnings and errors only
+```
+
 ### Health Checks
 
 ```http
-GET /api/health
+GET /health
+```
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "service": "kb-rest-api",
+  "version": "1.0.0",
+  "cloud_provider": "azure"
+}
 ```
 
 ## 🤝 Contributing

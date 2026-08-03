@@ -1,113 +1,117 @@
-"""Azure Blob Storage client"""
-import os
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+"""
+Cloud storage client wrapper (platform-agnostic).
+
+This module provides a simplified interface to the storage abstraction layer,
+maintaining backward compatibility with existing code while using the new
+factory pattern underneath.
+"""
 from typing import Optional
 
-from azure.storage.blob import BlobSasPermissions, BlobServiceClient, generate_blob_sas
-
-from core.exceptions import ConfigurationException
-
-
-@dataclass(frozen=True)
-class BlobInfo:
-    container: str
-    blob_name: str
-    blob_url: str
+from storage import BlobInfo, get_storage_adapter
+from storage.protocols import StorageAdapter
 
 
 class BlobClient:
-    """Upload files to Azure Blob Storage + generate download URLs"""
+    """
+    Platform-agnostic storage client wrapper.
+
+    This class wraps the storage adapter factory to maintain backward compatibility
+    with existing code that uses BlobClient directly.
+    """
 
     def __init__(self) -> None:
-        from core.config import settings
-
-        conn_str = settings.blob.AZURE_STORAGE_CONNECTION_STRING
-        if not conn_str:
-            raise ConfigurationException(
-                "AZURE_STORAGE_CONNECTION_STRING not configured",
-                config_key="AZURE_STORAGE_CONNECTION_STRING",
-            )
-
-        self._service = BlobServiceClient.from_connection_string(conn_str)
-        self._container = settings.blob.BLOB_CONTAINER_NAME
-        self._path_prefix = settings.blob.BLOB_PATH_PREFIX.strip("/")
-        self._expiry_minutes = settings.blob.BLOB_URL_EXPIRY_MINUTES
+        """Initialize with storage adapter from factory"""
+        self._storage: StorageAdapter = get_storage_adapter()
 
     @property
     def container_name(self) -> str:
-        return self._container
+        """Get container/bucket name"""
+        return self._storage.container_name
 
-    def build_blob_name(self, filename: str) -> str:
-        if not self._path_prefix:
-            return filename
-        return f"{self._path_prefix}/{filename}"
+    async def upload(
+        self, filename: str, data: bytes, content_type: Optional[str] = None
+    ) -> BlobInfo:
+        """
+        Upload file to cloud storage.
 
-    def upload(self, filename: str, data: bytes, content_type: str = None) -> BlobInfo:
-        """Upload file to blob storage"""
-        if not filename or not filename.strip():
-            raise ValueError("filename cannot be empty")
+        Args:
+            filename: Target filename
+            data: File data as bytes
+            content_type: MIME type
 
-        blob_name = self.build_blob_name(filename.strip())
-        container = self._service.get_container_client(self._container)
-        try:
-            container.create_container()
-        except Exception:
-            pass  # Container exists
+        Returns:
+            BlobInfo with upload details
+        """
+        return await self._storage.upload(filename, data, content_type)
 
-        blob = container.get_blob_client(blob_name)
-        blob.upload_blob(
-            data, overwrite=True, content_type=content_type or "application/octet-stream"
-        )
-        return BlobInfo(
-            container=self._container,
-            blob_name=blob_name,
-            blob_url=blob.url,
-        )
-
-    def generate_download_url(
+    async def generate_download_url(
         self, filename: str, expiry_minutes: Optional[int] = None
     ) -> str:
-        """Generate SAS URL for downloading blob"""
-        blob_name = self.build_blob_name(filename.strip())
-        expiry = datetime.now(timezone.utc) + timedelta(
-            minutes=max(1, expiry_minutes or self._expiry_minutes)
-        )
+        """
+        Generate signed download URL.
 
-        credential = self._service.credential
-        account_key = getattr(credential, "account_key", None)
-        if not account_key:
-            raise ConfigurationException(
-                "Blob account key unavailable; SAS URL generation requires connection string with account key",
-                config_key="AZURE_STORAGE_CONNECTION_STRING",
-            )
+        Args:
+            filename: Filename to generate URL for
+            expiry_minutes: URL validity duration
 
-        sas = generate_blob_sas(
-            account_name=self._service.account_name,
-            container_name=self._container,
-            blob_name=blob_name,
-            account_key=account_key,
-            permission=BlobSasPermissions(read=True),
-            expiry=expiry,
-        )
-        blob = self._service.get_blob_client(self._container, blob_name)
-        return f"{blob.url}?{sas}"
+        Returns:
+            Signed URL
+        """
+        return await self._storage.generate_download_url(filename, expiry_minutes)
 
-    def blob_exists(self, filename: str) -> bool:
-        """Check if blob exists"""
-        blob_name = self.build_blob_name(filename.strip())
-        blob = self._service.get_blob_client(self._container, blob_name)
-        try:
-            return bool(blob.exists())
-        except Exception:
-            return False
+    async def blob_exists(self, filename: str) -> bool:
+        """
+        Check if file exists.
+
+        Args:
+            filename: Filename to check
+
+        Returns:
+            True if exists, False otherwise
+        """
+        return await self._storage.blob_exists(filename)
+
+    async def delete(self, filename: str) -> bool:
+        """
+        Delete file.
+
+        Args:
+            filename: Filename to delete
+
+        Returns:
+            True if deleted, False if not found
+        """
+        return await self._storage.delete(filename)
+
+    async def download(self, filename: str) -> bytes:
+        """
+        Download file content.
+
+        Args:
+            filename: Filename to download
+
+        Returns:
+            File content as bytes
+        """
+        return await self._storage.download(filename)
+
+    @property
+    def provider_name(self) -> str:
+        """Get storage provider name"""
+        return self._storage.provider_name
 
 
+# Singleton instance
 _client: Optional[BlobClient] = None
 
 
 def get_blob_client() -> BlobClient:
-    """Get singleton blob client"""
+    """
+    Get singleton blob client.
+
+    Returns:
+        BlobClient instance (wraps storage adapter)
+    """
     global _client
     if _client is None:
         _client = BlobClient()

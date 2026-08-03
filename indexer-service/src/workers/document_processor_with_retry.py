@@ -122,7 +122,7 @@ class DocumentProcessorWithRetry:
             logger.error(
                 "Document processing failed",
                 job_id=job_id,
-                error=str(e),
+                error_msg=str(e),
                 state=job_state.state,
                 retry_count=job_state.retry_count,
                 exc_info=True,
@@ -339,7 +339,7 @@ class DocumentProcessorWithRetry:
             return content, file_name, content_type
 
         except Exception as e:
-            logger.error("Download failed", job_id=job_state.job_id, error=e)
+            logger.error("Download failed", job_id=job_state.job_id, error_msg=e)
             raise
 
     async def _extract_text(
@@ -390,7 +390,7 @@ class DocumentProcessorWithRetry:
             return extracted_text, extraction_method, page_count
 
         except Exception as e:
-            logger.error("Text extraction failed", job_id=job_state.job_id, error=e)
+            logger.error("Text extraction failed", job_id=job_state.job_id, error_msg=e)
             raise
 
     async def _index_document(
@@ -431,7 +431,7 @@ class DocumentProcessorWithRetry:
             return doc_id, chunks
 
         except Exception as e:
-            logger.error("Indexing failed", job_id=job_state.job_id, error=e)
+            logger.error("Indexing failed", job_id=job_state.job_id, error_msg=e)
             raise
 
     async def _update_metadata(
@@ -472,7 +472,7 @@ class DocumentProcessorWithRetry:
             logger.info("Metadata updated", job_id=job_state.job_id, doc_id=doc_id)
 
         except Exception as e:
-            logger.error("Metadata update failed", job_id=job_state.job_id, error=e)
+            logger.error("Metadata update failed", job_id=job_state.job_id, error_msg=e)
             raise
 
     async def _cache_extracted_text(self, job_id: str, text: str) -> None:
@@ -484,7 +484,7 @@ class DocumentProcessorWithRetry:
             logger.debug("Cached extracted text", job_id=job_id)
 
         except Exception as e:
-            logger.warning("Failed to cache extracted text", job_id=job_id, error=e)
+            logger.warning("Failed to cache extracted text", job_id=job_id, error_msg=e)
 
     async def _load_cached_text(self, job_id: str) -> Optional[str]:
         """Load cached extracted text"""
@@ -501,7 +501,7 @@ class DocumentProcessorWithRetry:
             return text
 
         except Exception as e:
-            logger.warning("Failed to load cached text", job_id=job_id, error=e)
+            logger.warning("Failed to load cached text", job_id=job_id, error_msg=e)
             return None
 
     async def _cleanup_cache(self, job_id: str) -> None:
@@ -514,7 +514,7 @@ class DocumentProcessorWithRetry:
             logger.debug("Cleaned up cache", job_id=job_id)
 
         except Exception as e:
-            logger.warning("Failed to cleanup cache", job_id=job_id, error=e)
+            logger.warning("Failed to cleanup cache", job_id=job_id, error_msg=e)
 
     async def _index_with_lightrag(
         self, text: str, workspace_id: int, file_name: str
@@ -575,7 +575,7 @@ class DocumentProcessorWithRetry:
             return doc_id, chunks
 
         except Exception as e:
-            logger.error("Failed to index with LightRAG", error=e)
+            logger.error("Failed to index with LightRAG", error_msg=e)
             raise
 
     async def _create_document_metadata(
@@ -598,12 +598,12 @@ class DocumentProcessorWithRetry:
                     doc_id=doc_id,
                     file_name=file_name,
                     workspace_id=workspace_id,
+                    kb_id=kb_id,  # Direct column for KB sharing logic
                     file_path=file_path,
                     file_size=file_size,
                     chunk_count=self._estimate_chunk_count_from_size(file_size),
                     metadata={
                         **metadata,
-                        "kb_id": kb_id,
                         "page_count": page_count,
                     },
                     indexed_at=datetime.now(timezone.utc),
@@ -615,7 +615,7 @@ class DocumentProcessorWithRetry:
                 await session.commit()
 
         except Exception as e:
-            logger.error("Failed to create document metadata", error=e)
+            logger.error("Failed to create document metadata", error_msg=e)
             raise
 
     def _estimate_chunk_count(self, text: str) -> int:

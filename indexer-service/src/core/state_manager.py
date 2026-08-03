@@ -58,7 +58,7 @@ class StateManager:
             )
 
         except Exception as e:
-            logger.error("Failed to save state", job_id=job_state.job_id, error=e)
+            logger.error("Failed to save state", job_id=job_state.job_id, error_msg=e)
             raise
 
     async def load_state(self, job_id: str) -> Optional[IndexingJobState]:
@@ -90,7 +90,7 @@ class StateManager:
             return None
 
         except Exception as e:
-            logger.error("Failed to load state", job_id=job_id, error=e)
+            logger.error("Failed to load state", job_id=job_id, error_msg=e)
             return None
 
     async def delete_state(self, job_id: str) -> None:
@@ -110,112 +110,96 @@ class StateManager:
             logger.debug("State deleted", job_id=job_id)
 
         except Exception as e:
-            logger.warning("Failed to delete state", job_id=job_id, error=e)
+            logger.warning("Failed to delete state", job_id=job_id, error_msg=e)
 
     async def _save_to_database(self, job_state: IndexingJobState) -> None:
-        """Save state to PostgreSQL database"""
-        from core.database import db_manager
-        from sqlalchemy import text
+        """Save state to PostgreSQL database using SQLAlchemy ORM"""
+        from core.database import get_async_session, IndexingJob
+        from sqlalchemy import select
+        from sqlalchemy.dialects.postgresql import insert
 
         try:
-            async with db_manager.get_session() as session:
-                # Upsert into indexing_jobs table
-                query = text("""
-                    INSERT INTO indexing_jobs (
-                        job_id, workspace_id, document_url, kb_id,
-                        state, checkpoint_data, retry_count, last_error,
-                        created_at, started_at, completed_at, updated_at
-                    ) VALUES (
-                        :job_id, :workspace_id, :document_url, :kb_id,
-                        :state, :checkpoint_data, :retry_count, :last_error,
-                        :created_at, :started_at, :completed_at, :updated_at
-                    )
-                    ON CONFLICT (job_id) DO UPDATE SET
-                        state = EXCLUDED.state,
-                        checkpoint_data = EXCLUDED.checkpoint_data,
-                        retry_count = EXCLUDED.retry_count,
-                        last_error = EXCLUDED.last_error,
-                        started_at = EXCLUDED.started_at,
-                        completed_at = EXCLUDED.completed_at,
-                        updated_at = EXCLUDED.updated_at
-                """)
-
-                await session.execute(
-                    query,
-                    {
-                        "job_id": job_state.job_id,
-                        "workspace_id": job_state.workspace_id,
-                        "document_url": job_state.document_url,
-                        "kb_id": job_state.kb_id,
-                        "state": job_state.state,
-                        "checkpoint_data": job_state.checkpoint.model_dump_json(),
-                        "retry_count": job_state.retry_count,
-                        "last_error": job_state.last_error,
-                        "created_at": job_state.created_at,
-                        "started_at": job_state.started_at,
-                        "completed_at": job_state.completed_at,
-                        "updated_at": job_state.updated_at,
-                    },
+            async with get_async_session() as session:
+                # Upsert using PostgreSQL insert...on conflict
+                stmt = insert(IndexingJob).values(
+                    job_id=job_state.job_id,
+                    workspace_id=job_state.workspace_id,
+                    document_url=job_state.document_url,
+                    kb_id=job_state.kb_id,
+                    state=job_state.state,
+                    checkpoint_data=job_state.checkpoint.model_dump() if job_state.checkpoint else {},
+                    retry_count=job_state.retry_count,
+                    last_error=job_state.last_error,
+                    created_at=job_state.created_at,
+                    started_at=job_state.started_at,
+                    completed_at=job_state.completed_at,
+                    updated_at=job_state.updated_at,
                 )
 
-                await session.commit()
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['job_id'],
+                    set_={
+                        'state': stmt.excluded.state,
+                        'checkpoint_data': stmt.excluded.checkpoint_data,
+                        'retry_count': stmt.excluded.retry_count,
+                        'last_error': stmt.excluded.last_error,
+                        'started_at': stmt.excluded.started_at,
+                        'completed_at': stmt.excluded.completed_at,
+                        'updated_at': stmt.excluded.updated_at,
+                    }
+                )
+
+                await session.execute(stmt)
 
         except Exception as e:
-            logger.warning("Failed to save to database", job_id=job_state.job_id, error=e)
+            logger.warning("Failed to save to database", job_id=job_state.job_id, error_msg=e)
             # Don't raise - local cache is fallback
 
     async def _load_from_database(self, job_id: str) -> Optional[IndexingJobState]:
-        """Load state from PostgreSQL database"""
-        from core.database import db_manager
-        from sqlalchemy import text
+        """Load state from PostgreSQL database using SQLAlchemy ORM"""
+        from core.database import get_async_session, IndexingJob
+        from sqlalchemy import select
 
         try:
-            async with db_manager.get_session() as session:
-                query = text("SELECT * FROM indexing_jobs WHERE job_id = :job_id")
-                result = await session.execute(query, {"job_id": job_id})
-                row = result.fetchone()
+            async with get_async_session() as session:
+                stmt = select(IndexingJob).where(IndexingJob.job_id == job_id)
+                result = await session.execute(stmt)
+                job = result.scalar_one_or_none()
 
-                if not row:
+                if not job:
                     return None
 
-                # Convert row to dict
-                row_dict = dict(row._mapping)
-
-                # Parse checkpoint data
-                checkpoint_data = json.loads(row_dict.get("checkpoint_data", "{}"))
-
                 return IndexingJobState(
-                    job_id=row_dict["job_id"],
-                    workspace_id=row_dict["workspace_id"],
-                    document_url=row_dict["document_url"],
-                    kb_id=row_dict.get("kb_id"),
-                    state=row_dict["state"],
-                    checkpoint=checkpoint_data,
-                    retry_count=row_dict.get("retry_count", 0),
-                    last_error=row_dict.get("last_error"),
-                    created_at=row_dict.get("created_at"),
-                    started_at=row_dict.get("started_at"),
-                    completed_at=row_dict.get("completed_at"),
-                    updated_at=row_dict.get("updated_at"),
+                    job_id=job.job_id,
+                    workspace_id=job.workspace_id,
+                    document_url=job.document_url,
+                    kb_id=job.kb_id,
+                    state=job.state,
+                    checkpoint=job.checkpoint_data or {},
+                    retry_count=job.retry_count or 0,
+                    last_error=job.last_error,
+                    created_at=job.created_at,
+                    started_at=job.started_at,
+                    completed_at=job.completed_at,
+                    updated_at=job.updated_at,
                 )
 
         except Exception as e:
-            logger.warning("Failed to load from database", job_id=job_id, error=e)
+            logger.warning("Failed to load from database", job_id=job_id, error_msg=e)
             return None
 
     async def _delete_from_database(self, job_id: str) -> None:
-        """Delete state from database"""
-        from core.database import db_manager
-        from sqlalchemy import text
+        """Delete state from database using SQLAlchemy ORM"""
+        from core.database import get_async_session, IndexingJob
+        from sqlalchemy import delete
 
         try:
-            async with db_manager.get_session() as session:
-                query = text("DELETE FROM indexing_jobs WHERE job_id = :job_id")
-                await session.execute(query, {"job_id": job_id})
-                await session.commit()
+            async with get_async_session() as session:
+                stmt = delete(IndexingJob).where(IndexingJob.job_id == job_id)
+                await session.execute(stmt)
 
         except Exception as e:
-            logger.warning("Failed to delete from database", job_id=job_id, error=e)
+            logger.warning("Failed to delete from database", job_id=job_id, error_msg=e)
 
     async def _save_to_file(self, job_state: IndexingJobState) -> None:
         """Save state to local filesystem cache"""
@@ -224,7 +208,7 @@ class StateManager:
             state_file.write_text(job_state.model_dump_json(indent=2))
 
         except Exception as e:
-            logger.warning("Failed to save to file", job_id=job_state.job_id, error=e)
+            logger.warning("Failed to save to file", job_id=job_state.job_id, error_msg=e)
 
     async def _load_from_file(self, job_id: str) -> Optional[IndexingJobState]:
         """Load state from local filesystem cache"""
@@ -238,7 +222,7 @@ class StateManager:
             return IndexingJobState(**state_data)
 
         except Exception as e:
-            logger.warning("Failed to load from file", job_id=job_id, error=e)
+            logger.warning("Failed to load from file", job_id=job_id, error_msg=e)
             return None
 
     async def _delete_from_file(self, job_id: str) -> None:
@@ -249,7 +233,7 @@ class StateManager:
                 state_file.unlink()
 
         except Exception as e:
-            logger.warning("Failed to delete file", job_id=job_id, error=e)
+            logger.warning("Failed to delete file", job_id=job_id, error_msg=e)
 
 
 # Singleton instance

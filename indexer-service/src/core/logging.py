@@ -5,7 +5,7 @@ from typing import Any, Dict
 
 import structlog
 
-from core.config import settings
+from src.core.config import settings
 
 
 def configure_logging():
@@ -17,6 +17,11 @@ def configure_logging():
         stream=sys.stdout,
         level=getattr(logging, settings.LOG_LEVEL),
     )
+
+    # Silence noisy Azure SDK loggers
+    logging.getLogger("azure").setLevel(logging.WARNING)
+    logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+    logging.getLogger("azure.storage").setLevel(logging.WARNING)
 
     # Configure structlog processors
     processors = [
@@ -66,6 +71,9 @@ def clear_context() -> None:
 
 # Initialize logging on module import
 configure_logging()
+
+# Alias for backward compatibility
+setup_logging = configure_logging
 
 # Export a default logger
 logger = get_logger(__name__)

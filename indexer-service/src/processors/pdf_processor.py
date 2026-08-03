@@ -97,7 +97,7 @@ class PDFProcessor(DocumentProcessor):
             )
 
         except Exception as e:
-            logger.error("Failed to process PDF", error=e, file_name=file_name)
+            logger.error("Failed to process PDF", error_msg=e, file_name=file_name)
             raise ProcessingException(
                 message=f"Failed to process PDF: {str(e)}",
                 file_name=file_name,
@@ -128,7 +128,7 @@ class PDFProcessor(DocumentProcessor):
             return "\n\n".join(text_parts)
 
         except Exception as e:
-            logger.warning("pdfplumber extraction failed", error=e)
+            logger.warning("pdfplumber extraction failed", error_msg=e)
             return ""
 
     async def _extract_with_pypdf2(self, content: bytes) -> str:
@@ -146,7 +146,7 @@ class PDFProcessor(DocumentProcessor):
             return "\n\n".join(text_parts)
 
         except Exception as e:
-            logger.warning("PyPDF2 extraction failed", error=e)
+            logger.warning("PyPDF2 extraction failed", error_msg=e)
             return ""
 
     async def _count_pages(self, content: bytes) -> int:
@@ -225,7 +225,7 @@ class PDFProcessor(DocumentProcessor):
                             logger.warning(
                                 "PyPDF2 failed for page",
                                 page_num=page_num,
-                                error=e,
+                                error_msg=e,
                             )
 
                     # Still insufficient text? Mark for OCR
@@ -271,7 +271,7 @@ class PDFProcessor(DocumentProcessor):
             return "\n\n".join(text_parts), method
 
         except Exception as e:
-            logger.warning("Per-page extraction failed, falling back to whole-document", error=e)
+            logger.warning("Per-page extraction failed, falling back to whole-document", error_msg=e)
             # Fall back to whole-document strategy
             return await self._extract_with_whole_document_fallback(content, file_name, page_count)
 

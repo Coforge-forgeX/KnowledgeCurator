@@ -19,7 +19,7 @@ from core.config import settings
 from core.database import db_manager
 from core.logging import bind_context, clear_context, get_logger
 from shared.models import IndexingJob
-from workers.document_processor_with_retry import get_document_processor_with_retry
+from src.workers.document_processor_with_retry import get_document_processor_with_retry
 
 logger = get_logger(__name__)
 
@@ -82,7 +82,7 @@ async def poll_queue():
             await asyncio.gather(*tasks, return_exceptions=True)
 
         except Exception as e:
-            logger.error("Queue polling error", error=str(e), exc_info=True)
+            logger.error("Queue polling error", error_msg=str(e), exc_info=True)
             await asyncio.sleep(settings.azure.QUEUE_POLL_INTERVAL)
 
 
@@ -92,73 +92,106 @@ async def process_message(queue_client, message):
         body = message.content
         data = json.loads(body)
 
-        # Validate message payload with Pydantic
-        job = IndexingJob(**data)
+        # Check if this is the new job format (from upload_and_index API)
+        if "task_id" in data and "file_path" in data:
+            # New format - use the new handler
+            from src.workers.indexing_job_handler import process_indexing_job
 
-        # Bind job context for structured logging
-        bind_context(job_id=job.job_id, workspace_id=job.workspace_id)
+            task_id = data.get("task_id")
+            bind_context(task_id=task_id, workspace_id=data.get("workspace_id"))
 
-        logger.info(
-            "Processing message",
-            message_id=message.id,
-            document_url=job.document_url[:100],
-        )
-
-        # Process document with retry and resume capability
-        result = await processor.process_document(
-            job_id=job.job_id,
-            workspace_id=job.workspace_id,
-            document_url=job.document_url,
-            kb_id=job.kb_id,
-            max_retries=settings.MAX_RETRIES,
-        )
-
-        if result.get("success"):
             logger.info(
-                "Job completed successfully",
-                duration=result.get("duration_seconds"),
-                chunks=result.get("chunks_processed"),
-                retry_count=result.get("retry_count", 0),
-            )
-            # Delete message from queue
-            await queue_client.delete_message(message)
-
-        elif result.get("retry_scheduled"):
-            # Retry scheduled with exponential backoff
-            retry_delay = result.get("retry_delay_seconds", 60)
-            logger.info(
-                "Job failed, retry scheduled",
-                error=result.get("error"),
-                retry_count=result.get("retry_count"),
-                retry_delay_seconds=retry_delay,
-            )
-            # Update message visibility to delay retry
-            await queue_client.update_message(
-                message,
-                visibility_timeout=retry_delay,
+                "Processing new format indexing job",
+                message_id=message.id,
+                task_id=task_id,
+                file_path=data.get("file_path"),
             )
 
-        elif result.get("max_retries_exceeded"):
-            # Max retries exceeded, move to dead letter
-            logger.error(
-                "Job failed permanently, max retries exceeded",
-                error=result.get("error"),
-                retry_count=result.get("retry_count"),
-            )
-            # Delete from queue (Azure will move to poison queue if configured)
-            await queue_client.delete_message(message)
+            result = await process_indexing_job(data)
+
+            if result.get("success"):
+                logger.info(
+                    "Indexing job completed successfully",
+                    task_id=task_id,
+                    chunk_count=result.get("chunk_count"),
+                )
+                # Delete message from queue
+                await queue_client.delete_message(message)
+            else:
+                error = result.get("error", "Unknown error")
+                logger.error("Indexing job failed", task_id=task_id, error_msg=error)
+                # Delete message (status already updated to failed in DB)
+                await queue_client.delete_message(message)
 
         else:
-            # Unexpected failure
-            error = result.get("error", "Unknown error")
-            logger.error("Job failed", error=error)
-            # Leave in queue for automatic retry
+            # Legacy format - use existing processor
+            # Validate message payload with Pydantic
+            job = IndexingJob(**data)
+
+            # Bind job context for structured logging
+            bind_context(job_id=job.job_id, workspace_id=job.workspace_id)
+
+            logger.info(
+                "Processing legacy format message",
+                message_id=message.id,
+                document_url=job.document_url[:100],
+            )
+
+            # Process document with retry and resume capability
+            result = await processor.process_document(
+                job_id=job.job_id,
+                workspace_id=job.workspace_id,
+                document_url=job.document_url,
+                kb_id=job.kb_id,
+                max_retries=settings.MAX_RETRIES,
+            )
+
+            if result.get("success"):
+                logger.info(
+                    "Job completed successfully",
+                    duration=result.get("duration_seconds"),
+                    chunks=result.get("chunks_processed"),
+                    retry_count=result.get("retry_count", 0),
+                )
+                # Delete message from queue
+                await queue_client.delete_message(message)
+
+            elif result.get("retry_scheduled"):
+                # Retry scheduled with exponential backoff
+                retry_delay = result.get("retry_delay_seconds", 60)
+                logger.info(
+                    "Job failed, retry scheduled",
+                    error_msg=result.get("error"),
+                    retry_count=result.get("retry_count"),
+                    retry_delay_seconds=retry_delay,
+                )
+                # Update message visibility to delay retry
+                await queue_client.update_message(
+                    message,
+                    visibility_timeout=retry_delay,
+                )
+
+            elif result.get("max_retries_exceeded"):
+                # Max retries exceeded, move to dead letter
+                logger.error(
+                    "Job failed permanently, max retries exceeded",
+                    error_msg=result.get("error"),
+                    retry_count=result.get("retry_count"),
+                )
+                # Delete from queue (Azure will move to poison queue if configured)
+                await queue_client.delete_message(message)
+
+            else:
+                # Unexpected failure
+                error = result.get("error", "Unknown error")
+                logger.error("Job failed", error_msg=error)
+                # Leave in queue for automatic retry
 
     except json.JSONDecodeError as e:
-        logger.error("Invalid JSON in message", error=str(e))
+        logger.error("Invalid JSON in message", error_msg=str(e))
         await queue_client.delete_message(message)  # Delete invalid message
     except Exception as e:
-        logger.error("Message processing error", error=str(e), exc_info=True)
+        logger.error("Message processing error", error_msg=str(e), exc_info=True)
         # Don't delete message - let it retry
     finally:
         clear_context()

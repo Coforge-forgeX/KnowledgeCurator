@@ -431,16 +431,31 @@ class LightRAGService:
                 operation="get_kg"
             )
 
-    async def get_indexed_documents(self, workspace_id: int = None, limit: int = 1000) -> List[Dict[str, Any]]:
+    async def get_indexed_documents(
+        self,
+        workspace_id: int = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> Dict[str, Any]:
         """
-        Get list of indexed documents from PostgreSQL.
+        Get paginated list of indexed documents from PostgreSQL.
+
+        For a workspace, returns:
+        1. Documents uploaded directly to the workspace
+        2. Documents from all linked knowledge bases (uploaded to KG workspaces)
 
         Args:
             workspace_id: Optional workspace filter
-            limit: Maximum number of documents to return
+            limit: Maximum number of documents to return per page (default: 100, max: 1000)
+            offset: Number of documents to skip for pagination (default: 0)
 
         Returns:
-            List of document metadata
+            Dict containing:
+            - documents: List of document metadata with kb_id and source_type
+            - total: Total count of documents matching the filter
+            - limit: Limit used in query
+            - offset: Offset used in query
+            - has_more: Boolean indicating if more documents exist
 
         Raises:
             LightRAGException: If retrieval fails
@@ -449,38 +464,125 @@ class LightRAGService:
             await self.initialize()
 
         try:
-            logger.info("Retrieving indexed documents", workspace_id=workspace_id)
+            # Validate and cap limit
+            limit = min(max(1, limit), 1000)
+            offset = max(0, offset)
 
-            # Query PostgreSQL for document metadata using SQLAlchemy
-            from core.database import get_async_session, DocumentMetadata
-            from sqlalchemy import select
+            logger.info(
+                "Retrieving indexed documents",
+                workspace_id=workspace_id,
+                limit=limit,
+                offset=offset,
+            )
+
+            from src.core.database import get_async_session, DocumentMetadata, FileTask
+            from sqlalchemy import select, func, or_
+            from src.helpers.workspace_kb_helpers import get_workspace_kb_ids
 
             async with get_async_session() as session:
-                query = select(DocumentMetadata).order_by(DocumentMetadata.created_at.desc()).limit(limit)
-
+                # Build base query for filtering
                 if workspace_id:
-                    query = query.where(DocumentMetadata.workspace_id == workspace_id)
+                    # Get KB IDs linked to this workspace
+                    kb_ids = await get_workspace_kb_ids(workspace_id)
+
+                    logger.debug(
+                        "Fetching documents for workspace",
+                        workspace_id=workspace_id,
+                        linked_kb_count=len(kb_ids),
+                    )
+
+                    # Query documents from workspace OR from linked KBs
+                    if kb_ids:
+                        base_filter = or_(
+                            DocumentMetadata.workspace_id == workspace_id,
+                            DocumentMetadata.kb_id.in_(kb_ids)
+                        )
+                    else:
+                        # No linked KBs, fetch only workspace documents
+                        base_filter = DocumentMetadata.workspace_id == workspace_id
+                else:
+                    # No workspace filter, return all documents
+                    base_filter = True
+
+                # Count total documents (for pagination metadata)
+                count_query = select(func.count(DocumentMetadata.id)).where(base_filter)
+                count_result = await session.execute(count_query)
+                total_count = count_result.scalar()
+
+                # Fetch paginated documents
+                query = (
+                    select(DocumentMetadata)
+                    .where(base_filter)
+                    .order_by(DocumentMetadata.created_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
 
                 result = await session.execute(query)
                 docs = result.scalars().all()
 
+                # Get indexing status from file_tasks for each document
+                doc_ids_to_task_map = {}
+                if docs:
+                    # Extract file_task_ids to query file_tasks (full_doc_id removed from FileTask)
+                    file_task_ids = [doc.file_task_id for doc in docs if doc.file_task_id]
+
+                    if file_task_ids:
+                        task_query = select(FileTask).where(
+                            FileTask.id.in_(file_task_ids)
+                        )
+                        task_result = await session.execute(task_query)
+                        tasks = task_result.scalars().all()
+
+                        # Create map of file_task_id -> status, then map to full_doc_id
+                        task_id_to_status = {task.id: task.status for task in tasks}
+                        # Map full_doc_id -> status using file_task_id as bridge
+                        doc_ids_to_task_map = {
+                            doc.full_doc_id: task_id_to_status.get(doc.file_task_id, "unknown")
+                            for doc in docs if doc.file_task_id
+                        }
+
                 documents = [
                     {
-                        "doc_id": doc.doc_id,
+                        "doc_id": doc.full_doc_id,
                         "file_name": doc.file_name,
                         "workspace_id": doc.workspace_id,
+                        "kb_id": doc.kb_id,
+                        "source_type": "kb_shared" if doc.kb_id else "workspace_only",
                         "file_path": doc.file_path,
-                        "file_size": doc.file_size,
-                        "chunk_count": doc.chunk_count,
-                        "metadata": doc.metadata,
+                        "file_size_bytes": doc.file_size_bytes,
+                        "chunk_count": doc.total_chunks,
+                        "doc_type": doc.doc_type,
+                        "indexing_status": doc_ids_to_task_map.get(doc.full_doc_id, "unknown"),
+                        "metadata": doc.doc_metadata,
                         "indexed_at": str(doc.indexed_at) if doc.indexed_at else None,
                         "created_at": str(doc.created_at) if doc.created_at else None,
                     }
                     for doc in docs
                 ]
 
-            logger.info("Retrieved indexed documents", count=len(documents))
-            return documents
+                # Calculate pagination metadata
+                has_more = (offset + len(documents)) < total_count
+
+                pagination_info = {
+                    "documents": documents,
+                    "total": total_count,
+                    "limit": limit,
+                    "offset": offset,
+                    "has_more": has_more,
+                    "page": (offset // limit) + 1 if limit > 0 else 1,
+                    "total_pages": (total_count + limit - 1) // limit if limit > 0 else 1,
+                }
+
+            logger.info(
+                "Retrieved indexed documents",
+                count=len(documents),
+                total=total_count,
+                page=pagination_info["page"],
+                has_more=has_more,
+            )
+
+            return pagination_info
 
         except Exception as e:
             logger.error("Failed to retrieve indexed documents", error=e)

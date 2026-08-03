@@ -2,16 +2,17 @@
 import base64
 import binascii
 import inspect
+import json
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import Any, Callable, Dict, Optional, Tuple
 
-import azure.functions as func
 import jwt
 from passlib.hash import argon2
 
+from .abstractions import AbstractRequest, AbstractResponse
 from .config import settings
 from .exceptions import AuthenticationException, AuthorizationException
 from .logging import get_logger
@@ -88,7 +89,11 @@ def decode_and_verify_token(token: str) -> Dict[str, Any]:
     Accepts a raw JWT or a base64-encoded JWT (decoded first via _normalize_token).
     Checks if token has been revoked (if Redis is available).
     """
+    logger.debug("Decoding JWT token", token_preview=token[:30] if token else None)
+
     token = _normalize_token(token)
+    logger.debug("Normalized token", normalized_preview=token[:30] if token else None)
+
     try:
         claims = jwt.decode(
             token,
@@ -97,6 +102,12 @@ def decode_and_verify_token(token: str) -> Dict[str, Any]:
             # Reject tokens missing the claims every handler relies on, so a
             # bad token fails here at 401 rather than KeyError-ing downstream.
             options={"require": ["exp", "user_id"]},
+        )
+
+        logger.debug(
+            "Token decoded successfully",
+            user_id=claims.get("user_id"),
+            email=claims.get("email")
         )
 
         # Check if token is revoked (if Redis is available)
@@ -191,17 +202,31 @@ def hash_password(plain_password: str) -> str:
     return argon2.hash(plain_password)
 
 
-def extract_bearer_token(req: func.HttpRequest) -> Optional[str]:
+def extract_bearer_token(req: AbstractRequest) -> Optional[str]:
     """Return raw token from 'Authorization: Bearer <token>', else None."""
-    header = req.headers.get("Authorization") or req.headers.get("authorization")
+    header = req.get_header("Authorization") or req.get_header("authorization")
+    # DEBUG LOGGING
+    logger.debug(
+        "Extracting bearer token",
+        has_auth_header=header is not None,
+        header_preview=header[:50] if header else None
+    )
+
     if not header:
+        logger.warning("No Authorization header found")
         return None
 
     parts = header.split(" ", 1)
     if len(parts) != 2 or parts[0].lower() != "bearer":
+        logger.warning(
+            "Invalid Authorization header format",
+            parts_count=len(parts),
+            first_part=parts[0] if parts else None
+        )
         return None
 
     token = parts[1].strip()
+    logger.debug("Token extracted", token_length=len(token) if token else 0)
     return token or None
 
 
@@ -234,7 +259,7 @@ def _normalize_token(token: str) -> str:
     return token
 
 
-def get_claims(req: func.HttpRequest) -> Dict[str, Any]:
+def get_claims(req: AbstractRequest) -> Dict[str, Any]:
     """Return verified JWT claims attached by require_auth().
 
     Raises AuthenticationException if no claims present.
@@ -245,17 +270,17 @@ def get_claims(req: func.HttpRequest) -> Dict[str, Any]:
     return claims
 
 
-def get_user_id(req: func.HttpRequest) -> int:
+def get_user_id(req: AbstractRequest) -> int:
     """Authenticated user id from token."""
     return get_claims(req)["user_id"]
 
 
-def get_email(req: func.HttpRequest) -> str:
+def get_email(req: AbstractRequest) -> str:
     """Authenticated user email from token."""
     return get_claims(req)["email"]
 
 
-def get_workspace_ids(req: func.HttpRequest) -> list:
+def get_workspace_ids(req: AbstractRequest) -> list:
     """Workspace ids user has role in, from token's roles array."""
     return [
         r["workspace_id"]
@@ -267,13 +292,13 @@ def get_workspace_ids(req: func.HttpRequest) -> list:
 def require_auth(
     authorize: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ) -> Callable:
-    """Decorator enforcing valid JWT on Azure Function.
+    """Decorator enforcing valid JWT on HTTP requests.
 
-    Stack UNDER @azure_http_decorator so exceptions convert to JSON error:
+    Provider-agnostic: Works with AbstractRequest across all cloud providers.
 
-        @azure_http_decorator()
+    Usage:
         @require_auth()
-        async def main(req, context):
+        async def main(req: AbstractRequest, context: AbstractContext):
             user_id = get_user_id(req)
             ...
 
@@ -285,36 +310,88 @@ def require_auth(
     """
 
     def _decorator(fn: Callable) -> Callable:
-        def _authenticate(args, kwargs) -> None:
+        def _authenticate(args, kwargs) -> Optional[Dict[str, Any]]:
+            """Returns None on success, or error response dict on failure"""
             req = kwargs.get("req") if "req" in kwargs else (args[0] if args else None)
-            if not isinstance(req, func.HttpRequest):
-                raise AuthenticationException(message="Authentication failed")
+            if not isinstance(req, AbstractRequest):
+                return {
+                    "success": False,
+                    "error": "AUTHENTICATION_ERROR",
+                    "message": "Authentication failed",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "status_code": 401
+                }
 
             token = extract_bearer_token(req)
             if not token:
-                raise AuthenticationException(
-                    message="Missing or malformed Authorization header"
-                )
+                return {
+                    "success": False,
+                    "error": "AUTHENTICATION_ERROR",
+                    "message": "Missing or malformed Authorization header",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "status_code": 401
+                }
 
-            claims = decode_and_verify_token(token)
-            setattr(req, "claims", claims)
+            try:
+                claims = decode_and_verify_token(token)
+                setattr(req, "claims", claims)
 
-            # Authorization (403) runs only after authentication (401) succeeds
-            if authorize is not None and not authorize(claims):
-                raise AuthorizationException()
+                # Authorization (403) runs only after authentication (401) succeeds
+                if authorize is not None and not authorize(claims):
+                    return {
+                        "success": False,
+                        "error": "AUTHORIZATION_ERROR",
+                        "message": "Access forbidden",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "status_code": 403
+                    }
+            except AuthenticationException as e:
+                return {
+                    "success": False,
+                    "error": "AUTHENTICATION_ERROR",
+                    "message": e.message,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "status_code": 401
+                }
+            except AuthorizationException as e:
+                return {
+                    "success": False,
+                    "error": "AUTHORIZATION_ERROR",
+                    "message": e.message,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "status_code": 403
+                }
+
+            return None  # Success
 
         if inspect.iscoroutinefunction(fn):
 
             @wraps(fn)
             async def _async_wrapped(*args, **kwargs):
-                _authenticate(args, kwargs)
+                error = _authenticate(args, kwargs)
+                if error:
+                    # Return error response in AbstractResponse format
+                    status_code = error.pop("status_code", 401)
+                    return AbstractResponse(
+                        status_code=status_code,
+                        body=json.dumps(error),
+                        headers={"Content-Type": "application/json"}
+                    )
                 return await fn(*args, **kwargs)
 
             return _async_wrapped
 
         @wraps(fn)
         def _wrapped(*args, **kwargs):
-            _authenticate(args, kwargs)
+            error = _authenticate(args, kwargs)
+            if error:
+                # Return error response in AbstractResponse format
+                status_code = error.pop("status_code", 401)
+                return AbstractResponse(
+                    status_code=status_code,
+                    body=json.dumps(error),
+                    headers={"Content-Type": "application/json"}
+                )
             return fn(*args, **kwargs)
 
         return _wrapped

@@ -1,13 +1,12 @@
 """KB chatbot endpoint - TODO: Port from kb_curator_chatbot.py"""
-import json
+from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
+from src.shared.payloads import parse_request
+from src.shared.response_utils import create_error_response
 
-import azure.functions as func
-
-from shared.payloads import parse_request
-from functions.api.kb_chat.payloads import KBChatRequest
+from .payloads import KBChatRequest
 
 
-async def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+async def main(req: AbstractRequest, context: AbstractContext) -> AbstractResponse:
     """
     KB chatbot endpoint.
 
@@ -24,8 +23,9 @@ async def main(req: func.HttpRequest, context: func.Context) -> func.HttpRespons
         return error
 
     # TODO: Implement chatbot logic from kb_curator_chatbot.py
-    return func.HttpResponse(
-        json.dumps({"error": "TODO: Port chatbot from kb_curator_chatbot.py"}),
+    return create_error_response(
+        message="TODO: Port chatbot from kb_curator_chatbot.py",
+        error_code="NOT_IMPLEMENTED",
         status_code=501,
-        mimetype="application/json",
+        correlation_id=context.correlation_id,
     )

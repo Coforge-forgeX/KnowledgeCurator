@@ -8,6 +8,7 @@ Following SOLID principles:
 - Interface Segregation: Minimal dependencies
 - Dependency Inversion: Depends on abstractions
 """
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -152,40 +153,53 @@ class KnowledgeBaseService:
         self,
         workspace_id: int,
         limit: int = 100,
-    ) -> List[Dict[str, Any]]:
+        offset: int = 0,
+    ) -> Dict[str, Any]:
         """
-        Get list of indexed documents for a workspace.
+        Get paginated list of indexed documents for a workspace.
 
         Args:
             workspace_id: Workspace identifier
-            limit: Maximum number of documents to return
+            limit: Maximum number of documents to return per page (default: 100, max: 1000)
+            offset: Number of documents to skip for pagination (default: 0)
 
         Returns:
-            List of indexed document metadata
+            Dict containing:
+            - documents: List of indexed document metadata
+            - total: Total count of documents
+            - limit: Limit used in query
+            - offset: Offset used in query
+            - has_more: Boolean indicating if more documents exist
+            - page: Current page number
+            - total_pages: Total number of pages
         """
         try:
             logger.info(
                 "Fetching indexed documents",
                 workspace_id=workspace_id,
                 limit=limit,
+                offset=offset,
             )
 
             working_dir = self._get_workspace_working_dir(workspace_id)
             self.lightrag_service.working_dir = working_dir
 
-            # Get documents from LightRAG service with workspace filter
-            documents = await self.lightrag_service.get_indexed_documents(
+            # Get paginated documents from LightRAG service with workspace filter
+            result = await self.lightrag_service.get_indexed_documents(
                 workspace_id=workspace_id,
-                limit=limit
+                limit=limit,
+                offset=offset,
             )
 
             logger.info(
                 "Fetched indexed documents",
                 workspace_id=workspace_id,
-                count=len(documents),
+                count=len(result["documents"]),
+                total=result["total"],
+                page=result["page"],
             )
 
-            return documents
+            return result
 
         except Exception as e:
             logger.error(
@@ -348,10 +362,13 @@ class KnowledgeBaseService:
                     task = result.scalar_one_or_none()
 
                     if task:
+                        # Extract file_name from file_path
+                        file_name = os.path.basename(task.file_path) if task.file_path else None
+
                         statuses.append({
                             "task_id": task.id,
                             "status": task.status,
-                            "file_name": task.file_name,
+                            "file_name": file_name,
                             "workspace_id": task.workspace_id,
                             "error_message": task.error_message,
                             "created_at": str(task.created_at) if task.created_at else None,

@@ -1,9 +1,10 @@
 """
 Workspace Helper Functions
 
-Utilities for workspace identification and naming conventions.
+Utilities for workspace identification, naming conventions, and storage path building.
 Compatible with KnowledgeCurator workspace naming.
 """
+from typing import Dict, Optional
 
 
 def workspace_id_to_alpha(workspace_id) -> str:
@@ -107,3 +108,73 @@ def get_workspace_working_dir(
     """
     workspace_identifier = get_workspace_identifier(workspace_id, domain, kb_name)
     return f"{base_dir}/{workspace_identifier}"
+
+def build_storage_paths(
+    workspace_id: int,
+    industry: str,
+    sub_industry: str,
+    knowledge_base: Optional[str],
+    workspace_type: str,
+    kg_container: str,
+    workspace_container: str,
+) -> Dict[str, str]:
+    """
+    Build correct storage paths based on workspace type.
+
+    The caller must provide industry, sub_industry, and knowledge_base names
+    (fetched from their respective master tables), not IDs.
+
+    Returns dict with:
+    - container: Container name ("aksknowledgecurator" or "workspace")
+    - upload_path: Path prefix for files (without filename)
+    - domain: Domain (industry)
+    - kb_name: KB name
+
+    Path structure:
+    - KG workspace:
+      container: aksknowledgecurator
+      upload_path: {industry}/{sub_industry}/{knowledge_base}
+      domain: {industry}
+      kb_name: {sub_industry}/{knowledge_base}
+
+    - Regular workspace:
+      container: workspace
+      upload_path: {industry}/{sub_industry}/{workspace_id}
+      domain: {industry}
+      kb_name: {sub_industry}/{workspace_id_text}
+
+    Args:
+        workspace_id: Workspace ID
+        industry: Industry name (from industry_master table)
+        sub_industry: Sub-industry name (from subindustry_master table)
+        knowledge_base: Knowledge base name (for KG workspaces, from knowledge_base table)
+        workspace_type: WorkspaceType enum value
+        kg_container: Container name for KG workspaces (default: aksknowledgecurator)
+        workspace_container: Container name for regular workspaces (default: workspace)
+
+    Returns:
+        Dict with container, upload_path, domain, kb_name, is_kg
+    """
+    is_kg = workspace_type.lower() == "kg"
+
+    if is_kg and knowledge_base:
+        # KG workspace path
+        container = kg_container
+        upload_path = f"{industry}/{sub_industry}/{knowledge_base}"
+        domain = industry
+        kb_name = f"{sub_industry}/{knowledge_base}"
+    else:
+        # Regular workspace path
+        container = workspace_container
+        upload_path = f"{industry}/{sub_industry}/{workspace_id}"
+        domain = industry
+        workspace_id_text = workspace_id_to_alpha(workspace_id)
+        kb_name = f"{sub_industry}/{workspace_id_text}"
+
+    return {
+        "container": container,
+        "upload_path": upload_path,
+        "domain": domain,
+        "kb_name": kb_name,
+        "is_kg": is_kg,
+    }

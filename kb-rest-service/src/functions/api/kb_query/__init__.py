@@ -1,13 +1,12 @@
 """KB query endpoint - TODO: Port from kb_adapter_tool.py"""
-import json
+from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
+from src.shared.payloads import parse_request
+from src.shared.response_utils import create_error_response
 
-import azure.functions as func
-
-from shared.payloads import parse_request
-from functions.api.kb_query.payloads import KBQueryRequest
+from .payloads import KBQueryRequest
 
 
-async def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+async def main(req: AbstractRequest, context: AbstractContext) -> AbstractResponse:
     """
     Query knowledge base.
 
@@ -25,8 +24,9 @@ async def main(req: func.HttpRequest, context: func.Context) -> func.HttpRespons
         return error
 
     # TODO: Implement query logic from kb_adapter_tool.py
-    return func.HttpResponse(
-        json.dumps({"error": "TODO: Port query_kb from kb_adapter_tool.py"}),
+    return create_error_response(
+        message="TODO: Port query_kb from kb_adapter_tool.py",
+        error_code="NOT_IMPLEMENTED",
         status_code=501,
-        mimetype="application/json",
+        correlation_id=context.correlation_id,
     )

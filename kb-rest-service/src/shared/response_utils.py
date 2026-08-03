@@ -3,7 +3,7 @@ import json
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-import azure.functions as func
+from src.core.abstractions import AbstractResponse
 
 
 def create_success_response(
@@ -11,7 +11,7 @@ def create_success_response(
     data: Optional[Any] = None,
     status_code: int = 200,
     correlation_id: Optional[str] = None,
-) -> func.HttpResponse:
+) -> AbstractResponse:
     """
     Create a standardized success response.
 
@@ -22,7 +22,7 @@ def create_success_response(
         correlation_id: Optional correlation ID for tracking
 
     Returns:
-        func.HttpResponse: Formatted success response
+        AbstractResponse: Formatted success response
     """
     response_body = {
         "success": True,
@@ -40,7 +40,7 @@ def create_success_response(
     if correlation_id:
         headers["X-Correlation-ID"] = correlation_id
 
-    return func.HttpResponse(
+    return AbstractResponse(
         body=json.dumps(response_body),
         status_code=status_code,
         mimetype="application/json",
@@ -54,7 +54,7 @@ def create_error_response(
     details: Optional[Dict[str, Any]] = None,
     status_code: int = 400,
     correlation_id: Optional[str] = None,
-) -> func.HttpResponse:
+) -> AbstractResponse:
     """
     Create a standardized error response.
 
@@ -66,7 +66,7 @@ def create_error_response(
         correlation_id: Optional correlation ID for tracking
 
     Returns:
-        func.HttpResponse: Formatted error response
+        AbstractResponse: Formatted error response
     """
     response_body = {
         "success": False,
@@ -85,7 +85,7 @@ def create_error_response(
     if correlation_id:
         headers["X-Correlation-ID"] = correlation_id
 
-    return func.HttpResponse(
+    return AbstractResponse(
         body=json.dumps(response_body),
         status_code=status_code,
         mimetype="application/json",
@@ -101,7 +101,7 @@ def create_paginated_response(
     total_count: int,
     status_code: int = 200,
     correlation_id: Optional[str] = None,
-) -> func.HttpResponse:
+) -> AbstractResponse:
     """
     Create a standardized paginated response.
 
@@ -115,7 +115,7 @@ def create_paginated_response(
         correlation_id: Optional correlation ID for tracking
 
     Returns:
-        func.HttpResponse: Formatted paginated response
+        AbstractResponse: Formatted paginated response
     """
     total_pages = (total_count + page_size - 1) // page_size if page_size > 0 else 0
 
@@ -141,7 +141,7 @@ def create_paginated_response(
     if correlation_id:
         headers["X-Correlation-ID"] = correlation_id
 
-    return func.HttpResponse(
+    return AbstractResponse(
         body=json.dumps(response_body),
         status_code=status_code,
         mimetype="application/json",
@@ -156,7 +156,7 @@ def create_query_response(
     metadata: Optional[Dict[str, Any]] = None,
     status_code: int = 200,
     correlation_id: Optional[str] = None,
-) -> func.HttpResponse:
+) -> AbstractResponse:
     """
     Create a standardized query response for LightRAG queries.
 
@@ -169,7 +169,7 @@ def create_query_response(
         correlation_id: Optional correlation ID for tracking
 
     Returns:
-        func.HttpResponse: Formatted query response
+        AbstractResponse: Formatted query response
     """
     response_body = {
         "success": True,
@@ -193,7 +193,7 @@ def create_query_response(
     if correlation_id:
         headers["X-Correlation-ID"] = correlation_id
 
-    return func.HttpResponse(
+    return AbstractResponse(
         body=json.dumps(response_body),
         status_code=status_code,
         mimetype="application/json",
@@ -209,7 +209,7 @@ def create_batch_response(
     details: Optional[list] = None,
     status_code: int = 200,
     correlation_id: Optional[str] = None,
-) -> func.HttpResponse:
+) -> AbstractResponse:
     """
     Create a standardized batch operation response.
 
@@ -223,7 +223,7 @@ def create_batch_response(
         correlation_id: Optional correlation ID for tracking
 
     Returns:
-        func.HttpResponse: Formatted batch response
+        AbstractResponse: Formatted batch response
     """
     response_body = {
         "success": failed == 0,
@@ -247,7 +247,7 @@ def create_batch_response(
     if correlation_id:
         headers["X-Correlation-ID"] = correlation_id
 
-    return func.HttpResponse(
+    return AbstractResponse(
         body=json.dumps(response_body),
         status_code=status_code,
         mimetype="application/json",

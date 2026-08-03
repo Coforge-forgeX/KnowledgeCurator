@@ -9,32 +9,69 @@ import structlog
 
 
 def setup_logging() -> None:
-    """Configure structured logging"""
+    """Configure structured logging with environment-aware formatting"""
+    from core.config import settings
+
+    # Choose renderer based on LOG_FORMAT setting
+    # "console" = human-readable with colors (best for development)
+    # "json" = structured JSON (best for production/log aggregation)
+    if settings.LOG_FORMAT.lower() == "console":
+        renderer = structlog.dev.ConsoleRenderer(
+            colors=True,
+            exception_formatter=structlog.dev.plain_traceback,
+        )
+    else:
+        renderer = structlog.processors.JSONRenderer()
+
+    # Common processors for all environments
+    processors = [
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        renderer,
+    ]
+
     structlog.configure(
-        processors=[
-            structlog.stdlib.filter_by_level,
-            structlog.stdlib.add_logger_name,
-            structlog.stdlib.add_log_level,
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer(),
-        ],
+        processors=processors,
         context_class=dict,
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
 
-    from core.config import settings
-
+    # Configure standard library logging
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stdout,
         level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
     )
+
+    # Reduce noise from third-party libraries
+    if settings.is_development:
+        # Set third-party loggers to WARNING to reduce clutter
+        for noisy_logger in [
+            "httpx",
+            "httpcore",
+            "urllib3",
+            "azure",
+            "boto3",
+            "botocore",
+            "s3transfer",
+            "neo4j",
+            "pymongo",
+            "redis",
+            "lightrag",
+            "openai",
+            "anthropic",
+            "langchain",
+            "uvicorn.access",  # HTTP access logs (use middleware instead)
+        ]:
+            logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
 
 class Logger:

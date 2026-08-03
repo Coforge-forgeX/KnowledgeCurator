@@ -151,7 +151,7 @@ async def process_document(
         logger.error(
             "Document processing failed",
             job_id=job_id,
-            error=str(e),
+            error_msg=str(e),
             duration_seconds=duration,
             exc_info=True,
         )
@@ -271,7 +271,7 @@ async def _index_with_lightrag(
         return doc_id
 
     except Exception as e:
-        logger.error("Failed to index with LightRAG", error=e)
+        logger.error("Failed to index with LightRAG", error_msg=e)
         raise
 
 
@@ -306,12 +306,12 @@ async def _create_document_metadata(
                 doc_id=doc_id,
                 file_name=file_name,
                 workspace_id=workspace_id,
+                kb_id=kb_id,  # Direct column for KB sharing logic
                 file_path=file_path,
                 file_size=file_size,
                 chunk_count=_estimate_chunk_count_from_size(file_size),
                 metadata={
                     **metadata,
-                    "kb_id": kb_id,
                     "page_count": page_count,
                 },
                 indexed_at=datetime.now(timezone.utc),
@@ -329,7 +329,7 @@ async def _create_document_metadata(
             )
 
     except Exception as e:
-        logger.error("Failed to create document metadata", error=e)
+        logger.error("Failed to create document metadata", error_msg=e)
         # Don't raise - indexing succeeded, metadata is secondary
         # The document is already in LightRAG
 

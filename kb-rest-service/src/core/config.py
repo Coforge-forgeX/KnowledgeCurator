@@ -3,7 +3,7 @@ from typing import List, Optional, Union
 from urllib.parse import quote_plus
 
 from pydantic import Field, validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class DatabaseSettings(BaseSettings):
@@ -41,12 +41,37 @@ class DatabaseSettings(BaseSettings):
     NEO4J_USER: str = Field(default="neo4j", env="NEO4J_DATABASE_NEO4J_USER")
     NEO4J_PASSWORD: Optional[str] = Field(default=None, env="NEO4J_DATABASE_NEO4J_PASSWORD")
 
+    # Deployment mode
+    SERVERLESS: bool = Field(default=False, env="SERVERLESS")
+
     # Connection pool settings
+    # Note: For serverless deployment, set SERVERLESS=true to use optimized settings
     DB_POOL_SIZE: int = Field(default=5, env="DB_POOL_SIZE")
     DB_MAX_OVERFLOW: int = Field(default=5, env="DB_MAX_OVERFLOW")
     DB_POOL_TIMEOUT: int = Field(default=30, env="DB_POOL_TIMEOUT")
     DB_POOL_RECYCLE: int = Field(default=3600, env="DB_POOL_RECYCLE")
     DB_ECHO: bool = Field(default=False, env="DB_ECHO")
+
+    @property
+    def get_pool_size(self) -> int:
+        """Get pool size optimized for deployment mode"""
+        if self.SERVERLESS:
+            return min(self.DB_POOL_SIZE, 2)  # Max 2 connections per instance in serverless
+        return self.DB_POOL_SIZE
+
+    @property
+    def get_max_overflow(self) -> int:
+        """Get max overflow optimized for deployment mode"""
+        if self.SERVERLESS:
+            return 0  # No overflow in serverless
+        return self.DB_MAX_OVERFLOW
+
+    @property
+    def get_pool_recycle(self) -> int:
+        """Get pool recycle time optimized for deployment mode"""
+        if self.SERVERLESS:
+            return 300  # 5 minutes for serverless
+        return self.DB_POOL_RECYCLE
 
     @property
     def postgresql_url(self) -> str:
@@ -73,6 +98,13 @@ class DatabaseSettings(BaseSettings):
             return f"redis://:{encoded_password}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
 
 class StorageSettings(BaseSettings):
     """Storage configuration (multi-cloud support)"""
@@ -93,6 +125,29 @@ class StorageSettings(BaseSettings):
     AWS_ACCESS_KEY_ID: Optional[str] = Field(default=None, env="AWS_ACCESS_KEY_ID")
     AWS_SECRET_ACCESS_KEY: Optional[str] = Field(default=None, env="AWS_SECRET_ACCESS_KEY")
     AWS_REGION: str = Field(default="us-east-1", env="AWS_REGION")
+    S3_BUCKET_NAME: Optional[str] = Field(default=None, env="S3_BUCKET_NAME")
+    S3_PATH_PREFIX: str = Field(default="", env="S3_PATH_PREFIX")
+    S3_URL_EXPIRY_MINUTES: int = Field(default=60, env="S3_URL_EXPIRY_MINUTES")
+
+    # GCP Cloud Storage
+    GCP_PROJECT_ID: Optional[str] = Field(default=None, env="GCP_PROJECT_ID")
+    GCP_CREDENTIALS_PATH: Optional[str] = Field(default=None, env="GCP_CREDENTIALS_PATH")
+    GCS_BUCKET_NAME: Optional[str] = Field(default=None, env="GCS_BUCKET_NAME")
+    GCS_PATH_PREFIX: str = Field(default="", env="GCS_PATH_PREFIX")
+    GCS_URL_EXPIRY_MINUTES: int = Field(default=60, env="GCS_URL_EXPIRY_MINUTES")
+
+    # Local Storage (for development)
+    LOCAL_STORAGE_PATH: str = Field(default="./local_storage", env="LOCAL_STORAGE_PATH")
+    LOCAL_STORAGE_CONTAINER: str = Field(default="documents", env="LOCAL_STORAGE_CONTAINER")
+    LOCAL_STORAGE_PATH_PREFIX: str = Field(default="", env="LOCAL_STORAGE_PATH_PREFIX")
+    LOCAL_STORAGE_BASE_URL: str = Field(default="", env="LOCAL_STORAGE_BASE_URL")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 class BlobSettings(BaseSettings):
@@ -102,6 +157,13 @@ class BlobSettings(BaseSettings):
     BLOB_CONTAINER_NAME: str = Field(default="documents", env="BLOB_CONTAINER_NAME")
     BLOB_PATH_PREFIX: str = Field(default="", env="BLOB_PATH_PREFIX")
     BLOB_URL_EXPIRY_MINUTES: int = Field(default=60, env="BLOB_URL_EXPIRY_MINUTES")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 class AzureSettings(BaseSettings):
@@ -121,7 +183,14 @@ class AzureSettings(BaseSettings):
     QUEUE_STORAGE_CONNECTION_STRING: str = Field(
         default="", env="AZURE_QUEUE_STORAGE_CONNECTION_STRING"
     )
-    INDEXING_QUEUE_NAME: str = Field(default="indexing-queue", env="AZURE_INDEXING_QUEUE_NAME")
+    INDEXING_QUEUE_NAME: str = Field(default="kb-indexing-jobs", env="AZURE_INDEXING_QUEUE_NAME")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 class SecuritySettings(BaseSettings):
@@ -142,8 +211,8 @@ class SecuritySettings(BaseSettings):
     # CORS settings
     CORS_ORIGINS: Union[List[str], str] = Field(default=["*"], env="CORS_ORIGINS")
     CORS_ALLOW_CREDENTIALS: bool = Field(default=True, env="CORS_ALLOW_CREDENTIALS")
-    CORS_ALLOW_METHODS: List[str] = Field(default=["*"], env="CORS_ALLOW_METHODS")
-    CORS_ALLOW_HEADERS: List[str] = Field(default=["*"], env="CORS_ALLOW_HEADERS")
+    CORS_ALLOW_METHODS: Union[List[str], str] = Field(default=["*"], env="CORS_ALLOW_METHODS")
+    CORS_ALLOW_HEADERS: Union[List[str], str] = Field(default=["*"], env="CORS_ALLOW_HEADERS")
 
     @validator("CORS_ORIGINS", pre=True)
     def parse_cors_origins(cls, v):
@@ -173,6 +242,13 @@ class SecuritySettings(BaseSettings):
         if len(v) < 32:
             raise ValueError("JWT_SECRET_KEY must be at least 32 characters long")
         return v
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 class LightRAGSettings(BaseSettings):
@@ -239,15 +315,40 @@ class LightRAGSettings(BaseSettings):
         default=None, env="AZURE_OPENAI_LLM_MODEL_LLM_MODEL"
     )
 
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
 
 class Settings(BaseSettings):
     """Main application settings"""
 
     # Application settings
     APP_NAME: str = Field(default="KB REST Service", env="APP_NAME")
-    VERSION: str = Field(default="1.0.0", env="APP_VERSION")
+    VERSION: str = Field(default="2.0.0", env="APP_VERSION")
     ENVIRONMENT: str = Field(default="development", env="ENVIRONMENT")
     DEBUG: bool = Field(default=False, env="DEBUG")
+
+    # Multi-cloud deployment settings
+    CLOUD_PROVIDER: str = Field(default="azure", env="CLOUD_PROVIDER")
+    STORAGE_PROVIDER: Optional[str] = Field(default=None, env="STORAGE_PROVIDER")
+    QUEUE_PROVIDER: Optional[str] = Field(default=None, env="QUEUE_PROVIDER")
+
+    # Queue settings
+    SQS_QUEUE_NAME: str = Field(default="indexing-jobs", env="SQS_QUEUE_NAME")
+    REDIS_QUEUE_NAME: str = Field(default="indexing-jobs", env="REDIS_QUEUE_NAME")
+
+    # Intent Detection settings
+    INTENT_DETECTOR_TYPE: str = Field(default="rule", env="INTENT_DETECTOR_TYPE")
+    INTENT_CONFIDENCE_THRESHOLD: float = Field(default=0.8, env="INTENT_CONFIDENCE_THRESHOLD")
+    INTENT_CACHE_ENABLED: bool = Field(default=True, env="INTENT_CACHE_ENABLED")
+    INTENT_CACHE_TTL: int = Field(default=600, env="INTENT_CACHE_TTL")
+
+    # Storage settings
+    BLOB_URL_EXPIRY_MINUTES: int = Field(default=60, env="BLOB_URL_EXPIRY_MINUTES")
 
     # Server settings
     HOST: str = Field(default="0.0.0.0", env="HOST")
@@ -282,6 +383,13 @@ class Settings(BaseSettings):
             raise ValueError(f"LOG_LEVEL must be one of {valid_levels}")
         return v.upper()
 
+    @validator("LOG_FORMAT")
+    def validate_log_format(cls, v):
+        valid_formats = ["console", "json"]
+        if v.lower() not in valid_formats:
+            raise ValueError(f"LOG_FORMAT must be one of {valid_formats}")
+        return v.lower()
+
     @validator("ENVIRONMENT")
     def validate_environment(cls, v):
         valid_envs = ["development", "staging", "production"]
@@ -304,11 +412,26 @@ class Settings(BaseSettings):
         """Get application name"""
         return self.APP_NAME
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="allow"  # Allow extra fields from nested settings
+    )
 
 
 # Global settings instance
 settings = Settings()
+
+
+def get_settings() -> Settings:
+    """
+    Get global settings instance.
+
+    This function provides a singleton pattern for settings access,
+    allowing for easier dependency injection in FastAPI routes.
+
+    Returns:
+        Settings: Global settings instance
+    """
+    return settings

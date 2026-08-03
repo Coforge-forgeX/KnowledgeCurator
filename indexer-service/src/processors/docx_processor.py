@@ -64,7 +64,7 @@ class DOCXProcessor(DocumentProcessor):
             )
 
         except Exception as e:
-            logger.error("Failed to process DOCX", error=e, file_name=file_name)
+            logger.error("Failed to process DOCX", error_msg=e, file_name=file_name)
             raise ProcessingException(
                 message=f"Failed to process DOCX: {str(e)}",
                 file_name=file_name,
@@ -94,5 +94,5 @@ class DOCXProcessor(DocumentProcessor):
             return "\n\n".join(text_parts)
 
         except Exception as e:
-            logger.warning("DOCX extraction failed", error=e)
+            logger.warning("DOCX extraction failed", error_msg=e)
             raise

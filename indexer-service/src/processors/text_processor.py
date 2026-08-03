@@ -77,7 +77,7 @@ class TextProcessor(DocumentProcessor):
             )
 
         except Exception as e:
-            logger.error("Failed to process text file", error=e, file_name=file_name)
+            logger.error("Failed to process text file", error_msg=e, file_name=file_name)
             raise ProcessingException(
                 message=f"Failed to process text file: {str(e)}",
                 file_name=file_name,
@@ -102,5 +102,5 @@ class TextProcessor(DocumentProcessor):
                 return content.decode("utf-8", errors="ignore")
 
         except Exception as e:
-            logger.warning("Text extraction failed", error=e)
+            logger.warning("Text extraction failed", error_msg=e)
             raise
