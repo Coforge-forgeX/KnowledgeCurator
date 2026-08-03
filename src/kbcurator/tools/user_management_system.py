@@ -1407,7 +1407,7 @@ def fetch_intent_agents_info(user_id=None, intent=None):
 
 @mcp.tool()
 @require_auth
-def update_workspace(payload):
+async def update_workspace(payload):
     """
     Update workspace details (name, description, tools, agents, KBs, etc.) using a payload dict.
     Only Workspace Admin can update workspaces.
@@ -1606,6 +1606,28 @@ def update_workspace(payload):
             except Exception as agent_llm_config_error:
                 print(f"[Post-commit] Failed to create agent LLM configurations: {agent_llm_config_error}")
                 # Don't fail workspace update if LLM config fails, just log it
+
+        # Sync TrustAI tables if workspace has TrustAI integration
+        if agent_ids is not None and server.trustai_workspace_integration and server.trustai_db_manager:
+            try:
+                # Check if workspace has TrustAI configuration
+                trustai_config = server.trustai_db_manager.get_workspace_config(str(workspace_id))
+                if trustai_config:
+                    # Use update_workspace_agents to sync TrustAI tables
+                    # This will add new agents and remove deleted agents from TrustAI mappings
+                    trustai_result = await server.trustai_workspace_integration.update_workspace_agents(
+                        workspace_id=str(workspace_id),
+                        current_agent_ids=agent_ids,
+                        created_by=jwt_user_id
+                    )
+                    print(f"[Post-commit] TrustAI agent sync complete: "
+                          f"{len(trustai_result.get('agents_added', []))} added, "
+                          f"{len(trustai_result.get('agents_removed', []))} removed")
+                    if trustai_result.get('failed_operations'):
+                        print(f"[Post-commit] TrustAI sync had {len(trustai_result['failed_operations'])} failed operations")
+            except Exception as trustai_sync_error:
+                print(f"[Post-commit] Failed to sync TrustAI agent mappings: {trustai_sync_error}")
+                # Don't fail workspace update if TrustAI sync fails, just log it
 
         return {"response": "Workspace updated"}
     except Exception as e:
