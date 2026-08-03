@@ -1,6 +1,6 @@
 from kbcurator.utils.access_validation import validate_user_workspace_access
 from kbcurator.utils.permission import is_admin, get_user_role_id
-from kbcurator.server.server import mcp
+from kbcurator.server.server import mcp , get_postgres_connection_string
 import psycopg2
 from configparser import ConfigParser
 from sqlalchemy import func

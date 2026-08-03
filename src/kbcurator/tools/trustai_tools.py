@@ -1,10 +1,21 @@
 import kbcurator.server.server as server
 from kbcurator.server.server import mcp
 import httpx
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
+from kbcurator.utils.auth import require_auth_async
 # from kbcurator.utils.permission import is_admin, get_user_role_id
 
 TRUSTAI_BASE_URL = "https://forgex-dev-trustai-qag.azurewebsites.net/trustai-api"
+
+
+def _wrap_response(data: Any) -> Dict[str, Any]:
+    """Wrap API response to ensure it's always a dict (FastMCP requirement)."""
+    if isinstance(data, list):
+        return {"response": data}
+    if isinstance(data, dict):
+        return data
+    return {"response": data}
 
 
 def _build_headers(
@@ -15,7 +26,7 @@ def _build_headers(
 ) -> Dict[str, str]:
     headers = {
         "accept": "application/json",
-        "x-app-id": config.app_id,
+        "x-app-id": config.x_app_id,
         "X-Api-Key": config.x_api_key
     }
     if include_content_type:
@@ -27,6 +38,7 @@ def _build_headers(
 
 
 @mcp.tool()
+@require_auth_async
 async def get_guardrail_config(workspace_id: str) -> Dict[str, Any]:
     """Get guardrail configuration for a workspace."""
     config = server.trustai_db_manager.get_workspace_config(workspace_id)
@@ -38,10 +50,11 @@ async def get_guardrail_config(workspace_id: str) -> Dict[str, Any]:
             f"{TRUSTAI_BASE_URL}/guardrails/configuration",
             headers=_build_headers(config)
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def batch_update_guardrail_config(
     workspace_id: str,
     updates: List[Dict[str, Any]],
@@ -65,15 +78,16 @@ async def batch_update_guardrail_config(
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json={"updates": updates}
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def get_guardrail_logs(
     workspace_id: str,
-    start_date: str,
-    end_date: str,
     user_email: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
     user_id: Optional[str] = None
@@ -83,8 +97,8 @@ async def get_guardrail_logs(
     Args:
         workspace_id: Workspace ID
         user_email: User email mapped to endpoint user_id
-        start_date: Start date (YYYY-MM-DD)
-        end_date: End date (YYYY-MM-DD)
+        start_date: Start date (YYYY-MM-DD, optional)
+        end_date: End date (YYYY-MM-DD, optional)
         limit: Max records to return
         offset: Pagination offset
     """
@@ -92,21 +106,30 @@ async def get_guardrail_logs(
     if not config:
         return {"error": "Workspace configuration not found"}
 
+    # Default: end_date = today, start_date = one month ago
+    if not end_date:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    params: Dict[str, Any] = {
+        "start_date": start_date,
+        "end_date": end_date,
+        "limit": limit,
+        "offset": offset
+    }
+
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"{TRUSTAI_BASE_URL}/dashboard/guardrail-logs",
-            params={
-                "start_date": start_date,
-                "end_date": end_date,
-                "limit": limit,
-                "offset": offset
-            },
+            params=params,
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def get_pii_entities(
     workspace_id: str,
     user_email: str,
@@ -122,10 +145,11 @@ async def get_pii_entities(
             f"{TRUSTAI_BASE_URL}/guardrails/pii/entities",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def create_competitor(
     workspace_id: str,
     competitor_name: str,
@@ -143,10 +167,11 @@ async def create_competitor(
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json={"competitor_name": competitor_name}
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def get_competitors(
     workspace_id: str,
     user_email: str,
@@ -162,10 +187,11 @@ async def get_competitors(
             f"{TRUSTAI_BASE_URL}/guardrails/competitors",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def delete_competitor(
     workspace_id: str,
     competitor_id: int,
@@ -182,10 +208,11 @@ async def delete_competitor(
             f"{TRUSTAI_BASE_URL}/guardrails/competitors/{competitor_id}",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def batch_update_pii_entities(
     workspace_id: str,
     updates: List[Dict[str, Any]],
@@ -203,10 +230,11 @@ async def batch_update_pii_entities(
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json={"updates": updates}
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def get_regex_patterns(
     workspace_id: str,
     user_email: str,
@@ -222,10 +250,11 @@ async def get_regex_patterns(
             f"{TRUSTAI_BASE_URL}/guardrails/regex-patterns",
             headers=_build_headers(config, user_email=user_email, user_id=user_id)
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def update_regex_pattern_status(
     workspace_id: str,
     pattern_id: int,
@@ -244,10 +273,11 @@ async def update_regex_pattern_status(
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json={"is_active": is_active}
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def update_regex_pattern(
     workspace_id: str,
     pattern_id: int,
@@ -269,10 +299,11 @@ async def update_regex_pattern(
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json={"name": name, "pattern": pattern, "action": action, "is_active": is_active}
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def delete_regex_pattern(
     workspace_id: str,
     pattern_id: int,
@@ -289,15 +320,16 @@ async def delete_regex_pattern(
             f"{TRUSTAI_BASE_URL}/guardrails/regex-patterns/{pattern_id}",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def get_dashboard_overview(
     workspace_id: str,
-    start_date: str,
-    end_date: str,
     user_email: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     user_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Get dashboard overview."""
@@ -305,16 +337,23 @@ async def get_dashboard_overview(
     if not config:
         return {"error": "Workspace configuration not found"}
 
+    # Default: end_date = today, start_date = one month ago
+    if not end_date:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"{TRUSTAI_BASE_URL}/dashboard/overview",
             params={"start_date": start_date, "end_date": end_date},
             headers=_build_headers(config, user_email=user_email, user_id=user_id)
         )
-        return response.json()
+        return _wrap_response(response.json())
 
 
 @mcp.tool()
+@require_auth_async
 async def list_api_keys(
     workspace_id: str,
     user_email: str,
@@ -337,5 +376,6 @@ async def list_api_keys(
                 "X-API-KEY": config.x_api_key
             }
         )
-        return response.json()
+        return _wrap_response(response.json())
+
 
