@@ -18,12 +18,12 @@ from azure.storage.blob import (
 )
 from sqlalchemy import select
 
-from core.config import settings
-from core.database import DocumentMetadata, FileTask, get_async_session
-from core.exceptions import LightRAGException, ValidationException
-from core.lightrag_service import get_lightrag_service
-from core.logging import get_logger
-from helpers.queue_helpers import get_indexing_queue_helper
+from src.core.config import settings
+from src.core.database import DocumentMetadata, FileTask, get_async_session
+from src.core.exceptions import LightRAGException, ValidationException
+from src.core.lightrag_service import get_lightrag_service
+from src.core.logging import get_logger
+from src.helpers.queue_helpers import get_indexing_queue_helper
 
 logger = get_logger(__name__)
 

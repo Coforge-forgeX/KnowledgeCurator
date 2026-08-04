@@ -7,7 +7,7 @@ Optimized payload validation for file upload and indexing.
 from typing import List
 from pydantic import BaseModel, Field, field_validator
 
-from helpers.file_validation import validate_file_extension
+from src.helpers.file_validation import validate_file_extension
 
 
 class FileUpload(BaseModel):

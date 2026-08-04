@@ -1,7 +1,13 @@
 """Storage adapter factory for indexer service"""
+import os
+import sys
 from azure.storage.blob import BlobServiceClient
-from src.core.config import settings
-from src.core.logging import get_logger
+
+# Add src to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
+from core.config import settings
+from core.logging import get_logger
 
 logger = get_logger(__name__)
 

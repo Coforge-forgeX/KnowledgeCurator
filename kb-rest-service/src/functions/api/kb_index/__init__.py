@@ -4,7 +4,7 @@ import uuid
 
 from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
 from src.core.logging import get_logger
-from src.queue_adapters.factory import get_queue_adapter
+from src.queue_adapters import get_queue_adapter
 from src.shared.payloads import parse_request
 from src.shared.response_utils import create_error_response, create_success_response
 

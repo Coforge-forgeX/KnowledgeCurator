@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote_plus
 
 from pydantic import Field, field_validator, model_validator
 from pydantic import BaseModel
@@ -38,13 +39,41 @@ class DatabaseSettings(BaseModel):
     NEO4J_DATABASE_NEO4J_USER: str = Field(default="neo4j", env="NEO4J_DATABASE_NEO4J_USER")
     NEO4J_DATABASE_NEO4J_PASSWORD: str = Field(default="", env="NEO4J_DATABASE_NEO4J_PASSWORD")
 
+    @model_validator(mode='before')
+    @classmethod
+    def load_from_env(cls, values):
+        """Load database settings from environment for nested BaseModel."""
+        env_map = {
+            'POSTGRESQL_DATABASE_HOST': 'POSTGRESQL_DATABASE_HOST',
+            'POSTGRESQL_DATABASE_PORT': 'POSTGRESQL_DATABASE_PORT',
+            'POSTGRESQL_DATABASE_USER': 'POSTGRESQL_DATABASE_USER',
+            'POSTGRESQL_DATABASE_PASSWORD': 'POSTGRESQL_DATABASE_PASSWORD',
+            'POSTGRESQL_DATABASE_DATABASE': 'POSTGRESQL_DATABASE_DATABASE',
+            'NEO4J_DATABASE_NEO4J_BOLT_URI': 'NEO4J_DATABASE_NEO4J_BOLT_URI',
+            'NEO4J_DATABASE_NEO4J_USER': 'NEO4J_DATABASE_NEO4J_USER',
+            'NEO4J_DATABASE_NEO4J_PASSWORD': 'NEO4J_DATABASE_NEO4J_PASSWORD',
+        }
+
+        for field_name, env_name in env_map.items():
+            if field_name not in values or values.get(field_name) in (None, ""):
+                env_value = os.getenv(env_name)
+                if env_value is not None:
+                    if field_name == 'POSTGRESQL_DATABASE_PORT':
+                        values[field_name] = int(env_value)
+                    else:
+                        values[field_name] = env_value
+
+        return values
+
 
     @property
     def postgresql_url(self) -> str:
         """Build PostgreSQL connection URL"""
+        encoded_user = quote_plus(self.POSTGRESQL_DATABASE_USER)
+        encoded_password = quote_plus(self.POSTGRESQL_DATABASE_PASSWORD)
         return (
-            f"postgresql://{self.POSTGRESQL_DATABASE_USER}:"
-            f"{self.POSTGRESQL_DATABASE_PASSWORD}@{self.POSTGRESQL_DATABASE_HOST}:"
+            f"postgresql://{encoded_user}:"
+            f"{encoded_password}@{self.POSTGRESQL_DATABASE_HOST}:"
             f"{self.POSTGRESQL_DATABASE_PORT}/{self.POSTGRESQL_DATABASE_DATABASE}"
         )
 
@@ -71,6 +100,34 @@ class StorageSettings(BaseModel):
     AWS_SECRET_ACCESS_KEY: Optional[str] = Field(default=None, env="AWS_SECRET_ACCESS_KEY")
     AWS_REGION: str = Field(default="us-east-1", env="AWS_REGION")
 
+    @model_validator(mode='before')
+    @classmethod
+    def load_from_env(cls, values):
+        """Load storage settings from environment for nested BaseModel."""
+        env_map = {
+            'STORAGE_PROVIDER': 'STORAGE_PROVIDER',
+            'STORAGE_CONTAINER_NAME': 'STORAGE_CONTAINER_NAME',
+            'AZURE_BLOB_STORAGE_CONNECTION_STRING': 'AZURE_BLOB_STORAGE_CONNECTION_STRING',
+            'AWS_ACCESS_KEY_ID': 'AWS_ACCESS_KEY_ID',
+            'AWS_SECRET_ACCESS_KEY': 'AWS_SECRET_ACCESS_KEY',
+            'AWS_REGION': 'AWS_REGION',
+        }
+
+        for field_name, env_name in env_map.items():
+            if field_name not in values or values.get(field_name) in (None, ""):
+                env_value = os.getenv(env_name)
+                if env_value is not None:
+                    values[field_name] = env_value
+
+        return values
+
+
+
+class QueueSettings(BaseModel):
+    """Queue configuration (multi-cloud support)"""
+
+    # Queue provider
+    QUEUE_PROVIDER: str = Field(default="azure", env="QUEUE_PROVIDER")
 
 
 class AzureSettings(BaseModel):
@@ -91,6 +148,35 @@ class AzureSettings(BaseModel):
     AZURE_DOC_INTELLIGENCE_KEY: Optional[str] = Field(
         default=None, env="AZURE_DOC_INTELLIGENCE_KEY"
     )
+
+    @model_validator(mode='before')
+    @classmethod
+    def load_from_env(cls, values):
+        """Load Azure queue/document-intelligence settings from environment."""
+        env_map = {
+            'AZURE_STORAGE_CONNECTION_STRING': 'AZURE_STORAGE_CONNECTION_STRING',
+            'INDEXING_QUEUE_NAME': 'INDEXING_QUEUE_NAME',
+            'QUEUE_POLL_INTERVAL': 'QUEUE_POLL_INTERVAL',
+            'AZURE_DOC_INTELLIGENCE_ENDPOINT': 'AZURE_DOC_INTELLIGENCE_ENDPOINT',
+            'AZURE_DOC_INTELLIGENCE_KEY': 'AZURE_DOC_INTELLIGENCE_KEY',
+        }
+
+        for field_name, env_name in env_map.items():
+            if field_name not in values or values.get(field_name) in (None, ""):
+                env_value = os.getenv(env_name)
+                if env_value is not None:
+                    if field_name == 'QUEUE_POLL_INTERVAL':
+                        values[field_name] = int(env_value)
+                    else:
+                        values[field_name] = env_value
+
+        # Backward-compatible alias used by kb-rest-service.
+        if values.get('INDEXING_QUEUE_NAME') in (None, ""):
+            alias_value = os.getenv('AZURE_INDEXING_QUEUE_NAME')
+            if alias_value:
+                values['INDEXING_QUEUE_NAME'] = alias_value
+
+        return values
 
 
 class LLMSettings(BaseModel):
@@ -230,7 +316,7 @@ class Settings(BaseSettings):
 
     # Logging settings
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
-    LOG_FORMAT: str = Field(default="json", env="LOG_FORMAT")
+    LOG_FORMAT: str = Field(default="console", env="LOG_FORMAT")
 
     # Worker settings
     MAX_CONCURRENT_JOBS: int = Field(default=10, env="MAX_CONCURRENT_JOBS")
@@ -239,11 +325,17 @@ class Settings(BaseSettings):
 
     # Nested settings
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    queue: QueueSettings = Field(default_factory=QueueSettings)
     azure: AzureSettings = Field(default_factory=AzureSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     processing: ProcessingSettings = Field(default_factory=ProcessingSettings)
     lightrag: LightRAGSettings = Field(default_factory=LightRAGSettings)
+
+    @property
+    def QUEUE_PROVIDER(self) -> str:
+        """Get queue provider from nested settings"""
+        return self.queue.QUEUE_PROVIDER
 
     @field_validator("LOG_LEVEL")
     @classmethod
@@ -256,10 +348,18 @@ class Settings(BaseSettings):
     @field_validator("ENVIRONMENT")
     @classmethod
     def validate_environment(cls, v):
-        valid_envs = ["dev", "stage", "prod"]
-        if v.lower() not in valid_envs:
+        valid_envs = ["development", "dev", "staging", "stage", "production", "prod"]
+        normalized = v.lower()
+        if normalized not in valid_envs:
             raise ValueError(f"ENVIRONMENT must be one of {valid_envs}")
-        return v.lower()
+        # Normalize to standard values
+        if normalized in ["dev"]:
+            return "development"
+        elif normalized in ["stage", "staging"]:
+            return "staging"
+        elif normalized in ["prod"]:
+            return "production"
+        return normalized
 
     @property
     def is_production(self) -> bool:

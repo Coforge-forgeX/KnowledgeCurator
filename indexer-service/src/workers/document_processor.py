@@ -12,10 +12,21 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
+from shared.adapters.storage import get_storage_adapter as _get_storage_adapter
+
 from core.database import db_manager
 from core.logging import get_logger
 from processors.factory import get_document_processor_factory
-from storage.factory import get_storage_adapter
+
+
+def get_storage_adapter():
+    """Get storage adapter configured with indexer-service settings"""
+    from core.config import settings
+    return _get_storage_adapter(
+        provider=settings.storage.STORAGE_PROVIDER or "azure",
+        connection_string=settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING,
+        container_name=settings.storage.STORAGE_CONTAINER_NAME,
+    )
 
 logger = get_logger(__name__)
 
@@ -70,10 +81,12 @@ async def process_document(
 
         logger.info("Downloading file from storage", file_path=file_path)
 
-        blob_content = await storage_adapter.download_file(file_path)
-        content = blob_content.data
-        file_name = blob_content.metadata.name
-        content_type = blob_content.metadata.content_type
+        content = await storage_adapter.download(file_path)
+        file_name = file_path.split("/")[-1]
+
+        # Infer content type from file extension
+        import mimetypes
+        content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
 
         logger.info(
             "File downloaded",

@@ -30,8 +30,27 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-# Add src/ to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+# Add services/ and src/ to import path with deterministic precedence.
+# Keep services/ before src/ so `shared.*` resolves to services/shared, not src/shared.
+main_dir = os.path.dirname(os.path.abspath(__file__))
+services_path = os.path.dirname(main_dir)  # Parent of kb-rest-service
+src_path = os.path.join(main_dir, "src")
+
+# Remove any existing entries first so we can reinsert in the correct order.
+sys.path = [p for p in sys.path if p not in {services_path, src_path}]
+
+sys.path.insert(0, src_path)
+sys.path.insert(0, services_path)
+print(f"[STARTUP] Added to sys.path (priority): {services_path}, {src_path}")
+
+print(f"[STARTUP] sys.path[0:3] = {sys.path[0:3]}")
+
+# Verify shared.adapters is importable
+try:
+    import shared.adapters
+    print("[STARTUP] ✓ shared.adapters is importable")
+except ImportError as e:
+    print(f"[STARTUP] ✗ Failed to import shared.adapters: {e}")
 
 from src.core.config import settings
 from src.core.exceptions import (

@@ -272,7 +272,11 @@ def get_claims(req: AbstractRequest) -> Dict[str, Any]:
 
 def get_user_id(req: AbstractRequest) -> int:
     """Authenticated user id from token."""
-    return get_claims(req)["user_id"]
+    user_id = get_claims(req).get("user_id")
+    try:
+        return int(user_id)
+    except (TypeError, ValueError):
+        raise AuthenticationException(message="Invalid user_id claim in token")
 
 
 def get_email(req: AbstractRequest) -> str:
@@ -282,11 +286,17 @@ def get_email(req: AbstractRequest) -> str:
 
 def get_workspace_ids(req: AbstractRequest) -> list:
     """Workspace ids user has role in, from token's roles array."""
-    return [
-        r["workspace_id"]
-        for r in get_claims(req).get("roles", [])
-        if isinstance(r, dict) and "workspace_id" in r
-    ]
+    workspace_ids = []
+    for role in get_claims(req).get("roles", []):
+        if not isinstance(role, dict) or "workspace_id" not in role:
+            continue
+        try:
+            workspace_ids.append(int(role["workspace_id"]))
+        except (TypeError, ValueError):
+            logger.warning("Skipping invalid workspace_id claim", workspace_id=role.get("workspace_id"))
+            continue
+
+    return workspace_ids
 
 
 def require_auth(

@@ -10,7 +10,7 @@ import structlog
 
 def setup_logging() -> None:
     """Configure structured logging with environment-aware formatting"""
-    from core.config import settings
+    from src.core.config import settings
 
     # Choose renderer based on LOG_FORMAT setting
     # "console" = human-readable with colors (best for development)
@@ -82,7 +82,7 @@ class Logger:
 
     def _add_context(self, **kwargs) -> Dict[str, Any]:
         """Add common context"""
-        from core.config import settings
+        from src.core.config import settings
 
         return {
             "app": "kb-rest-service",
@@ -152,7 +152,7 @@ def get_logger(name: str = None) -> Logger:
     Get a logger instance for the specified module.
 
     Usage:
-        from core.logging import get_logger
+        from src.core.logging import get_logger
         logger = get_logger(__name__)
         logger.info("Something happened")
         logger.error("Something went wrong", error=exception)

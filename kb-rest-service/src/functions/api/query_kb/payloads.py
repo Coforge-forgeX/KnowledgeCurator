@@ -1,5 +1,5 @@
 """Request payload models for query_kb endpoint"""
-from shared.payloads import BasePayload, NonEmptyStr, VALID_QUERY_MODES
+from src.shared.payloads import BasePayload, NonEmptyStr, VALID_QUERY_MODES
 from pydantic import Field, validator
 
 

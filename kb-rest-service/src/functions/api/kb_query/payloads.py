@@ -1,7 +1,7 @@
 """Request payload model for POST /api/kb/query."""
 from typing import Optional
 
-from shared.payloads import BasePayload, NonEmptyStr
+from src.shared.payloads import BasePayload, NonEmptyStr
 
 
 class KBQueryRequest(BasePayload):

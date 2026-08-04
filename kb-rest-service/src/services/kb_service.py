@@ -12,11 +12,11 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from core.config import settings
-from core.exceptions import LightRAGException, ValidationException
-from core.lightrag_service import get_lightrag_service
-from core.logging import get_logger
-from helpers.queue_helpers import get_indexing_queue_helper
+from src.core.config import settings
+from src.core.exceptions import LightRAGException, ValidationException
+from src.core.lightrag_service import get_lightrag_service
+from src.core.logging import get_logger
+from src.helpers.queue_helpers import get_indexing_queue_helper
 
 logger = get_logger(__name__)
 
@@ -349,7 +349,7 @@ class KnowledgeBaseService:
             )
 
             # Query PostgreSQL for task status using SQLAlchemy
-            from core.database import get_async_session, FileTask
+            from src.core.database import get_async_session, FileTask
             from sqlalchemy import select
 
             statuses = []
@@ -396,7 +396,7 @@ class KnowledgeBaseService:
         DRY principle: Centralize workspace directory logic.
         Uses workspace_id_to_alpha for compatibility with KnowledgeCurator.
         """
-        from workspace_helpers import get_workspace_working_dir
+        from src.helpers.workspace_helpers import get_workspace_working_dir
         base_dir = settings.lightrag.LIGHTRAG_WORKING_DIR
         # TODO: Add domain/kb_name support when available in the request context
         return get_workspace_working_dir(workspace_id, base_dir)

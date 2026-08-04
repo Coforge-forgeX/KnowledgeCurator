@@ -7,10 +7,7 @@ Complete document ingestion with:
 - Exponential backoff retry
 - Cached intermediate results
 """
-import asyncio
 import hashlib
-import os
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +18,17 @@ from core.logging import get_logger
 from core.state_manager import get_state_manager
 from processors.factory import get_document_processor_factory
 from shared.indexing_state import CheckpointData, IndexingJobState, IndexingState
-from storage.factory import get_storage_adapter
+from shared.adapters.storage import get_storage_adapter as _get_storage_adapter
+
+
+def get_storage_adapter():
+    """Get storage adapter configured with indexer-service settings"""
+    from core.config import settings
+    return _get_storage_adapter(
+        provider=settings.storage.STORAGE_PROVIDER or "azure",
+        connection_string=settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING,
+        container_name=settings.storage.STORAGE_CONTAINER_NAME,
+    )
 
 logger = get_logger(__name__)
 

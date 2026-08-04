@@ -340,6 +340,10 @@ class Settings(BaseSettings):
     # Queue settings
     SQS_QUEUE_NAME: str = Field(default="indexing-jobs", env="SQS_QUEUE_NAME")
     REDIS_QUEUE_NAME: str = Field(default="indexing-jobs", env="REDIS_QUEUE_NAME")
+    QUEUE_CONNECTION_STRING: Optional[str] = Field(default=None, env="QUEUE_CONNECTION_STRING")
+    SQS_QUEUE_URL: Optional[str] = Field(default=None, env="SQS_QUEUE_URL")
+    AWS_REGION: str = Field(default="us-east-1", env="AWS_REGION")
+    REDIS_QUEUE_URL: Optional[str] = Field(default=None, env="REDIS_QUEUE_URL")
 
     # Intent Detection settings
     INTENT_DETECTOR_TYPE: str = Field(default="rule", env="INTENT_DETECTOR_TYPE")
@@ -411,6 +415,34 @@ class Settings(BaseSettings):
     def app_name(self) -> str:
         """Get application name"""
         return self.APP_NAME
+
+    @property
+    def active_queue_provider(self) -> str:
+        """Get effective queue provider with cloud provider fallback."""
+        return (self.QUEUE_PROVIDER or self.CLOUD_PROVIDER or "azure").lower()
+
+    @property
+    def active_queue_name(self) -> str:
+        """Resolve queue name for active provider."""
+        provider = self.active_queue_provider
+        if provider == "aws":
+            return self.SQS_QUEUE_NAME
+        if provider == "redis":
+            return self.REDIS_QUEUE_NAME
+        return self.azure.INDEXING_QUEUE_NAME
+
+    @property
+    def active_queue_connection(self) -> Optional[str]:
+        """Resolve queue connection string/URL for active provider."""
+        if self.QUEUE_CONNECTION_STRING:
+            return self.QUEUE_CONNECTION_STRING
+
+        provider = self.active_queue_provider
+        if provider == "aws":
+            return self.SQS_QUEUE_URL
+        if provider == "redis":
+            return self.REDIS_QUEUE_URL or self.database.redis_url
+        return self.azure.AZURE_STORAGE_CONNECTION_STRING
 
     model_config = SettingsConfigDict(
         env_file=".env",

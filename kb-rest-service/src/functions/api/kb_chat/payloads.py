@@ -2,7 +2,7 @@
 from typing import List, Optional
 
 from pydantic import Field
-from shared.payloads import BasePayload, NonEmptyStr
+from src.shared.payloads import BasePayload, NonEmptyStr
 
 
 class Message(BasePayload):

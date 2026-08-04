@@ -7,7 +7,7 @@ with simple dictionary data, useful for testing or simplified wrappers.
 import uuid
 from typing import Any, Dict, Optional
 
-from core.abstractions import AbstractContext, AbstractRequest
+from src.core.abstractions import AbstractContext, AbstractRequest
 
 
 class DictRequest(AbstractRequest):

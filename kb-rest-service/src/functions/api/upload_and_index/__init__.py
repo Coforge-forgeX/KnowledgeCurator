@@ -16,6 +16,9 @@ from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import select
 
+from shared.adapters.storage import get_storage_adapter as _get_storage_adapter
+from shared.adapters.queue import get_queue_adapter as _get_queue_adapter
+
 from src.core import (
     AuthorizationException,
     get_logger,
@@ -27,17 +30,41 @@ from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResp
 from src.core.database import FileTask, Workspace, User, UserMap, get_async_session
 from src.helpers.file_validation import get_content_type
 from src.helpers.workspace_helpers import get_workspace_storage_paths
-from src.queue_adapters import get_queue_adapter
 from src.shared import (
     create_error_response,
     create_success_response,
     parse_request,
 )
-from src.storage import get_storage_adapter
 
 from .payloads import FileTaskResponse, UploadAndIndexRequest, UploadAndIndexResponse
 
 logger = get_logger(__name__)
+
+
+# Helper functions to get configured adapters
+def get_storage_adapter(container_name: Optional[str] = None):
+    """Get storage adapter configured with kb-rest-service settings"""
+    from src.core.config import settings
+
+    return _get_storage_adapter(
+        provider=settings.storage.STORAGE_PROVIDER or "azure",
+        connection_string=settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING,
+        container_name=container_name or settings.storage.STORAGE_CONTAINER_NAME,
+    )
+
+
+def get_queue_adapter():
+    """Get queue adapter configured with kb-rest-service settings"""
+    from src.core.config import settings
+
+    queue_provider = settings.active_queue_provider
+    return _get_queue_adapter(
+        provider=queue_provider,
+        connection_string=settings.active_queue_connection,
+        queue_name=settings.active_queue_name,
+        queue_url=settings.SQS_QUEUE_URL if queue_provider == "aws" else None,
+        region_name=settings.AWS_REGION if queue_provider == "aws" else None,
+    )
 
 
 async def get_workspace_context(workspace_id: int) -> Optional[Dict]:
@@ -141,7 +168,7 @@ async def upload_file_to_storage(
         (success, error_message, file_size_bytes)
     """
     try:
-        storage = get_storage_adapter()
+        storage = get_storage_adapter(container_name=container)
 
         # Decode base64 content
         try:
@@ -159,8 +186,8 @@ async def upload_file_to_storage(
         # Determine content type from extension
         content_type = get_content_type(file_name)
 
-        # Upload using storage adapter with specified container
-        await storage.upload(blob_path, file_bytes, content_type, container=container)
+        # Upload using storage adapter bound to the target container
+        await storage.upload(blob_path, file_bytes, content_type)
 
         logger.info(
             "File uploaded to storage",
@@ -334,6 +361,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
     """
     # Parse request
     payload, error_response = parse_request(req, UploadAndIndexRequest)
+    print("Request parsed")
     if error_response:
         return error_response
 
@@ -367,9 +395,10 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         raise AuthorizationException(
             message="You do not have permission to curate knowledge base in this workspace"
         )
-
+    print("All Auth Success")
     # Get workspace storage paths (container, upload_path, domain, kb_name)
     workspace_paths = await get_workspace_storage_paths(workspace_id)
+    print(f"workspace path: {workspace_paths}")
     if not workspace_paths:
         logger.error("Failed to get workspace storage paths", workspace_id=workspace_id)
         return create_error_response(

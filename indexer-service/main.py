@@ -12,17 +12,44 @@ It's a long-running worker (not serverless) that:
 Multi-cloud deployment support: Azure, AWS, GCP, Docker
 """
 import asyncio
+import importlib.util
 import os
+import signal
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import FastAPI
 
-# Add src/ to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+# Ensure imports resolve shared modules from services/shared before src/shared.
+_service_dir = os.path.dirname(__file__)
+_services_root = os.path.dirname(_service_dir)
+_src_dir = os.path.join(_service_dir, "src")
 
-from src.core.logging import get_logger, setup_logging
+if _services_root not in sys.path:
+    sys.path.insert(0, _services_root)
+if _src_dir not in sys.path:
+    sys.path.insert(1, _src_dir)
+
+
+def _ensure_shared_package_resolution() -> None:
+    """Ensure `shared` resolves to services/shared, not indexer-service/src/shared."""
+    src_shared_init = os.path.join(_src_dir, "shared", "__init__.py")
+    loaded_shared = sys.modules.get("shared")
+
+    # If shadowed by src/shared, evict and re-import from services/shared.
+    if loaded_shared and getattr(loaded_shared, "__file__", None) == src_shared_init:
+        sys.modules.pop("shared", None)
+
+    if _services_root not in sys.path:
+        sys.path.insert(0, _services_root)
+
+    if importlib.util.find_spec("shared.adapters") is None:
+        raise ModuleNotFoundError(
+            "Unable to resolve shared.adapters; ensure services/shared is importable"
+        )
+
+from core.logging import get_logger, setup_logging
 
 # Setup logging
 setup_logging()
@@ -31,6 +58,44 @@ logger = get_logger(__name__)
 # Worker state
 worker_task = None
 shutdown_event = asyncio.Event()
+_received_signal = None
+
+
+def _install_signal_logging() -> None:
+    """Install lightweight signal hooks to explain why the process is stopping."""
+    global _received_signal
+    for sig_name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
+        sig = getattr(signal, sig_name, None)
+        if sig is None:
+            continue
+        try:
+            previous = signal.getsignal(sig)
+
+            def _handler(signum, frame, *, _previous=previous):
+                nonlocal sig_name
+                global _received_signal
+                _received_signal = sig_name
+                logger.warning("Shutdown signal received", signal=sig_name)
+                if callable(_previous):
+                    _previous(signum, frame)
+
+            signal.signal(sig, _handler)
+        except Exception:
+            # Signal registration may fail in some hosted environments.
+            continue
+
+
+_install_signal_logging()
+
+
+def _log_worker_result(task: asyncio.Task) -> None:
+    """Log unhandled worker task failures so they are not silent."""
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        logger.info("Background indexing worker canceled")
+    except Exception as exc:
+        logger.error("Background indexing worker crashed", error=str(exc), exc_info=True)
 
 
 @asynccontextmanager
@@ -55,12 +120,15 @@ async def lifespan(app: FastAPI):
 
     # Start background worker
     worker_task = asyncio.create_task(indexing_worker())
+    worker_task.add_done_callback(_log_worker_result)
     logger.info("Background indexing worker started")
 
     yield
 
     # Shutdown
     logger.info("Indexer Service shutting down")
+    if _received_signal:
+        logger.warning("Lifecycle shutdown initiated after signal", signal=_received_signal)
     shutdown_event.set()
 
     if worker_task:
@@ -110,98 +178,132 @@ async def indexing_worker():
     4. Updates database task status
     5. Deletes processed messages from queue
     """
-    # Lazy imports to avoid loading heavy dependencies at startup
+    _ensure_shared_package_resolution()
+
+    # Lazy imports to avoid loading heavy dependencies at startup.
     from queue_adapter import get_queue_adapter
-    from storage_adapter import get_storage_adapter
-    from src.workers.indexing_job_handler import process_indexing_job
+    from workers.indexing_job_handler import process_indexing_job
 
     queue = get_queue_adapter()
-    storage = get_storage_adapter()
+    storage_provider_name = os.getenv("STORAGE_PROVIDER", os.getenv("CLOUD_PROVIDER", "azure"))
+
+    # Avoid probing storage adapter on every poll cycle; job handler manages per-job adapter creation.
+    storage = None
 
     logger.info(
         "Indexing worker initialized",
         queue_provider=queue.provider_name,
-        storage_provider=storage.provider_name,
+        storage_provider=storage_provider_name,
     )
 
-    # Worker loop
-    while not shutdown_event.is_set():
-        try:
-            # Poll queue for messages (long polling with 20 second wait)
-            messages = await queue.receive_messages(
-                max_messages=10,
-                visibility_timeout=300,  # 5 minutes to process
-                wait_time_seconds=20,     # Long polling
-            )
+    try:
+        # Worker loop
+        while not shutdown_event.is_set():
+            try:
+                # Poll queue for messages (long polling with 20 second wait)
+                messages = await queue.receive_messages(
+                    max_messages=10,
+                    visibility_timeout=300,  # 5 minutes to process
+                    wait_time_seconds=20,     # Long polling
+                )
 
-            if not messages:
-                # No messages, continue polling (silent - no log spam)
-                continue
+                if not messages:
+                    # No messages, continue polling (silent - no log spam)
+                    continue
 
-            # Only log when we actually receive jobs
-            logger.info(f"Received {len(messages)} indexing job(s)")
+                # Only log when we actually receive jobs
+                logger.info("Received indexing jobs", count=len(messages))
 
-            # Process each message
-            for message in messages:
-                try:
-                    job_data = message.content
-                    task_id = job_data.get("task_id")
-                    job_id = job_data.get("job_id", str(task_id))
-                    file_path = job_data.get("file_path")
-                    workspace_id = job_data.get("workspace_id")
+                # Process each message
+                for message in messages:
+                    try:
+                        job_data = message.content
+                        task_id = job_data.get("task_id")
+                        job_id = job_data.get("job_id", str(task_id))
+                        file_path = job_data.get("file_path")
+                        workspace_id = job_data.get("workspace_id")
 
-                    # Get retry count from message (dequeue_count - 1 because first dequeue is not a retry)
-                    retry_count = max(0, getattr(message, 'dequeue_count', 1) - 1)
+                        # Get retry count from message (dequeue_count - 1 because first dequeue is not a retry)
+                        retry_count = max(0, getattr(message, 'dequeue_count', 1) - 1)
 
-                    logger.info(
-                        "Processing indexing job",
-                        job_id=job_id,
-                        task_id=task_id,
-                        file_path=file_path,
-                        workspace_id=workspace_id,
-                        retry_count=retry_count,
-                    )
-
-                    # Process the indexing job with retry count
-                    result = await process_indexing_job(job_data, retry_count=retry_count)
-                    success = result.get("success", False)
-
-                    if success:
-                        # Delete message from queue - job completed successfully
-                        await queue.delete_message(message.receipt_handle)
                         logger.info(
-                            "Successfully processed and removed from queue",
+                            "Processing indexing job",
                             job_id=job_id,
                             task_id=task_id,
-                            retry_count=retry_count
-                        )
-                    else:
-                        error_msg = result.get("error", "Unknown error")
-                        logger.error(
-                            "Job failed - will retry after visibility timeout",
-                            job_id=job_id,
-                            task_id=task_id,
+                            file_path=file_path,
+                            workspace_id=workspace_id,
                             retry_count=retry_count,
-                            error=error_msg
                         )
-                        # Message will become visible again after visibility timeout for automatic retry
 
-                except Exception as e:
-                    logger.error(
-                        "Error processing indexing job",
-                        error=e,
-                        message_id=message.message_id,
-                        exc_info=True,
+                        # Process the indexing job with retry count
+                        result = await process_indexing_job(job_data, retry_count=retry_count)
+                        success = result.get("success", False)
+
+                        if success:
+                            # Delete message from queue - job completed successfully
+                            await queue.delete_message(message.receipt_handle)
+                            logger.info(
+                                "Successfully processed and removed from queue",
+                                job_id=job_id,
+                                task_id=task_id,
+                                retry_count=retry_count
+                            )
+                        else:
+                            error_msg = result.get("error", "Unknown error")
+                            if result.get("non_retryable", False):
+                                await queue.delete_message(message.receipt_handle)
+                                logger.warning(
+                                    "Dropped non-retryable indexing message",
+                                    job_id=job_id,
+                                    task_id=task_id,
+                                    retry_count=retry_count,
+                                    error_msg=error_msg,
+                                )
+                            else:
+                                logger.error(
+                                    "Job failed - will retry after visibility timeout",
+                                    job_id=job_id,
+                                    task_id=task_id,
+                                    retry_count=retry_count,
+                                    error_msg=error_msg,
+                                )
+                                # Message will become visible again after visibility timeout for automatic retry
+
+                    except Exception as e:
+                        logger.error(
+                            "Error processing indexing job",
+                            message_id=message.message_id,
+                            error_msg=str(e),
+                            exc_info=True,
+                        )
+                        # Message will become visible again for retry
+
+            except asyncio.CancelledError:
+                logger.info("Worker canceled")
+                break
+            except Exception as e:
+                logger.error(f"Error in worker loop: {e}", exc_info=True)
+                # Sleep before retrying
+                await asyncio.sleep(5)
+    finally:
+        close_tasks = []
+        queue_close = getattr(queue, "close", None)
+        if callable(queue_close):
+            close_tasks.append(queue_close())
+
+        storage_obj = locals().get("storage")
+        storage_close = getattr(storage_obj, "close", None)
+        if callable(storage_close):
+            close_tasks.append(storage_close())
+
+        if close_tasks:
+            results = await asyncio.gather(*close_tasks, return_exceptions=True)
+            for close_result in results:
+                if isinstance(close_result, Exception):
+                    logger.warning(
+                        "Failed to close worker adapter cleanly",
+                        error_msg=str(close_result),
                     )
-                    # Message will become visible again for retry
-
-        except asyncio.CancelledError:
-            logger.info("Worker canceled")
-            break
-        except Exception as e:
-            logger.error(f"Error in worker loop: {e}", exc_info=True)
-            # Sleep before retrying
-            await asyncio.sleep(5)
 
     logger.info("Indexing worker stopped")
 

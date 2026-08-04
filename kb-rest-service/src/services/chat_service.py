@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import uuid
 
-from core.database import ConversationSession, get_async_session
-from core.exceptions import DatabaseException, ValidationException
-from core.logging import get_logger
-from services.mongodb_service import get_mongodb_service
-from services.rag_service import get_rag_service
+from src.core.database import ConversationSession, get_async_session
+from src.core.exceptions import DatabaseException, ValidationException
+from src.core.logging import get_logger
+from src.services.mongodb_service import get_mongodb_service
+from src.services.rag_service import get_rag_service
 from sqlalchemy import select, and_
 
 logger = get_logger(__name__)

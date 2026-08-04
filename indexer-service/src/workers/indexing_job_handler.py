@@ -8,6 +8,7 @@ and updates file_tasks status.
 import asyncio
 import base64
 import io
+import inspect
 import os
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -20,8 +21,8 @@ from docx import Document
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc
 
-from src.core.config import settings
-from src.core.logging import get_logger
+from core.config import settings
+from core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -55,6 +56,9 @@ async def initialize_lightrag(domain: str, kb_name: str) -> LightRAG:
     os.environ['NEO4J_USERNAME'] = settings.database.NEO4J_DATABASE_NEO4J_USER
     os.environ['NEO4J_PASSWORD'] = settings.database.NEO4J_DATABASE_NEO4J_PASSWORD
 
+    # Provide model_name so LightRAG can suffix vector tables for workspace isolation.
+    embedding_model_name = settings.lightrag.AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+
     # Initialize LightRAG with Neo4j + PostgreSQL
     rag = LightRAG(
         working_dir=settings.lightrag.WORKING_DIR,
@@ -62,7 +66,8 @@ async def initialize_lightrag(domain: str, kb_name: str) -> LightRAG:
         embedding_func=EmbeddingFunc(
             embedding_dim=settings.lightrag.EMBEDDING_DIM,
             max_token_size=settings.lightrag.MAX_TOKEN_SIZE,
-            func=embedding_func
+            func=embedding_func,
+            model_name=embedding_model_name,
         ),
         graph_storage=settings.lightrag.GRAPH_STORAGE_TYPE,
         workspace=workspace_name,
@@ -166,8 +171,12 @@ async def download_file_from_blob(
         (success, file_bytes, error_message)
     """
     try:
-        # Use asyncio.to_thread to make the sync download async
-        blob_data = await asyncio.to_thread(storage_adapter.download, blob_path)
+        # Support both async and sync storage adapters.
+        download_method = storage_adapter.download
+        if inspect.iscoroutinefunction(download_method):
+            blob_data = await download_method(blob_path)
+        else:
+            blob_data = await asyncio.to_thread(download_method, blob_path)
 
         logger.info("File downloaded from storage", blob_path=blob_path)
         return True, blob_data, None
@@ -289,14 +298,15 @@ async def update_file_task_status(
             file_task = result.scalar_one_or_none()
 
             if not file_task:
-                logger.error("File task not found", task_id=task_id)
+                logger.warning("File task not found", task_id=task_id)
                 return False
 
             # Update status
             file_task.status = status
             if error_message:
                 file_task.error_message = error_message
-            file_task.updated_at = datetime.now(timezone.utc)
+            # file_tasks.updated_at is TIMESTAMP WITHOUT TIME ZONE.
+            file_task.updated_at = datetime.utcnow()
 
             logger.info(
                 "File task status updated",
@@ -312,6 +322,61 @@ async def update_file_task_status(
             task_id=task_id
         )
         return False
+
+
+async def file_task_exists(task_id: Optional[int]) -> Optional[bool]:
+    """Check whether a file task exists.
+
+    Returns:
+        True if task exists, False if not found, None if lookup failed.
+    """
+    if task_id is None:
+        return False
+
+    try:
+        from src.core.database import FileTask, get_async_session
+        from sqlalchemy import select
+
+        async with get_async_session() as session:
+            stmt = select(FileTask.id).where(FileTask.id == task_id)
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none() is not None
+    except Exception as e:
+        logger.error(
+            "Failed to check file task existence",
+            task_id=task_id,
+            error_msg=str(e),
+        )
+        return None
+
+
+async def get_file_task_storage_hints(task_id: Optional[int]) -> Tuple[Optional[str], Optional[str]]:
+    """Fetch storage hints from file_tasks row.
+
+    Returns:
+        (container_name, file_path) if task exists, otherwise (None, None)
+    """
+    if task_id is None:
+        return None, None
+
+    try:
+        from src.core.database import FileTask, get_async_session
+        from sqlalchemy import select
+
+        async with get_async_session() as session:
+            stmt = select(FileTask.container_name, FileTask.file_path).where(FileTask.id == task_id)
+            result = await session.execute(stmt)
+            row = result.first()
+            if not row:
+                return None, None
+            return row[0], row[1]
+    except Exception as e:
+        logger.warning(
+            "Failed to load file task storage hints",
+            task_id=task_id,
+            error_msg=str(e),
+        )
+        return None, None
 
 
 async def create_or_update_indexing_job(
@@ -414,7 +479,45 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
     Returns:
         Result dict with success/error information
     """
-    from storage_adapter import get_storage_adapter
+    from shared.adapters.storage import get_storage_adapter as _get_storage_adapter
+
+    def get_storage_adapter(container_override: Optional[str] = None):
+        """Get storage adapter configured with indexer-service settings"""
+        from src.core.config import settings
+        connection_string = (
+            settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING
+            or settings.azure.AZURE_STORAGE_CONNECTION_STRING
+        )
+
+        return _get_storage_adapter(
+            provider=settings.storage.STORAGE_PROVIDER or "azure",
+            connection_string=connection_string,
+            container_name=container_override or settings.storage.STORAGE_CONTAINER_NAME,
+        )
+
+    def resolve_container_name(preferred: Optional[str], default: str) -> str:
+        """Resolve target blob container for this job.
+
+        Priority:
+        1. Message-supplied container_name
+        2. Workspace container env (AZURE_BLOB_STORAGE_WORKSPACE_CONTAINER_NAME)
+           when file path indicates workspace uploads
+        3. Default configured container
+        """
+        workspace_container = os.getenv(
+            "AZURE_BLOB_STORAGE_WORKSPACE_CONTAINER_NAME",
+            "workspace",
+        )
+        if file_path and file_path.lower().startswith("other/"):
+            # For workspace uploads, prefer workspace container unless caller provided
+            # a non-default explicit container.
+            if preferred and preferred != default:
+                return preferred
+            return workspace_container
+
+        if preferred:
+            return preferred
+        return default
 
     task_id = job_data.get("task_id")
     job_id = job_data.get("job_id", str(task_id))  # Use job_id or fall back to task_id
@@ -434,9 +537,55 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
         retry_count=retry_count
     )
 
+    if task_id is None:
+        error_msg = "Missing task_id in queue message"
+        logger.warning(error_msg, job_id=job_id, file_path=file_path)
+        await create_or_update_indexing_job(
+            job_id=job_id,
+            workspace_id=workspace_id,
+            file_path=file_path,
+            state="failed",
+            retry_count=retry_count,
+            error=error_msg,
+            kb_id=kb_id,
+        )
+        return {"success": False, "error": error_msg, "non_retryable": True}
+
+    task_exists = await file_task_exists(task_id)
+    if task_exists is False:
+        error_msg = f"File task {task_id} not found"
+        logger.warning(
+            "Skipping stale indexing message",
+            task_id=task_id,
+            job_id=job_id,
+            retry_count=retry_count,
+        )
+        await create_or_update_indexing_job(
+            job_id=job_id,
+            workspace_id=workspace_id,
+            file_path=file_path,
+            state="failed",
+            retry_count=retry_count,
+            error=error_msg,
+            kb_id=kb_id,
+        )
+        return {"success": False, "error": error_msg, "non_retryable": True}
+
     try:
+        # Enrich missing queue metadata from source file_tasks row.
+        file_task_container, file_task_path = await get_file_task_storage_hints(task_id)
+        if not container_name and file_task_container:
+            container_name = file_task_container
+        if not file_path and file_task_path:
+            file_path = file_task_path
+
+        # Resolve target container before creating adapter to avoid misleading initialization.
+        from src.core.config import settings
+        default_container = settings.storage.STORAGE_CONTAINER_NAME
+        target_container = resolve_container_name(container_name, default_container)
+
         # Get storage adapter
-        storage = get_storage_adapter()
+        storage = get_storage_adapter(container_override=target_container)
 
         # Track job start
         await create_or_update_indexing_job(
@@ -454,12 +603,15 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
         # 2. Download file from storage
         await create_or_update_indexing_job(job_id, workspace_id, file_path, "downloading", retry_count, kb_id=kb_id)
 
-        # Override storage adapter container if job specifies different one
-        if container_name and container_name != storage.container_name:
-            from storage_adapter import AzureBlobAdapter
-            storage = AzureBlobAdapter(
-                connection_string=settings.azure.AZURE_STORAGE_CONNECTION_STRING,
-                container_name=container_name
+        # Defensive fallback in case adapter ignored override.
+        if target_container != getattr(storage, "container_name", target_container):
+            from shared.adapters.storage.adapters.azure_blob import AzureBlobStorageAdapter
+            storage = AzureBlobStorageAdapter(
+                connection_string=(
+                    settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING
+                    or settings.azure.AZURE_STORAGE_CONNECTION_STRING
+                ),
+                container_name=target_container,
             )
 
         success, file_bytes, error = await download_file_from_blob(
@@ -509,6 +661,9 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
             checkpoint={"chunk_count": chunk_count},
             kb_id=kb_id
         )
+
+        # Reflect indexing completion on file task before final completion state.
+        await update_file_task_status(task_id, "indexed")
 
         # 6. Update status to completed
         await create_or_update_indexing_job(job_id, workspace_id, file_path, "completed", retry_count, kb_id=kb_id)

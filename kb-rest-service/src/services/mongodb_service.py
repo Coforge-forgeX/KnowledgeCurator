@@ -11,9 +11,9 @@ from typing import Any, Dict, List, Optional
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo.errors import PyMongoError
 
-from core.config import settings
-from core.exceptions import DatabaseException
-from core.logging import get_logger
+from src.core.config import settings
+from src.core.exceptions import DatabaseException
+from src.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -36,7 +36,7 @@ class MongoDBService:
             return
 
         try:
-            from core.config import settings
+            from src.core.config import settings
 
             mongodb_uri = settings.database.MONGODB_DATABASE_URI or settings.database.MONGODB_URI
             if not mongodb_uri:

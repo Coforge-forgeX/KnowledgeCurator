@@ -1,7 +1,7 @@
 """Payload models for Get Knowledge Graph API"""
 from pydantic import Field
 
-from shared.payloads import BasePayload
+from src.shared.payloads import BasePayload
 
 
 class GetKnowledgeGraphRequest(BasePayload):

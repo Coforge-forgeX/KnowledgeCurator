@@ -6,9 +6,9 @@ from typing import Any, Dict, Optional
 from azure.storage.queue import QueueClient, QueueMessage
 from azure.storage.queue.aio import QueueClient as AsyncQueueClient
 
-from core.config import settings
-from core.exceptions import QueueException
-from core.logging import get_logger
+from src.core.config import settings
+from src.core.exceptions import QueueException
+from src.core.logging import get_logger
 
 logger = get_logger(__name__)
 

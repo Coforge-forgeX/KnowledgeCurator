@@ -102,14 +102,21 @@ async def get_workspace_storage_paths(workspace_id: int) -> Optional[Dict[str, s
                 )
 
             # Build paths using shared function
+            kg_container = settings.storage.AZURE_BLOB_STORAGE_CONTAINER_NAME or settings.storage.STORAGE_CONTAINER_NAME
+            workspace_container = settings.storage.LOCAL_STORAGE_CONTAINER or settings.storage.STORAGE_CONTAINER_NAME
+
+            # Keep legacy Azure workspace container override if provided.
+            if getattr(settings.azure, "WORKSPACE_CONTAINER_NAME", None):
+                workspace_container = settings.azure.WORKSPACE_CONTAINER_NAME
+
             paths = _build_storage_paths(
                 workspace_id=workspace.workspace_id,
                 industry=industry_name,
                 sub_industry=sub_industry_name,
                 knowledge_base=kb_title,
                 workspace_type=workspace.keywords,
-                kg_container=settings.azure.BLOB_CONTAINER_NAME,
-                workspace_container=settings.azure.WORKSPACE_CONTAINER_NAME,
+                kg_container=kg_container,
+                workspace_container=workspace_container,
             )
 
             logger.info(

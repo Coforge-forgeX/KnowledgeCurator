@@ -15,8 +15,30 @@ Usage:
 """
 
 import importlib
+import os
+import sys
 from types import ModuleType
 from typing import Dict
+
+
+def _bootstrap_import_paths() -> None:
+    """Ensure monorepo import paths are available in non-entrypoint contexts.
+
+    `main.py` and `function_app.py` already set path precedence before importing
+    handlers. Direct imports of `src.registry` (for validation scripts/tests)
+    need the same setup so shared adapters resolve consistently.
+    """
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+    service_dir = os.path.dirname(src_dir)
+    services_dir = os.path.dirname(service_dir)
+
+    # Keep services before src so `shared.*` resolves to services/shared.
+    sys.path = [p for p in sys.path if p not in {services_dir, service_dir}]
+    sys.path.insert(0, service_dir)
+    sys.path.insert(0, services_dir)
+
+
+_bootstrap_import_paths()
 
 # ============================================================================
 # Handler Module Path Registry (String Mapping)
@@ -25,21 +47,21 @@ from typing import Dict
 
 HANDLER_MODULE_PATHS: Dict[str, str] = {
     # Document Upload & Indexing
-    "upload_and_index": "functions.api.upload_and_index",
-    "check_indexing_status": "functions.api.check_indexing_status",
-    "list_indexed_documents": "functions.api.list_indexed_documents",
-    "delete_documents": "functions.api.delete_documents",
+    "upload_and_index": "src.functions.api.upload_and_index",
+    "check_indexing_status": "src.functions.api.check_indexing_status",
+    "list_indexed_documents": "src.functions.api.list_indexed_documents",
+    "delete_documents": "src.functions.api.delete_documents",
     # Knowledge Base Query
-    "kb_query": "functions.api.kb_query",
-    "query_kb": "functions.api.query_kb",
-    "kb_index": "functions.api.kb_index",
+    "kb_query": "src.functions.api.kb_query",
+    "query_kb": "src.functions.api.query_kb",
+    "kb_index": "src.functions.api.kb_index",
     # Chat & LLM
-    "kb_chat": "functions.api.kb_chat",
-    "llm_route": "functions.api.llm_route",
+    "kb_chat": "src.functions.api.kb_chat",
+    "llm_route": "src.functions.api.llm_route",
     # Knowledge Graph
-    "get_knowledge_graph": "functions.api.get_knowledge_graph",
+    "get_knowledge_graph": "src.functions.api.get_knowledge_graph",
     # SharePoint Integration
-    "sharepoint_list": "functions.api.sharepoint_list",
+    "sharepoint_list": "src.functions.api.sharepoint_list",
 }
 
 # Cache for loaded handlers (lazy loading + memoization)

@@ -1,7 +1,7 @@
 """Payload models for List Indexed Documents API"""
 from pydantic import Field
 
-from shared.payloads import BasePayload
+from src.shared.payloads import BasePayload
 
 
 class ListIndexedDocumentsRequest(BasePayload):

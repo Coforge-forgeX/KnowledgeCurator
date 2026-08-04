@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from src.core.config import settings
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -99,15 +99,15 @@ class FileTask(Base):
     file_size: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="Human-readable file size (e.g., '144.93 KB')")
     uploaded_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="User full name who uploaded")
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc),
+        DateTime(timezone=False),
+        default=datetime.utcnow,
         index=True,
         comment="Task creation timestamp"
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        DateTime(timezone=False),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
         comment="Last update timestamp"
     )
     domain: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="Domain name")
@@ -274,27 +274,27 @@ class DatabaseManager:
                     logger.debug("Database transaction committed successfully")
                 except SQLAlchemyError as e:
                     logger.error(
-                        "Database error during transaction",
-                        error=e,
-                        error_type=type(e).__name__,
+                        "Database error during transaction (%s): %s",
+                        type(e).__name__,
+                        str(e),
                     )
                     await session.rollback()
                     logger.warning("Database transaction rolled back")
                     raise
                 except Exception as e:
                     logger.error(
-                        "Unexpected error during database transaction",
-                        error=e,
-                        error_type=type(e).__name__,
+                        "Unexpected error during database transaction (%s): %s",
+                        type(e).__name__,
+                        str(e),
                     )
                     await session.rollback()
                     logger.warning("Database transaction rolled back due to unexpected error")
                     raise
         except Exception as e:
             logger.error(
-                "Error creating database session",
-                error=e,
-                error_type=type(e).__name__,
+                "Error creating database session (%s): %s",
+                type(e).__name__,
+                str(e),
             )
             raise
         finally:
@@ -317,9 +317,9 @@ class DatabaseManager:
 
         except Exception as e:
             logger.error(
-                "Failed to create database tables",
-                error=e,
-                error_type=type(e).__name__,
+                "Failed to create database tables (%s): %s",
+                type(e).__name__,
+                str(e),
             )
             raise
 

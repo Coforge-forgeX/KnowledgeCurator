@@ -1,7 +1,7 @@
 """Request payload model for GET /api/sharepoint/list."""
 from typing import Optional
 
-from shared.payloads import BasePayload
+from src.shared.payloads import BasePayload
 
 
 class SharePointListRequest(BasePayload):

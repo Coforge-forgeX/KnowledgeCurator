@@ -7,8 +7,21 @@ factory pattern underneath.
 """
 from typing import Optional
 
-from storage import BlobInfo, get_storage_adapter
-from storage.protocols import StorageAdapter
+from shared.adapters.storage import (
+    BlobInfo,
+    get_storage_adapter as _get_storage_adapter,
+    StorageAdapter,
+)
+
+
+def get_storage_adapter():
+    """Get storage adapter configured with kb-rest-service settings"""
+    from src.core.config import settings
+    return _get_storage_adapter(
+        provider=settings.storage.STORAGE_PROVIDER or "azure",
+        connection_string=settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING,
+        container_name=settings.storage.STORAGE_CONTAINER_NAME,
+    )
 
 
 class BlobClient:

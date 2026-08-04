@@ -7,7 +7,7 @@ Pydantic models for file upload REST endpoint.
 from typing import List, Optional
 from pydantic import BaseModel, Field, validator
 
-from helpers.file_validation import SUPPORTED_FILE_EXTENSIONS
+from src.helpers.file_validation import SUPPORTED_FILE_EXTENSIONS
 
 
 class FileMetadata(BaseModel):

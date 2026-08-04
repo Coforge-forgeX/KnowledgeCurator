@@ -214,6 +214,48 @@ The service will be available at:
 - Docker Compose: `http://localhost:8081`
 - Direct Python: `http://localhost:8080`
 
+## Serverless Entrypoints
+
+The service now includes thin runtime adapters so the same business handlers can run on all three providers:
+
+- Azure Functions: `azure_function_app.py` with function `main`
+- AWS Lambda: `aws_lambda_handler.py` with function `lambda_handler`
+- GCP Cloud Functions: `gcp_function_main.py` with function `entrypoint`
+
+All entrypoints delegate to shared routing in `src/adapters/cloud_function_adapter.py`, which maps HTTP method + path to the existing handler registry.
+
+### Route Support (Shared Across Providers)
+
+- `POST /api/v2/kb/query` -> `kb_query`
+- `POST /api/v2/kb/chat` -> `kb_chat`
+- `POST /api/v2/kb/index` -> `kb_index`
+- `POST /api/v2/documents/upload` -> `upload_and_index`
+- `POST /api/v2/documents/status` -> `check_indexing_status`
+- `POST /api/v2/documents/list` -> `list_indexed_documents`
+- `DELETE /api/v2/documents` -> `delete_documents`
+- `POST /api/v2/kb/graph` -> `get_knowledge_graph`
+- `POST /api/v2/llm/route` -> `llm_route`
+- `GET /health` -> health response
+
+### Provider Dependency Notes
+
+- Azure Functions runtime requires `azure-functions` (already in dependencies).
+- AWS Lambda runtime with SQS queue provider requires `boto3`.
+- GCP Function runtime with GCP storage provider requires `google-cloud-storage`.
+
+Install extras when needed:
+
+```bash
+# AWS storage/queue support
+pip install "kb-rest-service[aws]"
+
+# GCP storage support
+pip install "kb-rest-service[gcp]"
+
+# All cloud providers
+pip install "kb-rest-service[all-clouds]"
+```
+
 ## 📚 API Documentation
 
 ### Authentication

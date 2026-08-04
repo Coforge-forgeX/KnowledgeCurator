@@ -383,7 +383,7 @@ class LightRAGService:
             edges = []
 
             # If using Neo4j, query it directly via the Neo4j driver
-            from core.neo4j_driver import get_neo4j_driver
+            from src.core.neo4j_driver import get_neo4j_driver
 
             neo4j_driver = get_neo4j_driver()
 

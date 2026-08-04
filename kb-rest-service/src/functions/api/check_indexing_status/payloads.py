@@ -2,7 +2,7 @@
 from typing import List
 from pydantic import Field
 
-from shared.payloads import BasePayload
+from src.shared.payloads import BasePayload
 
 
 class CheckIndexingStatusRequest(BasePayload):

@@ -1,7 +1,7 @@
 """Request payload model for POST /api/llm/route."""
 from typing import Any, Dict, List, Optional
 
-from shared.payloads import BasePayload, NonEmptyStr
+from src.shared.payloads import BasePayload, NonEmptyStr
 
 
 class LLMRouteRequest(BasePayload):

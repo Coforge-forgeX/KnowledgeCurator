@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 try:
-    from src.core.config import settings
+    from core.config import settings
 
     print("=" * 60)
     print("Configuration Verification")

@@ -7,8 +7,8 @@ including determining workspace types and fetching linked KBs.
 from typing import List, Optional
 from sqlalchemy import select
 
-from core.database import Workspace, WorkspaceIndustryIntentMap, get_async_session
-from core.logging import get_logger
+from src.core.database import Workspace, WorkspaceIndustryIntentMap, get_async_session
+from src.core.logging import get_logger
 
 logger = get_logger(__name__)
 

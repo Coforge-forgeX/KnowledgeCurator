@@ -19,12 +19,22 @@ from core.config import settings
 from core.database import db_manager
 from core.logging import bind_context, clear_context, get_logger
 from shared.models import IndexingJob
-from src.workers.document_processor_with_retry import get_document_processor_with_retry
 
 logger = get_logger(__name__)
 
-# Get processor with retry capability
-processor = get_document_processor_with_retry()
+_legacy_processor = None
+
+
+def get_legacy_processor():
+    """Lazily initialize legacy processor to avoid hard dependency at startup."""
+    global _legacy_processor
+    if _legacy_processor is not None:
+        return _legacy_processor
+
+    from workers.document_processor_with_retry import get_document_processor_with_retry
+
+    _legacy_processor = get_document_processor_with_retry()
+    return _legacy_processor
 
 
 async def poll_queue():
@@ -127,6 +137,8 @@ async def process_message(queue_client, message):
             # Legacy format - use existing processor
             # Validate message payload with Pydantic
             job = IndexingJob(**data)
+
+            processor = get_legacy_processor()
 
             # Bind job context for structured logging
             bind_context(job_id=job.job_id, workspace_id=job.workspace_id)
