@@ -971,7 +971,6 @@ async def sync_trustai_workspaces():
     For backward compatibility with existing workspaces.
     """
     import logging
-    from sqlalchemy.orm import aliased
     from common_adapters.trustai.models import TrustAIWorkspaceConfig
     
     logger = logging.getLogger(__name__)
@@ -1014,11 +1013,9 @@ async def sync_trustai_workspaces():
         
         registered_count = 0
         failed_count = 0
-        
         for workspace in unregistered_workspaces:
             workspace_id = workspace.workspace_id
             workspace_name = workspace.workspace_name
-            
             try:
                 # Get agent_ids from workspace_agents_mapping_2 (ORM)
                 agent_mappings = session.query(db.AgentMap.agent_id).filter(
@@ -1026,30 +1023,29 @@ async def sync_trustai_workspaces():
                     db.AgentMap.is_active == True
                 ).all()
                 agent_ids = [m.agent_id for m in agent_mappings]
-                
+
                 # Get workspace admin (creator) info using ORM join
                 admin_result = session.query(
-                    db.User.email,
+                    db.User.email_id,
                     db.UserMap.user_id
                 ).join(
-                    db.User, db.UserMap.user_id == db.User.id
+                    db.User, db.UserMap.user_id == db.User.user_id
                 ).filter(
                     db.UserMap.workspace_id == workspace_id,
                     db.UserMap.role_id == Role.WS_ADMIN.id,
                     db.UserMap.is_active == True
                 ).first()
-                
-                admin_email = admin_result.email if admin_result else ""
+
+                admin_email = admin_result.email_id if admin_result else ""
                 creator_id = admin_result.user_id if admin_result else None
-                
-                # Build DEFAULT_TRUSTAI_CONFIG
+
                 trustai_config = {
                     "application": {
                         "name": str(workspace_id),
                         "description": f"Auto-registered workspace: {workspace_name}",
                         "line_of_business": "general",
-                        "technical_architect": "",
-                        "business_sponsor": ""
+                        "technical_architect": admin_email if admin_email else 'example@coforge.com',
+                        "business_sponsor": admin_email if admin_email else 'example@coforge.com'
                     },
                     "guardrails": [
                         "BSI_DETECTION",
@@ -1072,8 +1068,8 @@ async def sync_trustai_workspaces():
                         "block_message": "Content blocked by guardrails"
                     }
                 }
-                
-                # Register workspace with TrustAI
+                print(f"trust ai payload for the {workspace_id}:{creator_id} following configuration:\n {trustai_config} \n\n")
+                logger.info(f"trust ai payload for the {workspace_id}:{creator_id} following configuration:\n {trustai_config} \n\n")
                 await register_workspace_with_trustai(
                     workspace_id=str(workspace_id),
                     trustai_config=trustai_config,
@@ -1081,13 +1077,11 @@ async def sync_trustai_workspaces():
                     agent_ids=agent_ids,
                     user_id=creator_id
                 )
-                
-                registered_count += 1
                 logger.info(f"  ✅ Registered workspace {workspace_id} ({workspace_name}) with TrustAI")
-                
+                registered_count += 1
             except Exception as e:
-                failed_count += 1
                 logger.error(f"  ❌ Failed to register workspace {workspace_id}: {e}")
+                failed_count += 1
                 continue
         
         logger.info(f"🏁 TrustAI sync complete: {registered_count} registered, {failed_count} failed")
