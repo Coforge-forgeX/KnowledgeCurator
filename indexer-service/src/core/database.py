@@ -119,23 +119,55 @@ class FileTask(Base):
 
 class DocumentMetadata(Base):
     """
-    Indexed document metadata.
-    Stores information about documents that have been indexed into LightRAG.
+    Master document metadata record.
+    Links file_tasks to lightrag_vdb_chunks via full_doc_id.
     """
     __tablename__ = "document_metadata"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    doc_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
-    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    full_doc_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    file_task_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     workspace_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     kb_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True, comment="Knowledge base ID - populated only for documents uploaded to KG workspaces for sharing across workspaces")
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     file_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    file_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    chunk_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    doc_metadata: Mapped[Optional[dict]] = mapped_column("metadata", JSON, nullable=True)  # Renamed field to avoid reserved word
-    indexed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    file_size_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    total_chunks: Mapped[int] = mapped_column(Integer, default=0)
+    doc_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    doc_metadata: Mapped[Optional[dict]] = mapped_column("metadata", JSON, nullable=True)
+    indexed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class Workspace(Base):
+    """Workspace model used for workspace type checks."""
+    __tablename__ = "workspace_master"
+
+    workspace_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    workspace_desc: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    namespace: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    keywords: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    workspace_logo: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_date: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.utcnow())
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.utcnow())
+
+
+class WorkspaceIndustryIntentMap(Base):
+    """Workspace-to-KB mapping model used for kb_id resolution."""
+    __tablename__ = "workspace_industry_intent_mapping"
+
+    workspace_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    industry_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subindustry_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    intent_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    kb_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_date: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 # ============================================================================

@@ -40,7 +40,7 @@ def get_queue_adapter(
         from core.config import settings
 
         _queue_adapter = _get_shared_adapter(
-            provider=settings.QUEUE_PROVIDER or "azure",
+            provider=settings.active_queue_provider,
             connection_string=settings.azure.AZURE_STORAGE_CONNECTION_STRING,
             queue_name=queue_name or settings.azure.INDEXING_QUEUE_NAME,
         )

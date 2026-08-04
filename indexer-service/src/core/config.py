@@ -1,74 +1,29 @@
-"""Application configuration management for Indexer Service"""
-import os
-from pathlib import Path
+"""Application configuration management for Indexer Service."""
 from typing import Optional
 from urllib.parse import quote_plus
 
-from pydantic import Field, field_validator, model_validator
-from pydantic import BaseModel
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Get the absolute path to the .env file (in the project root)
-# Config file is in: services/indexer-service/src/core/config.py
-# .env file is in: services/indexer-service/.env
-_config_dir = Path(__file__).parent  # src/core/
-_project_root = _config_dir.parent.parent  # services/indexer-service/
-_env_file_path = _project_root / ".env"
 
-# Explicitly load .env file into os.environ before Pydantic initializes
-# This ensures environment variables are available when Settings is instantiated
-if _env_file_path.exists():
-    from dotenv import load_dotenv
-    load_dotenv(_env_file_path, override=False)
-
-
-class DatabaseSettings(BaseModel):
-    """Database configuration settings"""
+class DatabaseSettings(BaseSettings):
+    """Database configuration settings."""
 
     # PostgreSQL settings
-    POSTGRESQL_DATABASE_HOST: str = Field(default="localhost", env="POSTGRESQL_DATABASE_HOST")
-    POSTGRESQL_DATABASE_PORT: int = Field(default=5432, env="POSTGRESQL_DATABASE_PORT")
-    POSTGRESQL_DATABASE_USER: str = Field(default="postgres", env="POSTGRESQL_DATABASE_USER")
-    POSTGRESQL_DATABASE_PASSWORD: str = Field(default="", env="POSTGRESQL_DATABASE_PASSWORD")
-    POSTGRESQL_DATABASE_DATABASE: str = Field(default="kbcurator", env="POSTGRESQL_DATABASE_DATABASE")
+    POSTGRESQL_DATABASE_HOST: str = Field(default="localhost")
+    POSTGRESQL_DATABASE_PORT: int = Field(default=5432)
+    POSTGRESQL_DATABASE_USER: str = Field(default="postgres")
+    POSTGRESQL_DATABASE_PASSWORD: str = Field(default="")
+    POSTGRESQL_DATABASE_DATABASE: str = Field(default="kbcurator")
 
     # Neo4j settings
-    NEO4J_DATABASE_NEO4J_BOLT_URI: str = Field(
-        default="bolt://localhost:7687", env="NEO4J_DATABASE_NEO4J_BOLT_URI"
-    )
-    NEO4J_DATABASE_NEO4J_USER: str = Field(default="neo4j", env="NEO4J_DATABASE_NEO4J_USER")
-    NEO4J_DATABASE_NEO4J_PASSWORD: str = Field(default="", env="NEO4J_DATABASE_NEO4J_PASSWORD")
-
-    @model_validator(mode='before')
-    @classmethod
-    def load_from_env(cls, values):
-        """Load database settings from environment for nested BaseModel."""
-        env_map = {
-            'POSTGRESQL_DATABASE_HOST': 'POSTGRESQL_DATABASE_HOST',
-            'POSTGRESQL_DATABASE_PORT': 'POSTGRESQL_DATABASE_PORT',
-            'POSTGRESQL_DATABASE_USER': 'POSTGRESQL_DATABASE_USER',
-            'POSTGRESQL_DATABASE_PASSWORD': 'POSTGRESQL_DATABASE_PASSWORD',
-            'POSTGRESQL_DATABASE_DATABASE': 'POSTGRESQL_DATABASE_DATABASE',
-            'NEO4J_DATABASE_NEO4J_BOLT_URI': 'NEO4J_DATABASE_NEO4J_BOLT_URI',
-            'NEO4J_DATABASE_NEO4J_USER': 'NEO4J_DATABASE_NEO4J_USER',
-            'NEO4J_DATABASE_NEO4J_PASSWORD': 'NEO4J_DATABASE_NEO4J_PASSWORD',
-        }
-
-        for field_name, env_name in env_map.items():
-            if field_name not in values or values.get(field_name) in (None, ""):
-                env_value = os.getenv(env_name)
-                if env_value is not None:
-                    if field_name == 'POSTGRESQL_DATABASE_PORT':
-                        values[field_name] = int(env_value)
-                    else:
-                        values[field_name] = env_value
-
-        return values
-
+    NEO4J_DATABASE_NEO4J_BOLT_URI: str = Field(default="bolt://localhost:7687")
+    NEO4J_DATABASE_NEO4J_USER: str = Field(default="neo4j")
+    NEO4J_DATABASE_NEO4J_PASSWORD: str = Field(default="")
 
     @property
     def postgresql_url(self) -> str:
-        """Build PostgreSQL connection URL"""
+        """Build PostgreSQL connection URL with encoded credentials."""
         encoded_user = quote_plus(self.POSTGRESQL_DATABASE_USER)
         encoded_password = quote_plus(self.POSTGRESQL_DATABASE_PASSWORD)
         return (
@@ -79,282 +34,202 @@ class DatabaseSettings(BaseModel):
 
     @property
     def neo4j_uri(self) -> str:
-        """Return Neo4j URI"""
+        """Return Neo4j URI."""
         return self.NEO4J_DATABASE_NEO4J_BOLT_URI
 
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
-class StorageSettings(BaseModel):
-    """Storage configuration (multi-cloud support)"""
+
+class StorageSettings(BaseSettings):
+    """Storage configuration (multi-cloud support)."""
 
     # Storage provider
-    STORAGE_PROVIDER: str = Field(default="azure", env="STORAGE_PROVIDER")
-    STORAGE_CONTAINER_NAME: str = Field(default="aksknowledgecurator", env="STORAGE_CONTAINER_NAME")
+    STORAGE_PROVIDER: str = Field(default="azure")
+    STORAGE_CONTAINER_NAME: str = Field(default="aksknowledgecurator")
 
     # Azure Blob Storage
-    AZURE_BLOB_STORAGE_CONNECTION_STRING: Optional[str] = Field(
-        default=None, env="AZURE_BLOB_STORAGE_CONNECTION_STRING"
-    )
+    AZURE_BLOB_STORAGE_CONNECTION_STRING: Optional[str] = Field(default=None)
 
     # AWS S3
-    AWS_ACCESS_KEY_ID: Optional[str] = Field(default=None, env="AWS_ACCESS_KEY_ID")
-    AWS_SECRET_ACCESS_KEY: Optional[str] = Field(default=None, env="AWS_SECRET_ACCESS_KEY")
-    AWS_REGION: str = Field(default="us-east-1", env="AWS_REGION")
+    AWS_ACCESS_KEY_ID: Optional[str] = Field(default=None)
+    AWS_SECRET_ACCESS_KEY: Optional[str] = Field(default=None)
+    AWS_REGION: str = Field(default="us-east-1")
 
-    @model_validator(mode='before')
-    @classmethod
-    def load_from_env(cls, values):
-        """Load storage settings from environment for nested BaseModel."""
-        env_map = {
-            'STORAGE_PROVIDER': 'STORAGE_PROVIDER',
-            'STORAGE_CONTAINER_NAME': 'STORAGE_CONTAINER_NAME',
-            'AZURE_BLOB_STORAGE_CONNECTION_STRING': 'AZURE_BLOB_STORAGE_CONNECTION_STRING',
-            'AWS_ACCESS_KEY_ID': 'AWS_ACCESS_KEY_ID',
-            'AWS_SECRET_ACCESS_KEY': 'AWS_SECRET_ACCESS_KEY',
-            'AWS_REGION': 'AWS_REGION',
-        }
-
-        for field_name, env_name in env_map.items():
-            if field_name not in values or values.get(field_name) in (None, ""):
-                env_value = os.getenv(env_name)
-                if env_value is not None:
-                    values[field_name] = env_value
-
-        return values
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
-
-class QueueSettings(BaseModel):
-    """Queue configuration (multi-cloud support)"""
+class QueueSettings(BaseSettings):
+    """Queue configuration (multi-cloud support)."""
 
     # Queue provider
-    QUEUE_PROVIDER: str = Field(default="azure", env="QUEUE_PROVIDER")
+    QUEUE_PROVIDER: str = Field(default="azure")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
-class AzureSettings(BaseModel):
-    """Azure-specific configuration settings"""
+class AzureSettings(BaseSettings):
+    """Azure-specific configuration settings."""
 
     # Azure Storage Queue
-    AZURE_STORAGE_CONNECTION_STRING: str = Field(
-        default="", env="AZURE_STORAGE_CONNECTION_STRING"
+    AZURE_STORAGE_CONNECTION_STRING: str = Field(default="")
+    INDEXING_QUEUE_NAME: str = Field(
+        default="kb-indexing-jobs",
+        validation_alias="AZURE_INDEXING_QUEUE_NAME",
     )
-    INDEXING_QUEUE_NAME: str = Field(default="kb-indexing-jobs", env="INDEXING_QUEUE_NAME")
-    QUEUE_POLL_INTERVAL: int = Field(default=5, env="QUEUE_POLL_INTERVAL")
-
+    QUEUE_POLL_INTERVAL: int = Field(default=5)
+    WORKSPACE_CONTAINER_NAME: str = Field(default="workspace")
 
     # Azure Document Intelligence
     AZURE_DOC_INTELLIGENCE_ENDPOINT: Optional[str] = Field(
-        default=None, env="AZURE_DOC_INTELLIGENCE_ENDPOINT"
+        default=None,
+        validation_alias="AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT",
     )
     AZURE_DOC_INTELLIGENCE_KEY: Optional[str] = Field(
-        default=None, env="AZURE_DOC_INTELLIGENCE_KEY"
+        default=None,
+        validation_alias="AZURE_DOCUMENT_INTELLIGENCE_KEY",
     )
 
-    @model_validator(mode='before')
-    @classmethod
-    def load_from_env(cls, values):
-        """Load Azure queue/document-intelligence settings from environment."""
-        env_map = {
-            'AZURE_STORAGE_CONNECTION_STRING': 'AZURE_STORAGE_CONNECTION_STRING',
-            'INDEXING_QUEUE_NAME': 'INDEXING_QUEUE_NAME',
-            'QUEUE_POLL_INTERVAL': 'QUEUE_POLL_INTERVAL',
-            'AZURE_DOC_INTELLIGENCE_ENDPOINT': 'AZURE_DOC_INTELLIGENCE_ENDPOINT',
-            'AZURE_DOC_INTELLIGENCE_KEY': 'AZURE_DOC_INTELLIGENCE_KEY',
-        }
-
-        for field_name, env_name in env_map.items():
-            if field_name not in values or values.get(field_name) in (None, ""):
-                env_value = os.getenv(env_name)
-                if env_value is not None:
-                    if field_name == 'QUEUE_POLL_INTERVAL':
-                        values[field_name] = int(env_value)
-                    else:
-                        values[field_name] = env_value
-
-        # Backward-compatible alias used by kb-rest-service.
-        if values.get('INDEXING_QUEUE_NAME') in (None, ""):
-            alias_value = os.getenv('AZURE_INDEXING_QUEUE_NAME')
-            if alias_value:
-                values['INDEXING_QUEUE_NAME'] = alias_value
-
-        # Backward-compatible aliases for Document Intelligence variable names.
-        if values.get('AZURE_DOC_INTELLIGENCE_ENDPOINT') in (None, ""):
-            alias_endpoint = os.getenv('AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT')
-            if alias_endpoint:
-                values['AZURE_DOC_INTELLIGENCE_ENDPOINT'] = alias_endpoint
-
-        if values.get('AZURE_DOC_INTELLIGENCE_KEY') in (None, ""):
-            alias_key = os.getenv('AZURE_DOCUMENT_INTELLIGENCE_KEY')
-            if alias_key:
-                values['AZURE_DOC_INTELLIGENCE_KEY'] = alias_key
-
-        return values
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        populate_by_name=True,
+    )
 
 
-class LLMSettings(BaseModel):
-    """LLM and Embedding configuration"""
+class LLMSettings(BaseSettings):
+    """LLM and embedding configuration."""
 
     # Azure OpenAI LLM
-    AZURE_OPENAI_LLM_MODEL_API_KEY: str = Field(default="", env="AZURE_OPENAI_LLM_MODEL_API_KEY")
-    AZURE_OPENAI_LLM_MODEL_API_BASE: str = Field(
-        default="", env="AZURE_OPENAI_LLM_MODEL_API_BASE"
-    )
-    AZURE_OPENAI_LLM_MODEL_API_VERSION: str = Field(
-        default="2024-02-15-preview", env="AZURE_OPENAI_LLM_MODEL_API_VERSION"
-    )
-    AZURE_OPENAI_LLM_MODEL_LLM_MODEL: str = Field(
-        default="gpt-4", env="AZURE_OPENAI_LLM_MODEL_LLM_MODEL"
-    )
+    AZURE_OPENAI_LLM_MODEL_API_KEY: str = Field(default="")
+    AZURE_OPENAI_LLM_MODEL_API_BASE: str = Field(default="")
+    AZURE_OPENAI_LLM_MODEL_API_VERSION: str = Field(default="2024-02-15-preview")
+    AZURE_OPENAI_LLM_MODEL_LLM_MODEL: str = Field(default="gpt-4")
 
-    # Azure OpenAI Embeddings
-    AZURE_OPENAI_EMBEDDING_MODEL_API_KEY: str = Field(
-        default="", env="AZURE_OPENAI_EMBEDDING_MODEL_API_KEY"
-    )
-    AZURE_OPENAI_EMBEDDING_MODEL_API_BASE: str = Field(
-        default="", env="AZURE_OPENAI_EMBEDDING_MODEL_API_BASE"
-    )
-    AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION: str = Field(
-        default="2024-02-15-preview", env="AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION"
-    )
-    AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL: str = Field(
-        default="text-embedding-3-large", env="AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL"
-    )
+    # Azure OpenAI embeddings
+    AZURE_OPENAI_EMBEDDING_MODEL_API_KEY: str = Field(default="")
+    AZURE_OPENAI_EMBEDDING_MODEL_API_BASE: str = Field(default="")
+    AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION: str = Field(default="2024-02-15-preview")
+    AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL: str = Field(default="text-embedding-3-large")
 
     # Ollama (for embeddings)
-    OLLAMA_MODEL_BASE_URL: str = Field(default="http://localhost:11434", env="OLLAMA_MODEL_BASE_URL")
-    OLLAMA_MODEL_EMBEDDING_MODEL: str = Field(
-        default="mxbai-embed-large", env="OLLAMA_MODEL_EMBEDDING_MODEL"
-    )
-    OLLAMA_MODEL_EMBEDDING_MODEL_DIMS: int = Field(
-        default=1024, env="OLLAMA_MODEL_EMBEDDING_MODEL_DIMS"
-    )
-    OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS: int = Field(
-        default=8192, env="OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS"
+    OLLAMA_MODEL_BASE_URL: str = Field(default="http://localhost:11434")
+    OLLAMA_MODEL_EMBEDDING_MODEL: str = Field(default="mxbai-embed-large")
+    OLLAMA_MODEL_EMBEDDING_MODEL_DIMS: int = Field(default=1024)
+    OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS: int = Field(default=8192)
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
     )
 
 
-
-class ProcessingSettings(BaseModel):
-    """Document processing configuration"""
+class ProcessingSettings(BaseSettings):
+    """Document processing configuration."""
 
     # PDF processing
-    PDF_MIN_TEXT_CHARS: int = Field(default=200, env="PDF_MIN_TEXT_CHARS")
-    PDF_MIN_TEXT_PER_PAGE: int = Field(default=100, env="PDF_MIN_TEXT_PER_PAGE")
-    PDF_PER_PAGE_OCR: bool = Field(default=True, env="PDF_PER_PAGE_OCR")
+    PDF_MIN_TEXT_CHARS: int = Field(default=200)
+    PDF_MIN_TEXT_PER_PAGE: int = Field(default=100)
+    PDF_PER_PAGE_OCR: bool = Field(default=True)
 
     # Cache directories
-    INDEXER_CACHE_DIR: str = Field(default="./indexer_cache", env="INDEXER_CACHE_DIR")
-    INDEXER_STATE_DIR: str = Field(default="./indexer_state", env="INDEXER_STATE_DIR")
+    INDEXER_CACHE_DIR: str = Field(default="./indexer_cache")
+    INDEXER_STATE_DIR: str = Field(default="./indexer_state")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
+class LightRAGSettings(BaseSettings):
+    """LightRAG configuration settings."""
 
-class LightRAGSettings(BaseModel):
-    """LightRAG configuration settings"""
+    WORKING_DIR: str = Field(default="./lightrag_data", validation_alias="LIGHTRAG_WORKING_DIR")
+    EMBEDDING_DIM: int = Field(default=3072, validation_alias="LIGHTRAG_EMBEDDING_DIM")
+    MAX_TOKEN_SIZE: int = Field(default=8192, validation_alias="LIGHTRAG_MAX_TOKEN_SIZE")
+    CHUNK_TOKEN_SIZE: int = Field(default=1000, validation_alias="LIGHTRAG_CHUNK_TOKEN_SIZE")
+    CHUNK_OVERLAP_TOKEN_SIZE: int = Field(default=200, validation_alias="LIGHTRAG_CHUNK_OVERLAP_TOKEN_SIZE")
+    GRAPH_STORAGE_TYPE: str = Field(default="Neo4JStorage", validation_alias="LIGHTRAG_GRAPH_STORAGE_TYPE")
+    VECTOR_STORAGE_TYPE: str = Field(default="PGVectorStorage", validation_alias="LIGHTRAG_VECTOR_STORAGE_TYPE")
+    USE_EMBEDDING_MODEL_SUFFIX: bool = Field(default=False, validation_alias="LIGHTRAG_USE_EMBEDDING_MODEL_SUFFIX")
+    EMBEDDING_TIMEOUT_SECONDS: int = Field(default=120, validation_alias="LIGHTRAG_EMBEDDING_TIMEOUT_SECONDS")
+    EMBEDDING_FUNC_MAX_ASYNC: int = Field(default=4, validation_alias="LIGHTRAG_EMBEDDING_FUNC_MAX_ASYNC")
+    EMBEDDING_BATCH_NUM: int = Field(default=4, validation_alias="LIGHTRAG_EMBEDDING_BATCH_NUM")
+    INSERT_MODE: str = Field(default="custom_chunks", validation_alias="LIGHTRAG_INSERT_MODE")
 
-    WORKING_DIR: str = Field(default="./lightrag_data")
-    EMBEDDING_DIM: int = Field(default=3072)
-    MAX_TOKEN_SIZE: int = Field(default=8192)
-    CHUNK_TOKEN_SIZE: int = Field(default=1000)
-    CHUNK_OVERLAP_TOKEN_SIZE: int = Field(default=200)
-    GRAPH_STORAGE_TYPE: str = Field(default="Neo4JStorage")
-    VECTOR_STORAGE_TYPE: str = Field(default="PGVectorStorage")
-    USE_EMBEDDING_MODEL_SUFFIX: bool = Field(default=False)
-    EMBEDDING_TIMEOUT_SECONDS: int = Field(default=120)
-    EMBEDDING_FUNC_MAX_ASYNC: int = Field(default=4)
-    EMBEDDING_BATCH_NUM: int = Field(default=4)
-    INSERT_MODE: str = Field(default="custom_chunks")
+    # Azure OpenAI LLM settings
+    AZURE_OPENAI_LLM_API_KEY: Optional[str] = Field(default=None, validation_alias="AZURE_OPENAI_LLM_MODEL_API_KEY")
+    AZURE_OPENAI_LLM_API_BASE: Optional[str] = Field(default=None, validation_alias="AZURE_OPENAI_LLM_MODEL_API_BASE")
+    AZURE_OPENAI_LLM_API_VERSION: str = Field(default="2024-12-01-preview", validation_alias="AZURE_OPENAI_LLM_MODEL_API_VERSION")
+    AZURE_OPENAI_LLM_DEPLOYMENT: Optional[str] = Field(default=None, validation_alias="AZURE_OPENAI_LLM_MODEL_LLM_MODEL")
 
-    # Azure OpenAI LLM settings (copy from LLMSettings for easier access)
-    AZURE_OPENAI_LLM_API_KEY: Optional[str] = Field(default=None)
-    AZURE_OPENAI_LLM_API_BASE: Optional[str] = Field(default=None)
-    AZURE_OPENAI_LLM_API_VERSION: str = Field(default="2024-12-01-preview")
-    AZURE_OPENAI_LLM_DEPLOYMENT: Optional[str] = Field(default=None)
-
-    # Azure OpenAI Embedding settings
-    AZURE_OPENAI_EMBEDDING_API_KEY: Optional[str] = Field(default=None)
-    AZURE_OPENAI_EMBEDDING_API_BASE: Optional[str] = Field(default=None)
-    AZURE_OPENAI_EMBEDDING_API_VERSION: str = Field(default="2024-02-01")
-    AZURE_OPENAI_EMBEDDING_DEPLOYMENT: Optional[str] = Field(default=None)
-
-    @model_validator(mode='before')
-    @classmethod
-    def load_from_env(cls, values):
-        """Load values from environment variables if not provided"""
-        import os
-
-        # Map of field names to environment variable names
-        env_map = {
-            'WORKING_DIR': 'LIGHTRAG_WORKING_DIR',
-            'EMBEDDING_DIM': 'LIGHTRAG_EMBEDDING_DIM',
-            'MAX_TOKEN_SIZE': 'LIGHTRAG_MAX_TOKEN_SIZE',
-            'CHUNK_TOKEN_SIZE': 'LIGHTRAG_CHUNK_TOKEN_SIZE',
-            'CHUNK_OVERLAP_TOKEN_SIZE': 'LIGHTRAG_CHUNK_OVERLAP_TOKEN_SIZE',
-            'GRAPH_STORAGE_TYPE': 'LIGHTRAG_GRAPH_STORAGE_TYPE',
-            'VECTOR_STORAGE_TYPE': 'LIGHTRAG_VECTOR_STORAGE_TYPE',
-            'USE_EMBEDDING_MODEL_SUFFIX': 'LIGHTRAG_USE_EMBEDDING_MODEL_SUFFIX',
-            'EMBEDDING_TIMEOUT_SECONDS': 'LIGHTRAG_EMBEDDING_TIMEOUT_SECONDS',
-            'EMBEDDING_FUNC_MAX_ASYNC': 'LIGHTRAG_EMBEDDING_FUNC_MAX_ASYNC',
-            'EMBEDDING_BATCH_NUM': 'LIGHTRAG_EMBEDDING_BATCH_NUM',
-            'INSERT_MODE': 'LIGHTRAG_INSERT_MODE',
-            'AZURE_OPENAI_LLM_API_KEY': 'AZURE_OPENAI_LLM_MODEL_API_KEY',
-            'AZURE_OPENAI_LLM_API_BASE': 'AZURE_OPENAI_LLM_MODEL_API_BASE',
-            'AZURE_OPENAI_LLM_API_VERSION': 'AZURE_OPENAI_LLM_MODEL_API_VERSION',
-            'AZURE_OPENAI_LLM_DEPLOYMENT': 'AZURE_OPENAI_LLM_MODEL_LLM_MODEL',
-            'AZURE_OPENAI_EMBEDDING_API_KEY': 'AZURE_OPENAI_EMBEDDING_MODEL_API_KEY',
-            'AZURE_OPENAI_EMBEDDING_API_BASE': 'AZURE_OPENAI_EMBEDDING_MODEL_API_BASE',
-            'AZURE_OPENAI_EMBEDDING_API_VERSION': 'AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION',
-            'AZURE_OPENAI_EMBEDDING_DEPLOYMENT': 'AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL',
-        }
-
-        # Load from environment if not in values
-        for field_name, env_name in env_map.items():
-            if field_name not in values or values.get(field_name) is None:
-                env_value = os.getenv(env_name)
-                if env_value is not None:
-                    # Convert to int for numeric fields
-                    if field_name in [
-                        'EMBEDDING_DIM',
-                        'MAX_TOKEN_SIZE',
-                        'CHUNK_TOKEN_SIZE',
-                        'CHUNK_OVERLAP_TOKEN_SIZE',
-                        'EMBEDDING_TIMEOUT_SECONDS',
-                        'EMBEDDING_FUNC_MAX_ASYNC',
-                        'EMBEDDING_BATCH_NUM',
-                    ]:
-                        values[field_name] = int(env_value)
-                    elif field_name == 'USE_EMBEDDING_MODEL_SUFFIX':
-                        values[field_name] = str(env_value).strip().lower() in {'1', 'true', 'yes', 'on'}
-                    elif field_name == 'INSERT_MODE':
-                        values[field_name] = str(env_value).strip().lower()
-                    else:
-                        values[field_name] = env_value
-
-        return values
+    # Azure OpenAI embedding settings
+    AZURE_OPENAI_EMBEDDING_API_KEY: Optional[str] = Field(default=None, validation_alias="AZURE_OPENAI_EMBEDDING_MODEL_API_KEY")
+    AZURE_OPENAI_EMBEDDING_API_BASE: Optional[str] = Field(default=None, validation_alias="AZURE_OPENAI_EMBEDDING_MODEL_API_BASE")
+    AZURE_OPENAI_EMBEDDING_API_VERSION: str = Field(default="2024-02-01", validation_alias="AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION")
+    AZURE_OPENAI_EMBEDDING_DEPLOYMENT: Optional[str] = Field(default=None, validation_alias="AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL")
 
     # Ollama settings
-    OLLAMA_BASE_URL: str = Field(default="http://localhost:11434", env="OLLAMA_MODEL_BASE_URL")
-    OLLAMA_EMBEDDING_MODEL: str = Field(default="mxbai-embed-large", env="OLLAMA_MODEL_EMBEDDING_MODEL")
-    OLLAMA_EMBEDDING_DIMS: int = Field(default=1024, env="OLLAMA_MODEL_EMBEDDING_MODEL_DIMS")
-    OLLAMA_MAX_TOKENS: int = Field(default=8192, env="OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS")
+    OLLAMA_BASE_URL: str = Field(default="http://localhost:11434", validation_alias="OLLAMA_MODEL_BASE_URL")
+    OLLAMA_EMBEDDING_MODEL: str = Field(default="mxbai-embed-large", validation_alias="OLLAMA_MODEL_EMBEDDING_MODEL")
+    OLLAMA_EMBEDDING_DIMS: int = Field(default=1024, validation_alias="OLLAMA_MODEL_EMBEDDING_MODEL_DIMS")
+    OLLAMA_MAX_TOKENS: int = Field(default=8192, validation_alias="OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS")
 
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        populate_by_name=True,
+    )
 
 
 class Settings(BaseSettings):
-    """Main application settings"""
+    """Main application settings."""
 
     # Application settings
-    APP_NAME: str = Field(default="KB Indexer Service", env="APP_NAME")
-    VERSION: str = Field(default="1.0.0", env="APP_VERSION")
-    ENVIRONMENT: str = Field(default="development", env="ENVIRONMENT")
-    DEBUG: bool = Field(default=False, env="DEBUG")
+    APP_NAME: str = Field(default="KB Indexer Service")
+    VERSION: str = Field(default="1.0.0", validation_alias="APP_VERSION")
+    ENVIRONMENT: str = Field(default="development")
+    DEBUG: bool = Field(default=False)
+
+    # Deployment settings
+    CLOUD_PROVIDER: str = Field(default="azure")
+    STORAGE_PROVIDER: Optional[str] = Field(default=None)
+
+    # Server settings
+    HOST: str = Field(default="0.0.0.0")
+    PORT: int = Field(default=8081)
 
     # Logging settings
-    LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
-    LOG_FORMAT: str = Field(default="console", env="LOG_FORMAT")
+    LOG_LEVEL: str = Field(default="INFO")
+    LOG_FORMAT: str = Field(default="console")
 
     # Worker settings
-    MAX_CONCURRENT_JOBS: int = Field(default=10, env="MAX_CONCURRENT_JOBS")
-    MESSAGE_VISIBILITY_TIMEOUT: int = Field(default=300, env="MESSAGE_VISIBILITY_TIMEOUT")
-    MAX_RETRIES: int = Field(default=3, env="MAX_RETRIES")
+    MAX_CONCURRENT_JOBS: int = Field(default=10)
+    MESSAGE_VISIBILITY_TIMEOUT: int = Field(default=300)
+    MAX_RETRIES: int = Field(default=3)
 
     # Nested settings
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -367,12 +242,27 @@ class Settings(BaseSettings):
 
     @property
     def QUEUE_PROVIDER(self) -> str:
-        """Get queue provider from nested settings"""
-        return self.queue.QUEUE_PROVIDER
+        """Get effective queue provider with cloud provider fallback."""
+        return self.active_queue_provider
+
+    @property
+    def active_queue_provider(self) -> str:
+        """Get effective queue provider with cloud provider fallback."""
+        return (self.queue.QUEUE_PROVIDER or self.CLOUD_PROVIDER or "azure").lower()
+
+    @property
+    def active_storage_provider(self) -> str:
+        """Get effective storage provider with cloud provider fallback."""
+        return (
+            self.storage.STORAGE_PROVIDER
+            or self.STORAGE_PROVIDER
+            or self.CLOUD_PROVIDER
+            or "azure"
+        ).lower()
 
     @field_validator("LOG_LEVEL")
     @classmethod
-    def validate_log_level(cls, v):
+    def validate_log_level(cls, v: str) -> str:
         valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         if v.upper() not in valid_levels:
             raise ValueError(f"LOG_LEVEL must be one of {valid_levels}")
@@ -380,37 +270,35 @@ class Settings(BaseSettings):
 
     @field_validator("ENVIRONMENT")
     @classmethod
-    def validate_environment(cls, v):
+    def validate_environment(cls, v: str) -> str:
         valid_envs = ["development", "dev", "staging", "stage", "production", "prod"]
         normalized = v.lower()
         if normalized not in valid_envs:
             raise ValueError(f"ENVIRONMENT must be one of {valid_envs}")
-        # Normalize to standard values
-        if normalized in ["dev"]:
+        if normalized == "dev":
             return "development"
-        elif normalized in ["stage", "staging"]:
+        if normalized in {"stage", "staging"}:
             return "staging"
-        elif normalized in ["prod"]:
+        if normalized == "prod":
             return "production"
         return normalized
 
     @property
     def is_production(self) -> bool:
-        """Check if running in production environment"""
+        """Check if running in production environment."""
         return self.ENVIRONMENT == "production"
 
     @property
     def is_development(self) -> bool:
-        """Check if running in development environment"""
+        """Check if running in development environment."""
         return self.ENVIRONMENT == "development"
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="allow"  # Allow extra fields from nested settings
+        extra="allow",
     )
 
 
-# Global settings instance
 settings = Settings()

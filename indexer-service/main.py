@@ -50,6 +50,7 @@ def _ensure_shared_package_resolution() -> None:
         )
 
 from core.logging import get_logger, setup_logging
+from src.core.config import settings
 
 # Setup logging
 setup_logging()
@@ -112,10 +113,10 @@ async def lifespan(app: FastAPI):
     logger.info(
         "Indexer Service starting",
         version="2.0.0",
-        environment=os.getenv("ENVIRONMENT", "development"),
-        cloud_provider=os.getenv("CLOUD_PROVIDER", "unknown"),
-        storage_provider=os.getenv("STORAGE_PROVIDER", os.getenv("CLOUD_PROVIDER", "azure")),
-        queue_provider=os.getenv("QUEUE_PROVIDER", os.getenv("CLOUD_PROVIDER", "azure")),
+        environment=settings.ENVIRONMENT,
+        cloud_provider=settings.CLOUD_PROVIDER,
+        storage_provider=settings.active_storage_provider,
+        queue_provider=settings.active_queue_provider,
     )
 
     # Start background worker
@@ -148,8 +149,8 @@ app = FastAPI(
     description="Background worker for document indexing with LightRAG",
     version="2.0.0",
     lifespan=lifespan,
-    docs_url="/docs" if os.getenv("DEBUG", "false").lower() == "true" else None,
-    redoc_url="/redoc" if os.getenv("DEBUG", "false").lower() == "true" else None,
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
 )
 
 
@@ -160,9 +161,9 @@ async def health_check():
         "status": "healthy",
         "service": "indexer-service",
         "version": "2.0.0",
-        "cloud_provider": os.getenv("CLOUD_PROVIDER", "unknown"),
-        "storage_provider": os.getenv("STORAGE_PROVIDER", os.getenv("CLOUD_PROVIDER", "azure")),
-        "queue_provider": os.getenv("QUEUE_PROVIDER", os.getenv("CLOUD_PROVIDER", "azure")),
+        "cloud_provider": settings.CLOUD_PROVIDER,
+        "storage_provider": settings.active_storage_provider,
+        "queue_provider": settings.active_queue_provider,
         "worker_running": worker_task is not None and not worker_task.done(),
     }
 
@@ -182,10 +183,10 @@ async def indexing_worker():
 
     # Lazy imports to avoid loading heavy dependencies at startup.
     from queue_adapter import get_queue_adapter
-    from workers.indexing_job_handler import process_indexing_job
+    from src.workers.indexing_job_handler import process_indexing_job
 
     queue = get_queue_adapter()
-    storage_provider_name = os.getenv("STORAGE_PROVIDER", os.getenv("CLOUD_PROVIDER", "azure"))
+    storage_provider_name = settings.active_storage_provider
 
     # Avoid probing storage adapter on every poll cycle; job handler manages per-job adapter creation.
     storage = None
@@ -312,13 +313,11 @@ async def indexing_worker():
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.getenv("PORT", 8081))
-
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
-        port=port,
-        reload=os.getenv("DEBUG", "false").lower() == "true",
+        host=settings.HOST,
+        port=settings.PORT,
+        reload=settings.DEBUG,
         log_level="info",
         access_log=True,
     )

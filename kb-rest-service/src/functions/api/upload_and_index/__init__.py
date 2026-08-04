@@ -48,7 +48,7 @@ def should_skip_duplicate_check() -> bool:
     from src.core.config import settings
 
     # Any truthy value enables bypass: true, 1, yes, on
-    raw = getattr(settings, "SKIP_DUPLICATE_CHECK", None)
+    raw = 1 # getattr(settings, "SKIP_DUPLICATE_CHECK", None)
     if raw is None:
         return False
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}

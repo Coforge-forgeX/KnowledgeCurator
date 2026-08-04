@@ -25,6 +25,8 @@ from lightrag.utils import EmbeddingFunc
 
 from core.config import settings
 from core.logging import get_logger
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 logger = get_logger(__name__)
 
@@ -97,7 +99,7 @@ async def initialize_lightrag(domain: str, kb_name: str) -> LightRAG:
     return rag
 
 
-async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs) -> str:
+async def llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs) -> str:
     """LLM function for LightRAG (Azure OpenAI)"""
     import aiohttp
 
@@ -289,6 +291,11 @@ async def index_document_with_lightrag(
             for chunk in chunking_result
             if isinstance(chunk, dict) and chunk.get("content")
         ]
+
+        # Guard against edge-case chunkers returning empty/non-dict payloads.
+        if not ordered_chunks:
+            ordered_chunks = [text_content]
+
         chunk_count = len(ordered_chunks)
 
         # Insert explicit chunk list with stable doc_id to preserve chunk_order_index
@@ -428,25 +435,15 @@ async def resolve_kb_id_for_workspace(
         return None
 
     try:
-        from src.core.database import get_async_session
-        from sqlalchemy import text
+        from src.core.database import Workspace, WorkspaceIndustryIntentMap, get_async_session
 
         async with get_async_session() as session:
-            workspace_type_stmt = text(
-                """
-                SELECT keywords
-                                FROM workspace_master
-                WHERE workspace_id = :workspace_id
-                  AND is_active = TRUE
-                LIMIT 1
-                """
+            workspace_stmt = select(Workspace.keywords).where(
+                Workspace.workspace_id == workspace_id,
+                Workspace.is_active.is_(True),
             )
-            workspace_type_result = await session.execute(
-                workspace_type_stmt,
-                {"workspace_id": workspace_id},
-            )
-            workspace_type_row = workspace_type_result.first()
-            workspace_type = (workspace_type_row[0] or "").strip().lower() if workspace_type_row else ""
+            workspace_result = await session.execute(workspace_stmt)
+            workspace_type = (workspace_result.scalar_one_or_none() or "").strip().lower()
 
             if workspace_type != "kg":
                 logger.debug(
@@ -460,20 +457,18 @@ async def resolve_kb_id_for_workspace(
             if kb_id is not None:
                 return kb_id
 
-            stmt = text(
-                """
-                SELECT kb_id
-                FROM workspace_industry_intent_mapping
-                WHERE workspace_id = :workspace_id
-                  AND is_active = TRUE
-                  AND kb_id IS NOT NULL
-                ORDER BY kb_id
-                LIMIT 1
-                """
+            kb_stmt = (
+                select(WorkspaceIndustryIntentMap.kb_id)
+                .where(
+                    WorkspaceIndustryIntentMap.workspace_id == workspace_id,
+                    WorkspaceIndustryIntentMap.is_active.is_(True),
+                    WorkspaceIndustryIntentMap.kb_id.is_not(None),
+                )
+                .order_by(WorkspaceIndustryIntentMap.kb_id)
+                .limit(1)
             )
-            result = await session.execute(stmt, {"workspace_id": workspace_id})
-            row = result.first()
-            resolved_kb_id = row[0] if row else None
+            kb_result = await session.execute(kb_stmt)
+            resolved_kb_id = kb_result.scalar_one_or_none()
             if resolved_kb_id is not None:
                 logger.info(
                     "Resolved kb_id from workspace mapping",
@@ -601,62 +596,11 @@ async def upsert_document_metadata(
 ) -> bool:
     """Insert or update document metadata row for workspace/KB retrieval and dedupe."""
     try:
-        from src.core.database import get_async_session
-        from sqlalchemy import text
+        from src.core.database import DocumentMetadata, get_async_session
 
         async with get_async_session() as session:
-            stmt = text(
-                """
-                INSERT INTO document_metadata (
-                    full_doc_id,
-                    file_task_id,
-                    workspace_id,
-                    kb_id,
-                    file_name,
-                    file_path,
-                    file_size_bytes,
-                    content_hash,
-                    total_chunks,
-                    doc_type,
-                    metadata,
-                    indexed_at,
-                    created_at,
-                    updated_at
-                )
-                VALUES (
-                    :full_doc_id,
-                    :file_task_id,
-                    :workspace_id,
-                    :kb_id,
-                    :file_name,
-                    :file_path,
-                    :file_size_bytes,
-                    :content_hash,
-                    :total_chunks,
-                    :doc_type,
-                    :metadata,
-                    NOW(),
-                    NOW(),
-                    NOW()
-                )
-                ON CONFLICT (full_doc_id)
-                DO UPDATE SET
-                    file_task_id = EXCLUDED.file_task_id,
-                    workspace_id = EXCLUDED.workspace_id,
-                    kb_id = EXCLUDED.kb_id,
-                    file_name = EXCLUDED.file_name,
-                    file_path = EXCLUDED.file_path,
-                    file_size_bytes = EXCLUDED.file_size_bytes,
-                    content_hash = EXCLUDED.content_hash,
-                    total_chunks = EXCLUDED.total_chunks,
-                    doc_type = EXCLUDED.doc_type,
-                    metadata = EXCLUDED.metadata,
-                    indexed_at = EXCLUDED.indexed_at,
-                    updated_at = NOW()
-                """
-            )
-
-            params = {
+            now = datetime.now(timezone.utc)
+            payload = {
                 "full_doc_id": full_doc_id,
                 "file_task_id": file_task_id,
                 "workspace_id": workspace_id,
@@ -667,19 +611,32 @@ async def upsert_document_metadata(
                 "content_hash": content_hash,
                 "total_chunks": total_chunks,
                 "doc_type": doc_type,
-                "metadata": metadata or {},
+                "doc_metadata": metadata or {},
+                "indexed_at": now,
+                "created_at": now,
+                "updated_at": now,
             }
 
-            try:
-                await session.execute(stmt, params)
-            except Exception as e:
-                # Some environments still have document_metadata.metadata as TEXT.
-                # Retry with a serialized JSON string for compatibility.
-                if "'dict' object has no attribute 'encode'" not in str(e):
-                    raise
-                fallback_params = dict(params)
-                fallback_params["metadata"] = json.dumps(params["metadata"])
-                await session.execute(stmt, fallback_params)
+            stmt = insert(DocumentMetadata).values(**payload)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[DocumentMetadata.full_doc_id],
+                set_={
+                    "file_task_id": stmt.excluded.file_task_id,
+                    "workspace_id": stmt.excluded.workspace_id,
+                    "kb_id": stmt.excluded.kb_id,
+                    "file_name": stmt.excluded.file_name,
+                    "file_path": stmt.excluded.file_path,
+                    "file_size_bytes": stmt.excluded.file_size_bytes,
+                    "content_hash": stmt.excluded.content_hash,
+                    "total_chunks": stmt.excluded.total_chunks,
+                    "doc_type": stmt.excluded.doc_type,
+                    "doc_metadata": stmt.excluded.doc_metadata,
+                    "indexed_at": stmt.excluded.indexed_at,
+                    "updated_at": now,
+                },
+            )
+
+            await session.execute(stmt)
 
         logger.info(
             "Document metadata upserted",
@@ -736,10 +693,7 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
            when file path indicates workspace uploads
         3. Default configured container
         """
-        workspace_container = os.getenv(
-            "AZURE_BLOB_STORAGE_WORKSPACE_CONTAINER_NAME",
-            "workspace",
-        )
+        workspace_container = settings.azure.WORKSPACE_CONTAINER_NAME
         if file_path and file_path.lower().startswith("other/"):
             # For workspace uploads, prefer workspace container unless caller provided
             # a non-default explicit container.
@@ -933,12 +887,11 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
                 workspace_id=workspace_id,
             )
 
-        # Reflect indexing completion on file task before final completion state.
+        # Reflect indexing completion on file task.
         await update_file_task_status(task_id, "indexed")
 
-        # 6. Update status to completed
+        # 6. Mark indexing job lifecycle completed (file task remains indexed).
         await create_or_update_indexing_job(job_id, workspace_id, file_path, "completed", retry_count, kb_id=kb_id)
-        await update_file_task_status(task_id, "completed")
 
         logger.info(
             "Indexing job completed",
