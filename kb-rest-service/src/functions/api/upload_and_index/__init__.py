@@ -11,6 +11,7 @@ This endpoint:
 """
 
 import base64
+import hashlib
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -27,9 +28,10 @@ from src.core import (
     require_auth,
 )
 from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
-from src.core.database import FileTask, Workspace, User, UserMap, get_async_session
+from src.core.database import DocumentMetadata, FileTask, Workspace, User, UserMap, get_async_session
 from src.helpers.file_validation import get_content_type
 from src.helpers.workspace_helpers import get_workspace_storage_paths
+from src.helpers.workspace_kb_helpers import get_kb_id_for_upload
 from src.shared import (
     create_error_response,
     create_success_response,
@@ -39,6 +41,17 @@ from src.shared import (
 from .payloads import FileTaskResponse, UploadAndIndexRequest, UploadAndIndexResponse
 
 logger = get_logger(__name__)
+
+
+def should_skip_duplicate_check() -> bool:
+    """Allow temporary duplicate-check bypass for debugging uploads."""
+    from src.core.config import settings
+
+    # Any truthy value enables bypass: true, 1, yes, on
+    raw = getattr(settings, "SKIP_DUPLICATE_CHECK", None)
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 # Helper functions to get configured adapters
@@ -152,8 +165,9 @@ async def check_user_permission(
 async def upload_file_to_storage(
     container: str,
     blob_path: str,
-    file_content: str,
+    file_content: Optional[str],
     file_name: str,
+    file_bytes: Optional[bytes] = None,
 ) -> Tuple[bool, Optional[str], Optional[int]]:
     """
     Upload file to cloud storage (platform-agnostic).
@@ -170,15 +184,19 @@ async def upload_file_to_storage(
     try:
         storage = get_storage_adapter(container_name=container)
 
-        # Decode base64 content
-        try:
-            # Handle data URL format
-            if file_content.startswith("data:"):
-                file_content = file_content.split(",", 1)[1]
+        # Decode base64 content only when raw bytes are not provided.
+        if file_bytes is None:
+            try:
+                if not file_content:
+                    return False, "Missing file content", None
 
-            file_bytes = base64.b64decode(file_content)
-        except Exception as e:
-            return False, f"Invalid base64 content: {str(e)}", None
+                # Handle data URL format
+                if file_content.startswith("data:"):
+                    file_content = file_content.split(",", 1)[1]
+
+                file_bytes = base64.b64decode(file_content)
+            except Exception as e:
+                return False, f"Invalid base64 content: {str(e)}", None
 
         # Calculate actual file size from decoded bytes
         file_size_bytes = len(file_bytes)
@@ -202,6 +220,56 @@ async def upload_file_to_storage(
     except Exception as e:
         logger.error("Storage upload failed", error=e, container=container, blob_path=blob_path)
         return False, str(e), None
+
+
+def decode_file_content(file_content: str) -> Tuple[bool, Optional[bytes], Optional[str]]:
+    """Decode request file content into raw bytes."""
+    try:
+        if not file_content:
+            return False, None, "Missing file content"
+
+        normalized = file_content.split(",", 1)[1] if file_content.startswith("data:") else file_content
+        return True, base64.b64decode(normalized), None
+    except Exception as e:
+        return False, None, f"Invalid base64 content: {str(e)}"
+
+
+def compute_content_hash(file_bytes: bytes) -> str:
+    """Compute stable SHA-256 hash for duplicate detection."""
+    return hashlib.sha256(file_bytes).hexdigest()
+
+
+async def is_duplicate_document(
+    workspace_id: int,
+    kb_id: Optional[int],
+    content_hash: str,
+) -> bool:
+    """Check if a document with the same content already exists in the target scope."""
+    try:
+        async with get_async_session() as session:
+            stmt = select(DocumentMetadata.id).where(DocumentMetadata.content_hash == content_hash)
+
+            if kb_id is not None:
+                # KG documents are shared by KB, so deduplicate at KB scope.
+                stmt = stmt.where(DocumentMetadata.kb_id == kb_id)
+            else:
+                # Non-KG documents are workspace-local, so deduplicate at workspace scope.
+                stmt = stmt.where(
+                    DocumentMetadata.workspace_id == workspace_id,
+                    DocumentMetadata.kb_id.is_(None),
+                )
+
+            result = await session.execute(stmt.limit(1))
+            return result.scalar_one_or_none() is not None
+    except Exception as e:
+        logger.error(
+            "Duplicate check failed",
+            error=e,
+            workspace_id=workspace_id,
+            kb_id=kb_id,
+        )
+        # Fail open so uploads are not blocked by transient read errors.
+        return False
 
 
 async def create_file_task(
@@ -289,6 +357,7 @@ async def enqueue_indexing_job(
     domain: str,
     kb_name: str,
     container_name: str,
+    kb_id: Optional[int] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Enqueue indexing job to message queue (platform-agnostic).
@@ -308,6 +377,7 @@ async def enqueue_indexing_job(
             "domain": domain,
             "kb_name": kb_name,
             "container_name": container_name,
+            "kb_id": kb_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -320,6 +390,7 @@ async def enqueue_indexing_job(
             task_id=task_id,
             message_id=message_id,
             queue=queue.queue_name,
+            kb_id=kb_id,
         )
 
         return True, None
@@ -413,6 +484,19 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
     domain = workspace_paths["domain"]
     kb_name = workspace_paths["kb_name"]
     is_kg = workspace_paths["is_kg"]
+    kb_id_for_upload = await get_kb_id_for_upload(workspace_id)
+
+    if is_kg and kb_id_for_upload is None:
+        logger.error(
+            "KG workspace has no linked KB for upload",
+            workspace_id=workspace_id,
+        )
+        return create_error_response(
+            message="KG workspace must have one linked knowledge base",
+            error_code="KB_MAPPING_MISSING",
+            status_code=400,
+            correlation_id=context.correlation_id,
+        )
 
     logger.info(
         "Processing upload request",
@@ -422,6 +506,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         domain=domain,
         kb_name=kb_name,
         is_kg=is_kg,
+        kb_id=kb_id_for_upload,
         file_count=len(payload.files),
     )
 
@@ -434,12 +519,38 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         blob_path = f"{upload_path_base}/{file_name}"
 
         try:
+            decode_ok, file_bytes, decode_error = decode_file_content(file.file_content)
+            if not decode_ok or file_bytes is None:
+                failed_files.append(f"{file_name}: {decode_error}")
+                continue
+
+            content_hash = compute_content_hash(file_bytes)
+
+            # Skip duplicates before storage upload and queueing unless bypass is enabled.
+            if should_skip_duplicate_check():
+                logger.warning(
+                    "Duplicate check bypassed for debugging",
+                    workspace_id=workspace_id,
+                    kb_id=kb_id_for_upload,
+                    file_name=file_name,
+                )
+            elif await is_duplicate_document(workspace_id, kb_id_for_upload, content_hash):
+                logger.info(
+                    "Duplicate document detected - skipping indexing",
+                    workspace_id=workspace_id,
+                    kb_id=kb_id_for_upload,
+                    file_name=file_name,
+                )
+                failed_files.append(f"{file_name}: Duplicate document already indexed")
+                continue
+
             # 1. Upload to storage (returns calculated file size)
             success, error, file_size_bytes = await upload_file_to_storage(
                 container=container_name,
                 blob_path=blob_path,
-                file_content=file.file_content,
+                file_content=None,
                 file_name=file_name,
+                file_bytes=file_bytes,
             )
 
             if not success:
@@ -473,6 +584,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
                 domain=domain,
                 kb_name=kb_name,
                 container_name=container_name,
+                kb_id=kb_id_for_upload,
             )
 
             if not success:

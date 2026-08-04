@@ -176,6 +176,17 @@ class AzureSettings(BaseModel):
             if alias_value:
                 values['INDEXING_QUEUE_NAME'] = alias_value
 
+        # Backward-compatible aliases for Document Intelligence variable names.
+        if values.get('AZURE_DOC_INTELLIGENCE_ENDPOINT') in (None, ""):
+            alias_endpoint = os.getenv('AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT')
+            if alias_endpoint:
+                values['AZURE_DOC_INTELLIGENCE_ENDPOINT'] = alias_endpoint
+
+        if values.get('AZURE_DOC_INTELLIGENCE_KEY') in (None, ""):
+            alias_key = os.getenv('AZURE_DOCUMENT_INTELLIGENCE_KEY')
+            if alias_key:
+                values['AZURE_DOC_INTELLIGENCE_KEY'] = alias_key
+
         return values
 
 
@@ -246,6 +257,11 @@ class LightRAGSettings(BaseModel):
     CHUNK_OVERLAP_TOKEN_SIZE: int = Field(default=200)
     GRAPH_STORAGE_TYPE: str = Field(default="Neo4JStorage")
     VECTOR_STORAGE_TYPE: str = Field(default="PGVectorStorage")
+    USE_EMBEDDING_MODEL_SUFFIX: bool = Field(default=False)
+    EMBEDDING_TIMEOUT_SECONDS: int = Field(default=120)
+    EMBEDDING_FUNC_MAX_ASYNC: int = Field(default=4)
+    EMBEDDING_BATCH_NUM: int = Field(default=4)
+    INSERT_MODE: str = Field(default="custom_chunks")
 
     # Azure OpenAI LLM settings (copy from LLMSettings for easier access)
     AZURE_OPENAI_LLM_API_KEY: Optional[str] = Field(default=None)
@@ -274,6 +290,11 @@ class LightRAGSettings(BaseModel):
             'CHUNK_OVERLAP_TOKEN_SIZE': 'LIGHTRAG_CHUNK_OVERLAP_TOKEN_SIZE',
             'GRAPH_STORAGE_TYPE': 'LIGHTRAG_GRAPH_STORAGE_TYPE',
             'VECTOR_STORAGE_TYPE': 'LIGHTRAG_VECTOR_STORAGE_TYPE',
+            'USE_EMBEDDING_MODEL_SUFFIX': 'LIGHTRAG_USE_EMBEDDING_MODEL_SUFFIX',
+            'EMBEDDING_TIMEOUT_SECONDS': 'LIGHTRAG_EMBEDDING_TIMEOUT_SECONDS',
+            'EMBEDDING_FUNC_MAX_ASYNC': 'LIGHTRAG_EMBEDDING_FUNC_MAX_ASYNC',
+            'EMBEDDING_BATCH_NUM': 'LIGHTRAG_EMBEDDING_BATCH_NUM',
+            'INSERT_MODE': 'LIGHTRAG_INSERT_MODE',
             'AZURE_OPENAI_LLM_API_KEY': 'AZURE_OPENAI_LLM_MODEL_API_KEY',
             'AZURE_OPENAI_LLM_API_BASE': 'AZURE_OPENAI_LLM_MODEL_API_BASE',
             'AZURE_OPENAI_LLM_API_VERSION': 'AZURE_OPENAI_LLM_MODEL_API_VERSION',
@@ -290,8 +311,20 @@ class LightRAGSettings(BaseModel):
                 env_value = os.getenv(env_name)
                 if env_value is not None:
                     # Convert to int for numeric fields
-                    if field_name in ['EMBEDDING_DIM', 'MAX_TOKEN_SIZE', 'CHUNK_TOKEN_SIZE', 'CHUNK_OVERLAP_TOKEN_SIZE']:
+                    if field_name in [
+                        'EMBEDDING_DIM',
+                        'MAX_TOKEN_SIZE',
+                        'CHUNK_TOKEN_SIZE',
+                        'CHUNK_OVERLAP_TOKEN_SIZE',
+                        'EMBEDDING_TIMEOUT_SECONDS',
+                        'EMBEDDING_FUNC_MAX_ASYNC',
+                        'EMBEDDING_BATCH_NUM',
+                    ]:
                         values[field_name] = int(env_value)
+                    elif field_name == 'USE_EMBEDDING_MODEL_SUFFIX':
+                        values[field_name] = str(env_value).strip().lower() in {'1', 'true', 'yes', 'on'}
+                    elif field_name == 'INSERT_MODE':
+                        values[field_name] = str(env_value).strip().lower()
                     else:
                         values[field_name] = env_value
 

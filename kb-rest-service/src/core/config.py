@@ -372,6 +372,9 @@ class Settings(BaseSettings):
         default=10485760, env="MAX_REQUEST_SIZE"
     )  # 10MB default
 
+    # Debug toggles
+    SKIP_DUPLICATE_CHECK: bool = Field(default=False, env="SKIP_DUPLICATE_CHECK")
+
     # Nested settings
     database: DatabaseSettings = DatabaseSettings()
     azure: AzureSettings = AzureSettings()

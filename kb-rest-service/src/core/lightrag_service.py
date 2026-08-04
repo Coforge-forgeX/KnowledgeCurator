@@ -477,17 +477,19 @@ class LightRAGService:
 
             from src.core.database import get_async_session, DocumentMetadata, FileTask
             from sqlalchemy import select, func, or_
-            from src.helpers.workspace_kb_helpers import get_workspace_kb_ids
+            from src.helpers.workspace_kb_helpers import get_workspace_kb_ids, is_kg_workspace
 
             async with get_async_session() as session:
                 # Build base query for filtering
                 if workspace_id:
                     # Get KB IDs linked to this workspace
                     kb_ids = await get_workspace_kb_ids(workspace_id)
+                    workspace_is_kg = await is_kg_workspace(workspace_id)
 
                     logger.debug(
                         "Fetching documents for workspace",
                         workspace_id=workspace_id,
+                        workspace_is_kg=workspace_is_kg,
                         linked_kb_count=len(kb_ids),
                     )
 
@@ -503,6 +505,7 @@ class LightRAGService:
                 else:
                     # No workspace filter, return all documents
                     base_filter = True
+                    workspace_is_kg = False
 
                 # Count total documents (for pagination metadata)
                 count_query = select(func.count(DocumentMetadata.id)).where(base_filter)
@@ -542,13 +545,27 @@ class LightRAGService:
                             for doc in docs if doc.file_task_id
                         }
 
+                def resolve_source_type(doc: DocumentMetadata) -> str:
+                    if workspace_id is None:
+                        return "kb_shared" if doc.kb_id else "workspace_only"
+
+                    # Always show locally uploaded docs as workspace docs for the current workspace.
+                    if doc.workspace_id == workspace_id:
+                        return "workspace_doc"
+
+                    if doc.kb_id:
+                        # KG workspace explicitly labels non-local docs as KB-shared.
+                        return "kb_doc" if workspace_is_kg else "kb_shared"
+
+                    return "workspace_only"
+
                 documents = [
                     {
                         "doc_id": doc.full_doc_id,
                         "file_name": doc.file_name,
                         "workspace_id": doc.workspace_id,
                         "kb_id": doc.kb_id,
-                        "source_type": "kb_shared" if doc.kb_id else "workspace_only",
+                        "source_type": resolve_source_type(doc),
                         "file_path": doc.file_path,
                         "file_size_bytes": doc.file_size_bytes,
                         "chunk_count": doc.total_chunks,

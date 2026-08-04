@@ -7,8 +7,10 @@ and updates file_tasks status.
 
 import asyncio
 import base64
+import hashlib
 import io
 import inspect
+import json
 import os
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -51,13 +53,23 @@ async def initialize_lightrag(domain: str, kb_name: str) -> LightRAG:
     os.environ['POSTGRES_DATABASE'] = settings.database.POSTGRESQL_DATABASE_DATABASE
     os.environ['POSTGRES_PORT'] = str(settings.database.POSTGRESQL_DATABASE_PORT)
 
+    # Control LightRAG embedding worker timeout/concurrency for large documents.
+    os.environ['EMBEDDING_TIMEOUT'] = str(settings.lightrag.EMBEDDING_TIMEOUT_SECONDS)
+    os.environ['EMBEDDING_FUNC_MAX_ASYNC'] = str(settings.lightrag.EMBEDDING_FUNC_MAX_ASYNC)
+    os.environ['EMBEDDING_BATCH_NUM'] = str(settings.lightrag.EMBEDDING_BATCH_NUM)
+
     # Set Neo4j environment variables for LightRAG
     os.environ['NEO4J_URI'] = settings.database.NEO4J_DATABASE_NEO4J_BOLT_URI
     os.environ['NEO4J_USERNAME'] = settings.database.NEO4J_DATABASE_NEO4J_USER
     os.environ['NEO4J_PASSWORD'] = settings.database.NEO4J_DATABASE_NEO4J_PASSWORD
 
-    # Provide model_name so LightRAG can suffix vector tables for workspace isolation.
-    embedding_model_name = settings.lightrag.AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+    # Keep model-suffixed tables optional for backward compatibility with legacy
+    # deployments that already rely on base table names (for example lightrag_vdb_chunks).
+    embedding_model_name = (
+        settings.lightrag.AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+        if settings.lightrag.USE_EMBEDDING_MODEL_SUFFIX
+        else None
+    )
 
     # Initialize LightRAG with Neo4j + PostgreSQL
     rag = LightRAG(
@@ -74,6 +86,9 @@ async def initialize_lightrag(domain: str, kb_name: str) -> LightRAG:
         vector_storage=settings.lightrag.VECTOR_STORAGE_TYPE,
         chunk_token_size=settings.lightrag.CHUNK_TOKEN_SIZE,
         chunk_overlap_token_size=settings.lightrag.CHUNK_OVERLAP_TOKEN_SIZE,
+        embedding_batch_num=settings.lightrag.EMBEDDING_BATCH_NUM,
+        embedding_func_max_async=settings.lightrag.EMBEDDING_FUNC_MAX_ASYNC,
+        default_embedding_timeout=settings.lightrag.EMBEDDING_TIMEOUT_SECONDS,
     )
 
     await rag.initialize_storages()
@@ -204,8 +219,14 @@ async def extract_text_from_file(
 
         elif ext == ".pdf":
             # Use Azure Document Intelligence for PDF
-            endpoint = settings.azure.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
-            api_key = settings.azure.AZURE_DOCUMENT_INTELLIGENCE_KEY
+            endpoint = (
+                getattr(settings.azure, "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", None)
+                or getattr(settings.azure, "AZURE_DOC_INTELLIGENCE_ENDPOINT", None)
+            )
+            api_key = (
+                getattr(settings.azure, "AZURE_DOCUMENT_INTELLIGENCE_KEY", None)
+                or getattr(settings.azure, "AZURE_DOC_INTELLIGENCE_KEY", None)
+            )
 
             if not endpoint or not api_key:
                 return False, None, "Document Intelligence not configured"
@@ -239,7 +260,10 @@ async def extract_text_from_file(
 
 
 async def index_document_with_lightrag(
-    rag: LightRAG, text_content: str, file_path: str
+    rag: LightRAG,
+    text_content: str,
+    file_path: str,
+    full_doc_id: str,
 ) -> Tuple[bool, Optional[int], Optional[str]]:
     """
     Index document content into LightRAG.
@@ -248,30 +272,40 @@ async def index_document_with_lightrag(
         (success, chunk_count, error_message)
     """
     try:
-        # Chunk text (2000 chars per chunk)
-        chunk_size = 2000
-        chunks = [
-            text_content[i:i+chunk_size]
-            for i in range(0, len(text_content), chunk_size)
+        # Pre-compute chunks with LightRAG's native chunker so order and count
+        # are deterministic and aligned with storage.
+        chunking_result = rag.chunking_func(
+            rag.tokenizer,
+            text_content,
+            None,
+            False,
+            rag.chunk_overlap_token_size,
+            rag.chunk_token_size,
+        )
+        if inspect.isawaitable(chunking_result):
+            chunking_result = await chunking_result
+        ordered_chunks = [
+            chunk.get("content", "")
+            for chunk in chunking_result
+            if isinstance(chunk, dict) and chunk.get("content")
         ]
+        chunk_count = len(ordered_chunks)
 
-        # Insert chunks into LightRAG
-        for idx, chunk in enumerate(chunks):
-            await rag.ainsert(input=chunk, file_paths=[file_path])
-            logger.debug(
-                "Chunk indexed",
-                chunk_num=idx + 1,
-                total_chunks=len(chunks),
-                file_path=file_path
-            )
+        # Insert explicit chunk list with stable doc_id to preserve chunk_order_index
+        # across retries and avoid duplicate-doc queue side effects.
+        await rag.ainsert_custom_chunks(
+            full_text=text_content,
+            text_chunks=ordered_chunks,
+            doc_id=full_doc_id,
+        )
 
         logger.info(
             "Document indexed successfully",
-            chunk_count=len(chunks),
+            chunk_count=chunk_count,
             file_path=file_path
         )
 
-        return True, len(chunks), None
+        return True, chunk_count, None
 
     except Exception as e:
         logger.error("Indexing failed", error_msg=str(e), file_path=file_path)
@@ -379,6 +413,83 @@ async def get_file_task_storage_hints(task_id: Optional[int]) -> Tuple[Optional[
         return None, None
 
 
+async def resolve_kb_id_for_workspace(
+    workspace_id: Optional[int],
+    kb_id: Optional[int],
+) -> Optional[int]:
+    """Resolve kb_id for KG workspaces only.
+
+    Priority:
+    1. If workspace is not KG, return None
+    2. Message-provided kb_id (KG only)
+    3. First active KB mapping for workspace (KG only)
+    """
+    if workspace_id is None:
+        return None
+
+    try:
+        from src.core.database import get_async_session
+        from sqlalchemy import text
+
+        async with get_async_session() as session:
+            workspace_type_stmt = text(
+                """
+                SELECT keywords
+                                FROM workspace_master
+                WHERE workspace_id = :workspace_id
+                  AND is_active = TRUE
+                LIMIT 1
+                """
+            )
+            workspace_type_result = await session.execute(
+                workspace_type_stmt,
+                {"workspace_id": workspace_id},
+            )
+            workspace_type_row = workspace_type_result.first()
+            workspace_type = (workspace_type_row[0] or "").strip().lower() if workspace_type_row else ""
+
+            if workspace_type != "kg":
+                logger.debug(
+                    "Workspace is not KG; skipping kb_id",
+                    workspace_id=workspace_id,
+                    workspace_type=workspace_type or None,
+                )
+                return None
+
+            # If workspace is KG and kb_id is already provided, keep it.
+            if kb_id is not None:
+                return kb_id
+
+            stmt = text(
+                """
+                SELECT kb_id
+                FROM workspace_industry_intent_mapping
+                WHERE workspace_id = :workspace_id
+                  AND is_active = TRUE
+                  AND kb_id IS NOT NULL
+                ORDER BY kb_id
+                LIMIT 1
+                """
+            )
+            result = await session.execute(stmt, {"workspace_id": workspace_id})
+            row = result.first()
+            resolved_kb_id = row[0] if row else None
+            if resolved_kb_id is not None:
+                logger.info(
+                    "Resolved kb_id from workspace mapping",
+                    workspace_id=workspace_id,
+                    kb_id=resolved_kb_id,
+                )
+            return resolved_kb_id
+    except Exception as e:
+        logger.warning(
+            "Failed to resolve kb_id from workspace mapping",
+            workspace_id=workspace_id,
+            error_msg=str(e),
+        )
+        return None
+
+
 async def create_or_update_indexing_job(
     job_id: str,
     workspace_id: int,
@@ -464,6 +575,127 @@ async def create_or_update_indexing_job(
             "Failed to track indexing job",
             error_msg=str(e),
             job_id=job_id
+        )
+        return False
+
+
+def build_full_doc_id(workspace_id: int, file_name: str) -> str:
+    """Build deterministic document id used for metadata tracking."""
+    digest = hashlib.md5(f"{file_name}{workspace_id}".encode("utf-8")).hexdigest()[:12]
+    return f"doc-{digest}"
+
+
+async def upsert_document_metadata(
+    *,
+    full_doc_id: str,
+    file_task_id: int,
+    workspace_id: int,
+    kb_id: Optional[int],
+    file_name: str,
+    file_path: str,
+    file_size_bytes: int,
+    content_hash: str,
+    total_chunks: int,
+    doc_type: Optional[str],
+    metadata: Optional[dict] = None,
+) -> bool:
+    """Insert or update document metadata row for workspace/KB retrieval and dedupe."""
+    try:
+        from src.core.database import get_async_session
+        from sqlalchemy import text
+
+        async with get_async_session() as session:
+            stmt = text(
+                """
+                INSERT INTO document_metadata (
+                    full_doc_id,
+                    file_task_id,
+                    workspace_id,
+                    kb_id,
+                    file_name,
+                    file_path,
+                    file_size_bytes,
+                    content_hash,
+                    total_chunks,
+                    doc_type,
+                    metadata,
+                    indexed_at,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    :full_doc_id,
+                    :file_task_id,
+                    :workspace_id,
+                    :kb_id,
+                    :file_name,
+                    :file_path,
+                    :file_size_bytes,
+                    :content_hash,
+                    :total_chunks,
+                    :doc_type,
+                    :metadata,
+                    NOW(),
+                    NOW(),
+                    NOW()
+                )
+                ON CONFLICT (full_doc_id)
+                DO UPDATE SET
+                    file_task_id = EXCLUDED.file_task_id,
+                    workspace_id = EXCLUDED.workspace_id,
+                    kb_id = EXCLUDED.kb_id,
+                    file_name = EXCLUDED.file_name,
+                    file_path = EXCLUDED.file_path,
+                    file_size_bytes = EXCLUDED.file_size_bytes,
+                    content_hash = EXCLUDED.content_hash,
+                    total_chunks = EXCLUDED.total_chunks,
+                    doc_type = EXCLUDED.doc_type,
+                    metadata = EXCLUDED.metadata,
+                    indexed_at = EXCLUDED.indexed_at,
+                    updated_at = NOW()
+                """
+            )
+
+            params = {
+                "full_doc_id": full_doc_id,
+                "file_task_id": file_task_id,
+                "workspace_id": workspace_id,
+                "kb_id": kb_id,
+                "file_name": file_name,
+                "file_path": file_path,
+                "file_size_bytes": file_size_bytes,
+                "content_hash": content_hash,
+                "total_chunks": total_chunks,
+                "doc_type": doc_type,
+                "metadata": metadata or {},
+            }
+
+            try:
+                await session.execute(stmt, params)
+            except Exception as e:
+                # Some environments still have document_metadata.metadata as TEXT.
+                # Retry with a serialized JSON string for compatibility.
+                if "'dict' object has no attribute 'encode'" not in str(e):
+                    raise
+                fallback_params = dict(params)
+                fallback_params["metadata"] = json.dumps(params["metadata"])
+                await session.execute(stmt, fallback_params)
+
+        logger.info(
+            "Document metadata upserted",
+            full_doc_id=full_doc_id,
+            workspace_id=workspace_id,
+            kb_id=kb_id,
+            total_chunks=total_chunks,
+        )
+        return True
+    except Exception as e:
+        logger.error(
+            "Failed to upsert document metadata",
+            error_msg=str(e),
+            full_doc_id=full_doc_id,
+            workspace_id=workspace_id,
+            kb_id=kb_id,
         )
         return False
 
@@ -572,6 +804,8 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
         return {"success": False, "error": error_msg, "non_retryable": True}
 
     try:
+        kb_id = await resolve_kb_id_for_workspace(workspace_id=workspace_id, kb_id=kb_id)
+
         # Enrich missing queue metadata from source file_tasks row.
         file_task_container, file_task_path = await get_file_task_storage_hints(task_id)
         if not container_name and file_task_container:
@@ -624,6 +858,11 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
 
         await create_or_update_indexing_job(job_id, workspace_id, file_path, "downloaded", retry_count, kb_id=kb_id)
 
+        # Content hash is used by kb-rest-service to block duplicate indexing.
+        content_hash = hashlib.sha256(file_bytes).hexdigest()
+        file_name = os.path.basename(file_path) if file_path else f"task_{task_id}"
+        doc_type = os.path.splitext(file_name)[1].lstrip(".").lower() or None
+
         # 3. Extract text from file
         await create_or_update_indexing_job(job_id, workspace_id, file_path, "extracting", retry_count, kb_id=kb_id)
 
@@ -645,11 +884,16 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
         await create_or_update_indexing_job(job_id, workspace_id, file_path, "initializing", retry_count, kb_id=kb_id)
         rag = await initialize_lightrag(domain, kb_name)
 
+        full_doc_id = build_full_doc_id(workspace_id=workspace_id, file_name=file_name)
+
         # 5. Index document
         await create_or_update_indexing_job(job_id, workspace_id, file_path, "indexing", retry_count, kb_id=kb_id)
 
         success, chunk_count, error = await index_document_with_lightrag(
-            rag, text_content, file_path
+            rag,
+            text_content,
+            file_path,
+            full_doc_id,
         )
         if not success:
             await create_or_update_indexing_job(job_id, workspace_id, file_path, "failed", retry_count, error, kb_id=kb_id)
@@ -661,6 +905,33 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
             checkpoint={"chunk_count": chunk_count},
             kb_id=kb_id
         )
+
+        metadata_saved = await upsert_document_metadata(
+            full_doc_id=full_doc_id,
+            file_task_id=task_id,
+            workspace_id=workspace_id,
+            kb_id=kb_id,
+            file_name=file_name,
+            file_path=file_path,
+            file_size_bytes=len(file_bytes),
+            content_hash=content_hash,
+            total_chunks=chunk_count,
+            doc_type=doc_type,
+            metadata={
+                "job_id": job_id,
+                "domain": domain,
+                "kb_name": kb_name,
+                "indexed_by": "indexer-service",
+            },
+        )
+
+        if not metadata_saved:
+            logger.warning(
+                "Proceeding despite metadata upsert failure",
+                job_id=job_id,
+                task_id=task_id,
+                workspace_id=workspace_id,
+            )
 
         # Reflect indexing completion on file task before final completion state.
         await update_file_task_status(task_id, "indexed")

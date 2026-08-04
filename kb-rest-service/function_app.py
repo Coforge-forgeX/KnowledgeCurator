@@ -4,7 +4,6 @@ This follows the Python v2 programming model so `func start` lists each route,
 similar to user-mgmnt-service.
 """
 
-import asyncio
 import os
 import sys
 
@@ -36,75 +35,71 @@ async def _handle(req: func.HttpRequest, context: func.Context) -> func.HttpResp
     return func.HttpResponse(body=body, status_code=status_code, headers=headers, mimetype=mimetype)
 
 
-def _run(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return asyncio.run(_handle(req, context))
-
-
 @app.route(route="health", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
-def health(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def health(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/v2/kb/query", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-def kb_query(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def kb_query(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/v2/kb/chat", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-def kb_chat(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def kb_chat(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/v2/kb/index", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-def kb_index(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def kb_index(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/v2/documents/upload", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-def upload_and_index(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def upload_and_index(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/v2/documents/status", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-def check_indexing_status(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def check_indexing_status(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/v2/documents/list", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-def list_indexed_documents(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def list_indexed_documents(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/v2/documents", auth_level=func.AuthLevel.ANONYMOUS, methods=["DELETE"])
-def delete_documents(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def delete_documents(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/v2/kb/graph", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-def get_knowledge_graph(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def get_knowledge_graph(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/v2/llm/route", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-def llm_route(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def llm_route(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/v2/query-kb", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-def query_kb_v2(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def query_kb_v2(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/query-kb", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-def query_kb_legacy(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def query_kb_legacy(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/v2/sharepoint/list", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
-def sharepoint_list_v2(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def sharepoint_list_v2(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
 
 
 @app.route(route="api/sharepoint/list", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
-def sharepoint_list_legacy(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return _run(req, context)
+async def sharepoint_list_legacy(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
