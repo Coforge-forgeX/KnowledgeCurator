@@ -52,7 +52,14 @@ class IntentDetector:
             "help"
         ]
         self.examples = {
-            "search_kb": ['search', 'find', 'lookup','look for','what is','tell me about','what are','information on','information about','describe'],
+            "search_kb": [
+                'search', 'find', 'lookup', 'look for', 'what is', 'tell me about', 'what are', 
+                'information on', 'information about', 'describe', 'explain', 'how does', 'how to',
+                'create an SOP', 'create a document', 'generate', 'draft', 'write about', 
+                'produce', 'develop', 'build', 'provide information', 'can you create',
+                'can you tell me', 'can you explain', 'can you describe', 'can you find',
+                'give me details', 'show me', 'list', 'summarize', 'can you'
+            ],
             "upload_file": ['upload', 'add file', 'add document', 'attach file', 'attach document','import file','import document','index file','index document'],
             "add_entity": ['add entity', 'create entity', 'new entity','define entity','add new entity'],
             "delete_entity": ['delete entity', 'remove entity', 'discard entity','erase entity','delete the entity','remove the entity'],
@@ -60,29 +67,36 @@ class IntentDetector:
             "update_entity": ['update entity', 'modify entity', 'change entity','edit entity','update the entity','modify the entity'],
             "delete_file": ['delete file', 'remove file', 'delete a file','discard file','erase file','delete the file','remove the file'],
             "greeting": ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening'],
-            "help": ['help', 'assist me', 'support', 'i need help', 'can you help me','what can you do','what are your capabilities']
+            "help": ['what can you do', 'what are your capabilities', 'how do I use this', 'what commands', 'what features', 'show me commands']
         }
         self.llm_classifier = AzureCustomLLM()
 
     def detect_intent(self, user_message: str) -> str:
         # Build a prompt with examples for each intent
         prompt = """
-            You are an intent classifier for a chatbot. Classify the user message into one of these intents:
-            - search_kb
-            - upload_file
-            - add_entity
-            - delete_entity
-            - update_entity
-            - delete_file
-            - greeting
-            - help
+You are an intent classifier for a knowledge base chatbot. Classify the user message into ONE of these intents:
 
-            Respond with only the intent label, nothing else.
-            Here are example phrases for each intent:
-            """
+- search_kb: User wants to search, find, retrieve, or CREATE content/documents based on knowledge base data
+- upload_file: User wants to upload/add/index a file or document
+- add_entity: User wants to add a new entity to the knowledge base
+- delete_entity: User wants to delete/remove an entity
+- update_entity: User wants to update/modify an existing entity
+- delete_file: User wants to delete/remove a file
+- greeting: User is greeting (hello, hi, etc.)
+- help: User is asking what the BOT ITSELF can do (meta-questions about bot capabilities/commands)
+
+IMPORTANT DISTINCTIONS:
+- "Can you create an SOP about X" = search_kb (searching knowledge to create content)
+- "What can you do?" = help (asking about bot features)
+- "Help me with X topic" = search_kb (searching for information on topic X)
+- "Can you help me understand X" = search_kb (searching/explaining topic X)
+
+Respond with ONLY the intent label, nothing else.
+
+Example phrases for each intent:"""
         
         for intent, phrases in self.examples.items():
-            prompt += f"\n{intent}: {', '.join(phrases)}"
+            prompt += f"\n{intent}: {', '.join(phrases[:10])}"  # Limit to first 10 examples for brevity
         
         prompt += f"\n\nUser message: \"{user_message}\"\nIntent:"
 
