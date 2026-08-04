@@ -1068,8 +1068,8 @@ async def sync_trustai_workspaces():
                         "block_message": "Content blocked by guardrails"
                     }
                 }
-                print(f"trust ai payload for the {workspace_id}:{creator_id} following configuration:\n {trustai_config} \n\n")
-                logger.info(f"trust ai payload for the {workspace_id}:{creator_id} following configuration:\n {trustai_config} \n\n")
+                # print(f"trust ai payload for the {workspace_id}:{creator_id} following configuration:\n {trustai_config} \n\n")
+                # logger.info(f"trust ai payload for the {workspace_id}:{creator_id} following configuration:\n {trustai_config} \n\n")
                 await register_workspace_with_trustai(
                     workspace_id=str(workspace_id),
                     trustai_config=trustai_config,
