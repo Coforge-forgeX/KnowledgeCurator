@@ -963,6 +963,141 @@ async def register_workspace_with_trustai(workspace_id, trustai_config, db_url, 
     print(f"User ID: {result['user_id']}")
     return result
 
+
+async def sync_trustai_workspaces():
+    """
+    Sync workspaces with TrustAI on server startup.
+    Finds workspaces in workspace_master not registered with TrustAI and registers them.
+    For backward compatibility with existing workspaces.
+    """
+    import logging
+    from sqlalchemy.orm import aliased
+    from common_adapters.trustai.models import TrustAIWorkspaceConfig
+    
+    logger = logging.getLogger(__name__)
+    logger.info("🔄 Starting TrustAI workspace sync...")
+    
+    if not server.trustai_workspace_integration or not server.trustai_db_manager:
+        logger.warning("TrustAI integration not initialized, skipping sync")
+        return
+    
+    session = db.Session()
+    try:
+        # Find workspaces not registered with TrustAI using LEFT JOIN (ORM)
+        # Get all registered workspace_ids from trustai_workspace_config
+        with server.trustai_db_manager.get_session() as trustai_session:
+            registered_workspace_ids = [
+                r.workspace_id for r in trustai_session.query(TrustAIWorkspaceConfig.workspace_id).all()
+            ]
+        
+        # Query workspace_master for active workspaces not in registered list
+        unregistered_query = session.query(
+            db.Workspace.workspace_id,
+            db.Workspace.workspace_name
+        ).filter(
+            db.Workspace.is_active == True,
+            ~db.Workspace.workspace_id.in_(registered_workspace_ids) if registered_workspace_ids else True
+        )
+        
+        unregistered_workspaces = unregistered_query.all()
+        
+        if not unregistered_workspaces:
+            logger.info("✅ All workspaces already registered with TrustAI")
+            return
+        
+        logger.info(f"Found {len(unregistered_workspaces)} workspaces to register with TrustAI")
+        
+        db_url = get_postgres_connection_string()
+        if not db_url:
+            logger.error("PostgreSQL connection string not available, skipping TrustAI sync")
+            return
+        
+        registered_count = 0
+        failed_count = 0
+        
+        for workspace in unregistered_workspaces:
+            workspace_id = workspace.workspace_id
+            workspace_name = workspace.workspace_name
+            
+            try:
+                # Get agent_ids from workspace_agents_mapping_2 (ORM)
+                agent_mappings = session.query(db.AgentMap.agent_id).filter(
+                    db.AgentMap.workspace_id == workspace_id,
+                    db.AgentMap.is_active == True
+                ).all()
+                agent_ids = [m.agent_id for m in agent_mappings]
+                
+                # Get workspace admin (creator) info using ORM join
+                admin_result = session.query(
+                    db.User.email,
+                    db.UserMap.user_id
+                ).join(
+                    db.User, db.UserMap.user_id == db.User.id
+                ).filter(
+                    db.UserMap.workspace_id == workspace_id,
+                    db.UserMap.role_id == Role.WS_ADMIN.id,
+                    db.UserMap.is_active == True
+                ).first()
+                
+                admin_email = admin_result.email if admin_result else ""
+                creator_id = admin_result.user_id if admin_result else None
+                
+                # Build DEFAULT_TRUSTAI_CONFIG
+                trustai_config = {
+                    "application": {
+                        "name": str(workspace_id),
+                        "description": f"Auto-registered workspace: {workspace_name}",
+                        "line_of_business": "general",
+                        "technical_architect": "",
+                        "business_sponsor": ""
+                    },
+                    "guardrails": [
+                        "BSI_DETECTION",
+                        "TOXIC",
+                        "COMPETITOR_CHECK",
+                        "PII",
+                        "TOKEN_QUOTA",
+                        "PROMPT_INJECTION",
+                        "BIAS_DETECTION",
+                        "FACTUAL_ACCURACY",
+                        "CODE_HALLUCINATION"
+                    ],
+                    "system_config": {
+                        "guardrail_model": "gpt-4-1",
+                        "admin_emails": [admin_email] if admin_email else [],
+                        "is_guardrail_notification_enabled": "true",
+                        "input_guardrail_execution_mode": "sync",
+                        "output_guardrail_execution_mode": "sync",
+                        "warning_message": "Warning: Content flagged by guardrails",
+                        "block_message": "Content blocked by guardrails"
+                    }
+                }
+                
+                # Register workspace with TrustAI
+                await register_workspace_with_trustai(
+                    workspace_id=str(workspace_id),
+                    trustai_config=trustai_config,
+                    db_url=db_url,
+                    agent_ids=agent_ids,
+                    user_id=creator_id
+                )
+                
+                registered_count += 1
+                logger.info(f"  ✅ Registered workspace {workspace_id} ({workspace_name}) with TrustAI")
+                
+            except Exception as e:
+                failed_count += 1
+                logger.error(f"  ❌ Failed to register workspace {workspace_id}: {e}")
+                continue
+        
+        logger.info(f"🏁 TrustAI sync complete: {registered_count} registered, {failed_count} failed")
+        
+    except Exception as e:
+        logger.error(f"Error during TrustAI workspace sync: {e}")
+    finally:
+        session.close()
+
+
 @mcp.tool()
 @require_auth
 async def create_workspace(payload):
