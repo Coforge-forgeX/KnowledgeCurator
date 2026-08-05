@@ -1,6 +1,6 @@
 from kbcurator.utils.access_validation import validate_user_workspace_access
 from kbcurator.utils.permission import is_admin, get_user_role_id
-from kbcurator.server.server import mcp
+from kbcurator.server.server import mcp , get_postgres_connection_string
 import psycopg2
 from configparser import ConfigParser
 from sqlalchemy import func
@@ -13,6 +13,9 @@ from kbcurator.utils.auth import create_jwt_token, verify_jwt_token, create_refr
 from kbcurator.utils.request_context import request_var
 from sqlalchemy import select, func as sql_func
 from datetime import datetime, timezone
+import os
+from urllib.parse import quote_plus
+import kbcurator.server.server as server
 
 # --- New Import for Password Hashing ---
 from passlib.hash import argon2
@@ -745,6 +748,7 @@ def _extract_workspace_payload(payload: dict) -> dict:
         'kb_ids': payload.get('kb_ids', []),
         'kb_title': payload.get('kb_title', None),
         'kb_description': payload.get('kb_description', None),
+        'trustai_config': payload.get('trustai_config',None)
     }
 
 
@@ -932,10 +936,165 @@ def _add_workspace_mappings(session, workspace_id: int, fields: dict, kb_ids: li
         for tid in tool_ids
     ])
 
+#trustai helper method
+
+    
+async def register_workspace_with_trustai(workspace_id, trustai_config, db_url, agent_ids, user_id):
+    """
+    Register workspace with TrustAI during workspace creation.
+    
+    Args:
+        workspace_id: UUID string of the workspace
+        trustai_config: Configuration dict from UI
+        db_url: PostgreSQL connection string
+    """ 
+    result = await server.trustai_workspace_integration.register_workspace(
+    workspace_id=workspace_id,
+    trustai_config=trustai_config,
+    agent_ids=agent_ids,
+    user_id=user_id)
+    print("\n" + "="*60)
+    print("REGISTRATION COMPLETE")
+    print("="*60)
+    print(f"\nWORKSPACE ID: {workspace_id}")
+    print(f"\nApp ID: {result['app_id']}")
+    print(f"API Key: {result['api_key'][:20]}...")
+    print(f"Agent IDs: {result['agent_ids']}")
+    print(f"User ID: {result['user_id']}")
+    return result
+
+
+async def sync_trustai_workspaces():
+    """
+    Sync workspaces with TrustAI on server startup.
+    Finds workspaces in workspace_master not registered with TrustAI and registers them.
+    For backward compatibility with existing workspaces.
+    """
+    import logging
+    from common_adapters.trustai.models import TrustAIWorkspaceConfig
+    
+    logger = logging.getLogger(__name__)
+    logger.info("🔄 Starting TrustAI workspace sync...")
+    
+    if not server.trustai_workspace_integration or not server.trustai_db_manager:
+        logger.warning("TrustAI integration not initialized, skipping sync")
+        return
+    
+    session = db.Session()
+    try:
+        # Find workspaces not registered with TrustAI using LEFT JOIN (ORM)
+        # Get all registered workspace_ids from trustai_workspace_config
+        with server.trustai_db_manager.get_session() as trustai_session:
+            registered_workspace_ids = [
+                r.workspace_id for r in trustai_session.query(TrustAIWorkspaceConfig.workspace_id).all()
+            ]
+        
+        # Query workspace_master for active workspaces not in registered list
+        unregistered_query = session.query(
+            db.Workspace.workspace_id,
+            db.Workspace.workspace_name
+        ).filter(
+            db.Workspace.is_active == True,
+            ~db.Workspace.workspace_id.in_(registered_workspace_ids) if registered_workspace_ids else True
+        )
+        
+        unregistered_workspaces = unregistered_query.all()
+        
+        if not unregistered_workspaces:
+            logger.info("✅ All workspaces already registered with TrustAI")
+            return
+        
+        logger.info(f"Found {len(unregistered_workspaces)} workspaces to register with TrustAI")
+        
+        db_url = get_postgres_connection_string()
+        if not db_url:
+            logger.error("PostgreSQL connection string not available, skipping TrustAI sync")
+            return
+        
+        registered_count = 0
+        failed_count = 0
+        for workspace in unregistered_workspaces:
+            workspace_id = workspace.workspace_id
+            workspace_name = workspace.workspace_name
+            try:
+                # Get agent_ids from workspace_agents_mapping_2 (ORM)
+                agent_mappings = session.query(db.AgentMap.agent_id).filter(
+                    db.AgentMap.workspace_id == workspace_id,
+                    db.AgentMap.is_active == True
+                ).all()
+                agent_ids = [m.agent_id for m in agent_mappings]
+
+                # Get workspace admin (creator) info using ORM join
+                admin_result = session.query(
+                    db.User.email_id,
+                    db.UserMap.user_id
+                ).join(
+                    db.User, db.UserMap.user_id == db.User.user_id
+                ).filter(
+                    db.UserMap.workspace_id == workspace_id,
+                    db.UserMap.role_id == Role.WS_ADMIN.id,
+                    db.UserMap.is_active == True
+                ).first()
+
+                admin_email = admin_result.email_id if admin_result else ""
+                creator_id = admin_result.user_id if admin_result else None
+
+                trustai_config = {
+                    "application": {
+                        "name": str(workspace_id),
+                        "description": f"Auto-registered workspace: {workspace_name}",
+                        "line_of_business": "general",
+                        "technical_architect": admin_email if admin_email else 'example@coforge.com',
+                        "business_sponsor": admin_email if admin_email else 'example@coforge.com'
+                    },
+                    "guardrails": [
+                        "BSI_DETECTION",
+                        "TOXIC",
+                        "COMPETITOR_CHECK",
+                        "PII",
+                        "TOKEN_QUOTA",
+                        "PROMPT_INJECTION",
+                        "BIAS_DETECTION",
+                        "FACTUAL_ACCURACY",
+                        "CODE_HALLUCINATION"
+                    ],
+                    "system_config": {
+                        "guardrail_model": "gpt-4-1",
+                        "admin_emails": [admin_email] if admin_email else [],
+                        "is_guardrail_notification_enabled": "true",
+                        "input_guardrail_execution_mode": "sync",
+                        "output_guardrail_execution_mode": "sync",
+                        "warning_message": "Warning: Content flagged by guardrails",
+                        "block_message": "Content blocked by guardrails"
+                    }
+                }
+                # print(f"trust ai payload for the {workspace_id}:{creator_id} following configuration:\n {trustai_config} \n\n")
+                # logger.info(f"trust ai payload for the {workspace_id}:{creator_id} following configuration:\n {trustai_config} \n\n")
+                await register_workspace_with_trustai(
+                    workspace_id=str(workspace_id),
+                    trustai_config=trustai_config,
+                    db_url=db_url,
+                    agent_ids=agent_ids,
+                    user_id=creator_id
+                )
+                logger.info(f"  ✅ Registered workspace {workspace_id} ({workspace_name}) with TrustAI")
+                registered_count += 1
+            except Exception as e:
+                logger.error(f"  ❌ Failed to register workspace {workspace_id}: {e}")
+                failed_count += 1
+                continue
+        
+        logger.info(f"🏁 TrustAI sync complete: {registered_count} registered, {failed_count} failed")
+        
+    except Exception as e:
+        logger.error(f"Error during TrustAI workspace sync: {e}")
+    finally:
+        session.close()
+
 
 @mcp.tool()
 @require_auth
-def create_workspace(payload):
+async def create_workspace(payload):
     """
     Create a new workspace and map agents/tools/users as per the payload from frontend.
     Args:
@@ -952,6 +1111,8 @@ def create_workspace(payload):
         workspace_name = fields['workspace_name']
         namespace = fields['namespace']
         workspace_desc = fields['workspace_desc']
+        #trustai integration
+        trustai_config = fields['trustai_config']
 
         normalized_keyword, kb_ids, validation_error = _validate_workspace_type_and_kbs(session, claims, fields)
         if validation_error:
@@ -989,7 +1150,25 @@ def create_workspace(payload):
         except Exception as mapping_error:
             print(f"[Transaction] Failed to add workspace mappings: {mapping_error}")
             raise Exception(f"Failed to add workspace mappings: {str(mapping_error)}")
-
+        
+        
+        #workspace registration with trustai
+        if trustai_config:
+            agent_ids = fields.get('agent_ids') or []
+            db_url = get_postgres_connection_string()
+            # print(f"trustai_config\n:{trustai_config}")
+            if not db_url:
+                print("POSTGRESQL environment vairables not configured!!!")
+                raise ValueError("POSTGRESQL environment vairables not configured!!! Please check you env variable and try again...")
+            try:
+                trustai_config['application']['name'] = workspace_id
+                print(f"[updated] trustai_config\n:{trustai_config}")
+                response = await register_workspace_with_trustai(workspace_id,trustai_config,db_url,agent_ids,creator_id)
+            
+            except Exception as e:
+                print(f"Error while registering workspace with TRUSTAI: {e}")
+                raise Exception("Failed to create the workspace. Please try again.")
+            
         session.commit()
 
         # Seed workspace-level Azure credentials from environment if present.
@@ -1357,7 +1536,7 @@ def fetch_intent_agents_info(user_id=None, intent=None):
 
 @mcp.tool()
 @require_auth
-def update_workspace(payload):
+async def update_workspace(payload):
     """
     Update workspace details (name, description, tools, agents, KBs, etc.) using a payload dict.
     Only Workspace Admin can update workspaces.
@@ -1556,6 +1735,28 @@ def update_workspace(payload):
             except Exception as agent_llm_config_error:
                 print(f"[Post-commit] Failed to create agent LLM configurations: {agent_llm_config_error}")
                 # Don't fail workspace update if LLM config fails, just log it
+
+        # Sync TrustAI tables if workspace has TrustAI integration
+        if agent_ids is not None and server.trustai_workspace_integration and server.trustai_db_manager:
+            try:
+                # Check if workspace has TrustAI configuration
+                trustai_config = server.trustai_db_manager.get_workspace_config(str(workspace_id))
+                if trustai_config:
+                    # Use update_workspace_agents to sync TrustAI tables
+                    # This will add new agents and remove deleted agents from TrustAI mappings
+                    trustai_result = await server.trustai_workspace_integration.update_workspace_agents(
+                        workspace_id=str(workspace_id),
+                        current_agent_ids=agent_ids,
+                        created_by=jwt_user_id
+                    )
+                    print(f"[Post-commit] TrustAI agent sync complete: "
+                          f"{len(trustai_result.get('agents_added', []))} added, "
+                          f"{len(trustai_result.get('agents_removed', []))} removed")
+                    if trustai_result.get('failed_operations'):
+                        print(f"[Post-commit] TrustAI sync had {len(trustai_result['failed_operations'])} failed operations")
+            except Exception as trustai_sync_error:
+                print(f"[Post-commit] Failed to sync TrustAI agent mappings: {trustai_sync_error}")
+                # Don't fail workspace update if TrustAI sync fails, just log it
 
         return {"response": "Workspace updated"}
     except Exception as e:
