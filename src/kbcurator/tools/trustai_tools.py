@@ -8,7 +8,7 @@ from os import getenv
 
 # from kbcurator.utils.permission import is_admin, get_user_role_id
 
-TRUSTAI_BASE_URL = getenv("TRUSTAI_BASE_URL", "https://forgex-dev-trustai-qag.azurewebsites.net/trustai-api")
+TRUSTAI_BASE_URL = getenv("TRUSTAI_BASE_URL", "https://forgex-dev-trustai-qag.azurewebsites.net")
 
 _GUARDRAIL_SECTION_MAP: Dict[str, Dict[str, str]] = {
     "PROMPT_INJECTION": {
@@ -227,7 +227,7 @@ async def get_guardrail_config(workspace_id: str) -> Dict[str, Any]:
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{TRUSTAI_BASE_URL}/guardrails/configuration",
+            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/configuration",
             headers=_build_headers(config)
         )
         raw_payload = _wrap_response(response.json())
@@ -255,7 +255,7 @@ async def batch_update_guardrail_config(
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{TRUSTAI_BASE_URL}/guardrails/configuration/batch",
+            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/configuration/batch",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json={"updates": updates}
         )
@@ -302,7 +302,7 @@ async def get_guardrail_logs(
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{TRUSTAI_BASE_URL}/dashboard/guardrail-logs",
+            f"{TRUSTAI_BASE_URL}/trustai-api/dashboard/guardrail-logs",
             params=params,
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
         )
@@ -324,7 +324,7 @@ async def get_pii_entities(
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{TRUSTAI_BASE_URL}/guardrails/pii/entities",
+            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/pii/entities",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
         )
         raw_payload = _wrap_response(response.json())
@@ -346,7 +346,7 @@ async def create_competitor(
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{TRUSTAI_BASE_URL}/guardrails/competitors",
+            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/competitors",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json={"competitor_name": competitor_name}
         )
@@ -367,7 +367,7 @@ async def get_competitors(
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{TRUSTAI_BASE_URL}/guardrails/competitors",
+            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/competitors",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
         )
         raw_payload = _wrap_response(response.json())
@@ -389,7 +389,7 @@ async def delete_competitor(
 
     async with httpx.AsyncClient() as client:
         response = await client.delete(
-            f"{TRUSTAI_BASE_URL}/guardrails/competitors/{competitor_id}",
+            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/competitors/{competitor_id}",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
         )
         return _wrap_response(response.json())
@@ -410,7 +410,7 @@ async def batch_update_pii_entities(
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{TRUSTAI_BASE_URL}/guardrails/pii/entities/batch",
+            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/pii/entities/batch",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json={"updates": updates}
         )
@@ -431,7 +431,7 @@ async def get_regex_patterns(
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{TRUSTAI_BASE_URL}/guardrails/regex-patterns",
+            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/regex-patterns",
             headers=_build_headers(config, user_email=user_email, user_id=user_id)
         )
         raw_payload = _wrap_response(response.json())
@@ -453,7 +453,7 @@ async def create_regex_pattern(
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{TRUSTAI_BASE_URL}/guardrails/regex-patterns",
+            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/regex-patterns",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json=config_dict
         )
@@ -476,7 +476,7 @@ async def update_regex_pattern_status(
 
     async with httpx.AsyncClient() as client:
         response = await client.put(
-            f"{TRUSTAI_BASE_URL}/guardrails/regex-patterns/{pattern_id}/status",
+            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/regex-patterns/{pattern_id}/status",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json={"is_active": is_active}
         )
@@ -499,7 +499,7 @@ async def update_regex_pattern(
 
     async with httpx.AsyncClient() as client:
         response = await client.put(
-            f"{TRUSTAI_BASE_URL}/guardrails/regex-patterns/{pattern_id}",
+            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/regex-patterns/{pattern_id}",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json=config_dict
         )
@@ -521,7 +521,7 @@ async def delete_regex_pattern(
 
     async with httpx.AsyncClient() as client:
         response = await client.delete(
-            f"{TRUSTAI_BASE_URL}/guardrails/regex-patterns/{pattern_id}",
+            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/regex-patterns/{pattern_id}",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
         )
         return _wrap_response(response.json())
@@ -549,7 +549,7 @@ async def get_dashboard_overview(
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{TRUSTAI_BASE_URL}/dashboard/overview",
+            f"{TRUSTAI_BASE_URL}/trustai-api/dashboard/overview",
             params={"start_date": start_date, "end_date": end_date},
             headers=_build_headers(config, user_email=user_email, user_id=user_id)
         )
@@ -575,7 +575,7 @@ async def list_api_keys(
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            "https://forgex-dev-trustai-qag.azurewebsites.net/api/v1/api-keys/",
+            F"{TRUSTAI_BASE_URL}/api/v1/api-keys/",
             params=params,
             headers={
                 "accept": "application/json",
@@ -599,7 +599,7 @@ async def get_ai_gateway_system_config(
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{TRUSTAI_BASE_URL}/ai-gateway/system-config",
+            f"{TRUSTAI_BASE_URL}/trustai-api/ai-gateway/system-config",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
         )
         return _wrap_response(response.json())
@@ -620,7 +620,7 @@ async def update_ai_gateway_system_config(
 
     async with httpx.AsyncClient() as client:
         response = await client.put(
-            f"{TRUSTAI_BASE_URL}/ai-gateway/system-config",
+            f"{TRUSTAI_BASE_URL}/trustai-api/ai-gateway/system-config",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json=config_dict
         )
