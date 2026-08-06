@@ -27,6 +27,7 @@ from kbcurator.utils.access_validation import (
     validate_chatbot_request_scope,
 )
 from kbcurator.utils.request_context import request_var
+from common_adapters.trustai.exceptions import GuardrailBlockedException
 
 # Cancellation support (used by UI Stop button via `cancel_conversation` MCP tool)
 from common_adapters.cancel_convesation import (
@@ -347,12 +348,13 @@ class Chatbot:
                 if not op_task.done():
                     op_task.cancel()
 
+        user_message_id = None  # Track user message ID for rollback on guardrail block
         try:
             cancel_watcher = asyncio.create_task(_cancel_watch())
 
             print(f"Inside Process message: {message}")
             context = self.get_or_create_context(self.session_id)
-            insert_id = self.session.append_message(self.workspace_id, self.user_id, self.session_id, "user", message, [])
+            user_message_id = self.session.append_message(self.workspace_id, self.user_id, self.session_id, "user", message, [])
             # Seed title/time once when the first user message for this session is stored.
             self.session.ensure_conversation_metadata(
                 self.workspace_id,
@@ -476,6 +478,23 @@ class Chatbot:
             return response
         except (asyncio.CancelledError, CancelledError):
             return {"Request cancelled."}
+        except GuardrailBlockedException as gbe:
+            # Log the guardrail block event
+            logger.warning(
+                f"[GUARDRAIL_BLOCKED] workspace={self.workspace_id} user={self.user_id} "
+                f"session={self.session_id} blocked_by={gbe.blocked_by} "
+                f"details={gbe.details}"
+            )
+            # Rollback: delete the user message from session history
+            if user_message_id:
+                self.session.delete_message(user_message_id)
+                logger.info(f"[GUARDRAIL_BLOCKED] Rolled back user message {user_message_id}")
+            # Return the block message to user WITHOUT saving to session history
+            return {
+                "response": gbe.get_user_message(),
+                "blocked": True,
+                "blocked_by": gbe.blocked_by
+            }
         except Exception as e:
             print(f"Error processing message: {e}")
             return "Sorry, something went wrong while processing your request. Please try again"
@@ -551,8 +570,8 @@ class Chatbot:
             history = history[-5:]
             # print(f"History: {history}, type: {type(history)}")
             # Check for cancellation before starting long-running RAG.
-            if await is_cancelled(conversation_id=str(self.session_id)):
-                raise asyncio.CancelledError()
+            # if await is_cancelled(conversation_id=str(self.session_id)):
+            #     raise asyncio.CancelledError()
 
             assistant_message = await self.mcp_tool_obj.query_rag(
                 'Search',
@@ -564,8 +583,8 @@ class Chatbot:
             )
 
             # Check cancellation again right after the call.
-            if await is_cancelled(conversation_id=str(self.session_id)):
-                raise asyncio.CancelledError()
+            # if await is_cancelled(conversation_id=str(self.session_id)):
+            #     raise asyncio.CancelledError()
             print(f"Query RAG response type: {type(assistant_message)}")
             
             # Check if response is structured (dict with sources) or plain text

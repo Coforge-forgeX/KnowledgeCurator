@@ -89,6 +89,30 @@ class SessionHistoryManager:
         except Exception as e:
             logging.error(f"Error in append_message: {e}")
             return None
+
+    def delete_message(self, message_id):
+        """
+        Delete a message by its MongoDB ObjectId.
+        Used to rollback messages when guardrails block the request.
+        
+        Args:
+            message_id: The MongoDB ObjectId returned by append_message
+            
+        Returns:
+            True if deleted, False otherwise
+        """
+        try:
+            if message_id is None:
+                return False
+            from bson import ObjectId
+            if not isinstance(message_id, ObjectId):
+                message_id = ObjectId(message_id)
+            result = self.chat_collection.delete_one({"_id": message_id})
+            return result.deleted_count > 0
+        except Exception as e:
+            logging.error(f"Error in delete_message: {e}")
+            return False
+
     def get_recent_sessions_by_ttl(self, workspace_id, user_id, current_time: datetime, ttl_seconds: float = 900):
         # Compute cutoff time
         cutoff_time = current_time - timedelta(seconds=ttl_seconds)

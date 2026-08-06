@@ -565,7 +565,25 @@ def _get_pg_conn():
         cursor_factory=psycopg2.extras.RealDictCursor,
     )
 
+def get_useremail_userid(headers: Dict):
+    """
+    Extract user_id and useremail from JWT token in headers.
+    """
+    token = extract_token_from_headers(headers)
 
+    if not token:
+        raise Exception("Authorization token not found")
+
+    payload = verify_jwt_token(token)
+    # print("payload from headers",payload)
+    user_id = payload.get("user_id")
+    user_email = payload.get("user_email") or payload.get("userEmail") or payload.get("email")
+
+    return {
+        "user_id": user_id,
+        "user_email": user_email
+    }
+    
 def _fetch_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     """
     Fetch active user row from public.users by email_id (case-insensitive).
