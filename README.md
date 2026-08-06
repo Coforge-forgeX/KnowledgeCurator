@@ -96,7 +96,7 @@ azurite --silent --location C:\azurite-data --skipApiVersionCheck
 
 ```powershell
 Set-Location "services\kb-rest-service"
-python function_app.py
+python main.py
 ```
 
 Alternative (if you run via Azure Functions host):

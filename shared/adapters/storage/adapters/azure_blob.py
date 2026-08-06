@@ -61,9 +61,18 @@ class AzureBlobStorageAdapter(StorageAdapter):
             raise ValueError("Filename cannot be empty")
 
         try:
+            # Ensure container exists before uploading
+            container_exists = await asyncio.to_thread(self.container_client.exists)
+            if not container_exists:
+                logger.info(f"Container {self._container_name} does not exist, creating it")
+                await asyncio.to_thread(self.container_client.create_container)
+                logger.info(f"Container {self._container_name} created successfully")
+
             blob_client = self.container_client.get_blob_client(filename)
 
             # Upload with content type
+            # Note: Azure Blob Storage automatically handles virtual folder paths
+            # A filename like "folder/subfolder/file.txt" creates the folder structure
             await asyncio.to_thread(
                 blob_client.upload_blob,
                 data,

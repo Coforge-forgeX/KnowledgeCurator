@@ -23,7 +23,7 @@ The deep document ingestion pipeline in `src/workers/document_processor.py` is c
 ```mermaid
 flowchart LR
     A[kb-rest service] -->|enqueue indexing job| B[Azure Storage Queue]
-    B -->|poll / receive| C[indexer-service app.py]
+  B -->|poll / receive| C[indexer-service main.py]
     C --> D[validate payload IndexingJob]
     D --> E[document processor]
     E --> F[(PostgreSQL)]
@@ -35,7 +35,7 @@ flowchart LR
 
 ```text
 indexer-service/
-  app.py                          # Async queue worker entrypoint
+  main.py                         # Async queue worker entrypoint
   .env.example                    # Environment variable template
   requirements.txt                # Runtime dependencies
   pyproject.toml                  # Project metadata + tooling config
@@ -155,7 +155,7 @@ Then update `.env` values.
 Start the worker:
 
 ```bash
-python app.py
+python main.py
 ```
 
 Expected startup log highlights:
@@ -226,7 +226,7 @@ This is intended to run as an always-on worker process (for example Azure Web Ap
 Common startup command:
 
 ```bash
-python app.py
+python main.py
 ```
 
 For production, ensure:

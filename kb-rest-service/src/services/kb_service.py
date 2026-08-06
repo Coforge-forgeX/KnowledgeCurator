@@ -64,6 +64,7 @@ class KnowledgeBaseService:
             # Set working directory for workspace
             working_dir = self._get_workspace_working_dir(workspace_id)
             self.lightrag_service.working_dir = working_dir
+            self.lightrag_service.set_runtime_context(workspace_id=workspace_id)
 
             # Execute query
             result = await self.lightrag_service.query(

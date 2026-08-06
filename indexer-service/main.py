@@ -183,7 +183,7 @@ async def indexing_worker():
     _ensure_shared_package_resolution()
 
     # Lazy imports to avoid loading heavy dependencies at startup.
-    from queue_adapter import get_queue_adapter
+    from src.queue_adapters import get_queue_adapter
     from src.workers.indexing_job_handler import process_indexing_job
 
     queue = get_queue_adapter()

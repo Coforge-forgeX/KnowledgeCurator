@@ -685,7 +685,7 @@ class RAGService:
 
         Uses workspace_id_to_alpha for compatibility with KnowledgeCurator.
         """
-        from workspace_helpers import get_workspace_working_dir
+        from shared.workspace_helpers import get_workspace_working_dir
         base_dir = settings.lightrag.LIGHTRAG_WORKING_DIR
         # TODO: Add domain/kb_name support when available in the request context
         return get_workspace_working_dir(workspace_id, base_dir)

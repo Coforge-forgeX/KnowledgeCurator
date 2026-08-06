@@ -16,19 +16,9 @@ from src.core.database import (
 )
 from src.core.logging import get_logger
 from src.core.config import settings
+from shared.workspace_helpers import build_storage_paths as _build_storage_paths
 
 logger = get_logger(__name__)
-
-# Import shared workspace functions
-import sys
-from pathlib import Path
-
-# Add shared to path (parent's parent's parent / shared)
-shared_path = Path(__file__).parent.parent.parent.parent / "shared"
-if str(shared_path) not in sys.path:
-    sys.path.insert(0, str(shared_path))
-
-from workspace_helpers import build_storage_paths as _build_storage_paths
 
 
 async def get_workspace_storage_paths(workspace_id: int) -> Optional[Dict[str, str]]:

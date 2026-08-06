@@ -7,6 +7,7 @@ Follows Single Responsibility Principle.
 from typing import Optional
 
 from src.core.logging import get_logger
+from shared.workspace_helpers import workspace_id_to_alpha as _shared_workspace_id_to_alpha
 
 logger = get_logger(__name__)
 
@@ -20,20 +21,6 @@ class WorkspaceResolver:
     - Immutable: Returns new values, doesn't modify input
     - Clear naming: Methods describe what they do
     """
-
-    # Digit to word mapping for workspace ID conversion
-    DIGIT_MAP = {
-        '0': 'zero',
-        '1': 'one',
-        '2': 'two',
-        '3': 'three',
-        '4': 'four',
-        '5': 'five',
-        '6': 'six',
-        '7': 'seven',
-        '8': 'eight',
-        '9': 'nine'
-    }
 
     @classmethod
     def workspace_id_to_alpha(cls, workspace_id: Optional[int]) -> str:
@@ -52,18 +39,7 @@ class WorkspaceResolver:
             >>> WorkspaceResolver.workspace_id_to_alpha(None)
             ''
         """
-        if workspace_id is None:
-            return ""
-
-        result = []
-        for char in str(workspace_id):
-            if char.isalpha():
-                result.append(char)
-            elif char.isdigit():
-                result.append(cls.DIGIT_MAP[char])
-            # Ignore other characters
-
-        alpha_id = ''.join(result)
+        alpha_id = _shared_workspace_id_to_alpha(workspace_id)
         logger.debug(f"Converted workspace_id {workspace_id} to '{alpha_id}'")
         return alpha_id
 

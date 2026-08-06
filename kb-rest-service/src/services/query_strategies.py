@@ -81,6 +81,10 @@ class QueryStrategy(ABC):
             # Set working directory for this KB
             working_dir = self._get_working_dir(kb)
             self.lightrag.working_dir = working_dir
+            self.lightrag.set_runtime_context(
+                workspace_id=context.workspace_id,
+                agent_id=context.agent_id,
+            )
 
             # Execute query
             response = await self.lightrag.query(
@@ -126,6 +130,10 @@ class QueryStrategy(ABC):
             # Query for context only
             working_dir = self._get_working_dir(kb)
             self.lightrag.working_dir = working_dir
+            self.lightrag.set_runtime_context(
+                workspace_id=context.workspace_id,
+                agent_id=context.agent_id,
+            )
 
             context_response = await self.lightrag.query(
                 query=prompt,

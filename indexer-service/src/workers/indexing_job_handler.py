@@ -22,6 +22,11 @@ from azure.storage.blob import BlobServiceClient
 from docx import Document
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc
+from shared.lightrag import (
+    build_azure_openai_chat_completion_func,
+    build_azure_openai_embedding_func,
+    RateLimitError,
+)
 
 from core.config import settings
 from core.logging import get_logger
@@ -45,8 +50,10 @@ async def initialize_lightrag(domain: str, kb_name: str) -> LightRAG:
     # Create workspace name (alphanumeric only)
     workspace_name = ''.join(c for c in f"{domain}{kb_name}" if c.isalpha())
 
-    # Set Neo4j database
-    os.environ['NEO4J_DATABASE'] = workspace_name
+    # IMPORTANT: Neo4j Community Edition only supports ONE database (default).
+    # Don't set NEO4J_DATABASE - let it use the default database.
+    # Workspace isolation is handled by the 'workspace' parameter in LightRAG constructor.
+    # os.environ['NEO4J_DATABASE'] = workspace_name
 
     # Set PostgreSQL environment variables for LightRAG
     os.environ['POSTGRES_HOST'] = settings.database.POSTGRESQL_DATABASE_HOST
@@ -73,14 +80,28 @@ async def initialize_lightrag(domain: str, kb_name: str) -> LightRAG:
         else None
     )
 
+    llm_func = build_azure_openai_chat_completion_func(
+        api_key=settings.lightrag.AZURE_OPENAI_LLM_API_KEY,
+        api_base=settings.lightrag.AZURE_OPENAI_LLM_API_BASE,
+        api_version=settings.lightrag.AZURE_OPENAI_LLM_API_VERSION,
+        deployment=settings.lightrag.AZURE_OPENAI_LLM_DEPLOYMENT,
+    )
+    azure_embedding_func = build_azure_openai_embedding_func(
+        api_key=settings.lightrag.AZURE_OPENAI_EMBEDDING_API_KEY,
+        api_base=settings.lightrag.AZURE_OPENAI_EMBEDDING_API_BASE,
+        api_version=settings.lightrag.AZURE_OPENAI_EMBEDDING_API_VERSION,
+        deployment=settings.lightrag.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
+        dimensions=settings.lightrag.EMBEDDING_DIM,
+    )
+
     # Initialize LightRAG with Neo4j + PostgreSQL
     rag = LightRAG(
         working_dir=settings.lightrag.WORKING_DIR,
-        llm_model_func=llm_model_func,
+        llm_model_func=llm_func,
         embedding_func=EmbeddingFunc(
             embedding_dim=settings.lightrag.EMBEDDING_DIM,
             max_token_size=settings.lightrag.MAX_TOKEN_SIZE,
-            func=embedding_func,
+            func=azure_embedding_func,
             model_name=embedding_model_name,
         ),
         graph_storage=settings.lightrag.GRAPH_STORAGE_TYPE,
@@ -97,81 +118,6 @@ async def initialize_lightrag(domain: str, kb_name: str) -> LightRAG:
 
     logger.info("LightRAG initialized", workspace=workspace_name)
     return rag
-
-
-async def llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs) -> str:
-    """LLM function for LightRAG (Azure OpenAI)"""
-    import aiohttp
-
-    headers = {
-        "Content-Type": "application/json",
-        "api-key": settings.lightrag.AZURE_OPENAI_LLM_API_KEY,
-    }
-
-    endpoint = (
-        f"{settings.lightrag.AZURE_OPENAI_LLM_API_BASE}"
-        f"openai/deployments/{settings.lightrag.AZURE_OPENAI_LLM_DEPLOYMENT}/chat/completions"
-        f"?api-version={settings.lightrag.AZURE_OPENAI_LLM_API_VERSION}"
-    )
-
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    if history_messages:
-        messages.extend(history_messages)
-    messages.append({"role": "user", "content": prompt})
-
-    payload = {
-        "messages": messages,
-        "temperature": kwargs.get("temperature", 0),
-        "top_p": kwargs.get("top_p", 1),
-        "n": kwargs.get("n", 1),
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(endpoint, headers=headers, json=payload) as response:
-            if response.status != 200:
-                raise ValueError(f"Request failed: {await response.text()}")
-            result = await response.json()
-            return result["choices"][0]["message"]["content"]
-
-
-async def embedding_func(texts: list[str]):
-    """Embedding function for LightRAG (Azure OpenAI)"""
-    import aiohttp
-    import numpy as np
-
-    # Validate configuration
-    if not settings.lightrag.AZURE_OPENAI_EMBEDDING_API_BASE:
-        raise ValueError("AZURE_OPENAI_EMBEDDING_API_BASE is not configured")
-    if not settings.lightrag.AZURE_OPENAI_EMBEDDING_DEPLOYMENT:
-        raise ValueError("AZURE_OPENAI_EMBEDDING_DEPLOYMENT is not configured")
-    if not settings.lightrag.AZURE_OPENAI_EMBEDDING_API_KEY:
-        raise ValueError("AZURE_OPENAI_EMBEDDING_API_KEY is not configured")
-
-    headers = {
-        "Content-Type": "application/json",
-        "api-key": settings.lightrag.AZURE_OPENAI_EMBEDDING_API_KEY,
-    }
-
-    endpoint = (
-        f"{settings.lightrag.AZURE_OPENAI_EMBEDDING_API_BASE}"
-        f"openai/deployments/{settings.lightrag.AZURE_OPENAI_EMBEDDING_DEPLOYMENT}/embeddings"
-        f"?api-version={settings.lightrag.AZURE_OPENAI_EMBEDDING_API_VERSION}"
-    )
-
-    payload = {
-        "input": texts,
-        "dimensions": settings.lightrag.EMBEDDING_DIM
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(endpoint, headers=headers, json=payload) as response:
-            if response.status != 200:
-                raise ValueError(f"Request failed: {await response.text()}")
-            result = await response.json()
-            embeddings = [item["embedding"] for item in result["data"]]
-            return np.array(embeddings)
 
 
 async def download_file_from_blob(
@@ -266,6 +212,7 @@ async def index_document_with_lightrag(
     text_content: str,
     file_path: str,
     full_doc_id: str,
+    file_name: Optional[str] = None,
 ) -> Tuple[bool, Optional[int], Optional[str]]:
     """
     Index document content into LightRAG.
@@ -298,18 +245,26 @@ async def index_document_with_lightrag(
 
         chunk_count = len(ordered_chunks)
 
-        # Insert explicit chunk list with stable doc_id to preserve chunk_order_index
-        # across retries and avoid duplicate-doc queue side effects.
-        await rag.ainsert_custom_chunks(
-            full_text=text_content,
-            text_chunks=ordered_chunks,
-            doc_id=full_doc_id,
+        # Normalize path separators so lightrag_vdb_chunks.file_path is consistent
+        # and lookup/deletion logic can use a stable value across OSes.
+        normalized_file_path = file_path.replace("\\", "/") if file_path else file_path
+
+        # Use LightRAG's supported API for this deployment version.
+        # Pass full_doc_id to ensure all chunks share the same document ID.
+        # Passing file_paths persists file_path into lightrag_vdb_chunks and allows
+        # the standard graph extraction pipeline to run.
+        await rag.ainsert(
+            input=text_content,
+            ids=[full_doc_id],
+            file_paths=[normalized_file_path]
         )
 
         logger.info(
             "Document indexed successfully",
             chunk_count=chunk_count,
-            file_path=file_path
+            file_path=normalized_file_path,
+            file_name=file_name or os.path.basename(normalized_file_path or ""),
+            full_doc_id=full_doc_id,
         )
 
         return True, chunk_count, None
@@ -574,10 +529,10 @@ async def create_or_update_indexing_job(
         return False
 
 
-def build_full_doc_id(workspace_id: int, file_name: str) -> str:
-    """Build deterministic document id used for metadata tracking."""
-    digest = hashlib.md5(f"{file_name}{workspace_id}".encode("utf-8")).hexdigest()[:12]
-    return f"doc-{digest}"
+def build_full_doc_id(workspace_id: int, user_id: int, file_name: str, timestamp: str) -> str:
+    """Build unique document id using workspace, user, file name, and timestamp."""
+    digest = hashlib.md5(f"{workspace_id}{user_id}{file_name}{timestamp}".encode("utf-8")).hexdigest()[:16]
+    return f"doc-{workspace_id}-{user_id}-{digest}"
 
 
 async def upsert_document_metadata(
@@ -688,19 +643,13 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
         """Resolve target blob container for this job.
 
         Priority:
-        1. Message-supplied container_name
-        2. Workspace container env (AZURE_BLOB_STORAGE_WORKSPACE_CONTAINER_NAME)
-           when file path indicates workspace uploads
-        3. Default configured container
-        """
-        workspace_container = settings.azure.WORKSPACE_CONTAINER_NAME
-        if file_path and file_path.lower().startswith("other/"):
-            # For workspace uploads, prefer workspace container unless caller provided
-            # a non-default explicit container.
-            if preferred and preferred != default:
-                return preferred
-            return workspace_container
+        1. Message-supplied container_name (always trust if provided)
+        2. Default configured container
 
+        Note: Do not infer container from file path patterns - a KG workspace
+        with industry="Other" will have "Other/*" paths but should use the
+        KG container (aksKnowledgeCurator), not the workspace container.
+        """
         if preferred:
             return preferred
         return default
@@ -708,11 +657,13 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
     task_id = job_data.get("task_id")
     job_id = job_data.get("job_id", str(task_id))  # Use job_id or fall back to task_id
     workspace_id = job_data.get("workspace_id")
+    user_id = job_data.get("user_id")
     file_path = job_data.get("file_path")
     domain = job_data.get("domain")
     kb_name = job_data.get("kb_name")
     kb_id = job_data.get("kb_id")
     container_name = job_data.get("container_name")
+    timestamp = job_data.get("timestamp")
 
     logger.info(
         "Processing indexing job",
@@ -838,9 +789,14 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
         await create_or_update_indexing_job(job_id, workspace_id, file_path, "initializing", retry_count, kb_id=kb_id)
         rag = await initialize_lightrag(domain, kb_name)
 
-        full_doc_id = build_full_doc_id(workspace_id=workspace_id, file_name=file_name)
+        full_doc_id = build_full_doc_id(
+            workspace_id=workspace_id,
+            user_id=user_id or 0,  # Default to 0 if user_id not provided for backward compatibility
+            file_name=file_name,
+            timestamp=timestamp or datetime.now(timezone.utc).isoformat()
+        )
 
-        # 5. Index document
+        # 5. Index document with metadata (file_path, file_name)
         await create_or_update_indexing_job(job_id, workspace_id, file_path, "indexing", retry_count, kb_id=kb_id)
 
         success, chunk_count, error = await index_document_with_lightrag(
@@ -848,6 +804,7 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
             text_content,
             file_path,
             full_doc_id,
+            file_name=file_name,
         )
         if not success:
             await create_or_update_indexing_job(job_id, workspace_id, file_path, "failed", retry_count, error, kb_id=kb_id)
@@ -904,6 +861,22 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
             "task_id": task_id,
             "chunk_count": chunk_count
         }
+
+    except RateLimitError as e:
+        error_msg = f"Rate limit exceeded: {str(e)}"
+        logger.warning(
+            "Indexing job hit rate limit - will be retried by queue",
+            error_msg=error_msg,
+            job_id=job_id,
+            task_id=task_id,
+            retry_count=retry_count,
+        )
+        await create_or_update_indexing_job(
+            job_id, workspace_id, file_path, "rate_limited", retry_count, error_msg, kb_id=kb_id
+        )
+        await update_file_task_status(task_id, "rate_limited", error_msg)
+        # Return error without non_retryable flag so queue can retry
+        return {"success": False, "error": error_msg, "rate_limited": True}
 
     except Exception as e:
         error_msg = str(e)

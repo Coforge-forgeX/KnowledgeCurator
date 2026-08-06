@@ -39,10 +39,24 @@ def get_queue_adapter(
     if _queue_adapter is None or force_recreate:
         from core.config import settings
 
+        # Select appropriate connection string based on provider
+        provider = settings.active_queue_provider
+        if provider == "azure_service_bus":
+            connection_string = settings.azure.SERVICE_BUS_CONNECTION_STRING
+            kwargs = {
+                "topic_name": settings.azure.SERVICE_BUS_TOPIC_NAME,
+                "subscription_name": settings.azure.SERVICE_BUS_SUBSCRIPTION_NAME,
+                "max_lock_renewal_duration": settings.MAX_LOCK_RENEWAL_DURATION,
+            }
+        else:
+            connection_string = settings.azure.AZURE_STORAGE_CONNECTION_STRING
+            kwargs = {}
+
         _queue_adapter = _get_shared_adapter(
-            provider=settings.active_queue_provider,
-            connection_string=settings.azure.AZURE_STORAGE_CONNECTION_STRING,
+            provider=provider,
+            connection_string=connection_string,
             queue_name=queue_name or settings.azure.INDEXING_QUEUE_NAME,
+            **kwargs,
         )
 
     return _queue_adapter

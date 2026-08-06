@@ -218,7 +218,7 @@ The service will be available at:
 
 The service now includes thin runtime adapters so the same business handlers can run on all three providers:
 
-- Azure Functions: `azure_function_app.py` with function `main`
+- Azure Functions: `function_app.py` with function `main`
 - AWS Lambda: `aws_lambda_handler.py` with function `lambda_handler`
 - GCP Cloud Functions: `gcp_function_main.py` with function `entrypoint`
 

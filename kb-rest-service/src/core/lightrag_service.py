@@ -2,11 +2,19 @@
 import os
 from typing import Any, Dict, List, Optional
 
-import aiohttp
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.azure_openai import azure_openai_complete
-from lightrag.llm.ollama import ollama_embed
 from lightrag.utils import EmbeddingFunc
+from shared.lightrag import (
+    build_azure_openai_chat_completion_func,
+    build_ollama_embedding_func,
+)
+
+try:
+    from common_adapters.configurableAI.llm_router_config_store import (
+        llm_router_config_store,
+    )
+except Exception:  # pragma: no cover - optional dependency fallback
+    llm_router_config_store = None
 
 from .config import settings
 from .exceptions import ConfigurationException, LightRAGException
@@ -35,9 +43,74 @@ class LightRAGService:
         self.workspace = workspace
         self._rag: Optional[LightRAG] = None
         self._initialized = False
-        self._http_session: Optional[aiohttp.ClientSession] = None
+        self._runtime_workspace_id: Optional[int] = None
+        self._runtime_agent_id: Optional[int] = None
+        self._runtime_signature: Optional[str] = None
+        self._active_llm_provider: Optional[str] = None
+        self._active_llm_model: Optional[str] = None
+        self._active_llm_source: Optional[str] = None
 
         logger.info("LightRAG service initialized", working_dir=self.working_dir, workspace=workspace)
+
+    def set_runtime_context(
+        self,
+        *,
+        workspace_id: Optional[int] = None,
+        agent_id: Optional[int] = None,
+    ) -> None:
+        """Set request-scoped context for LLM routing.
+
+        This allows workspace/agent-specific LLM selection via common_adapters.
+        """
+        if workspace_id != self._runtime_workspace_id or agent_id != self._runtime_agent_id:
+            self._runtime_workspace_id = workspace_id
+            self._runtime_agent_id = agent_id
+            self._initialized = False
+            self._rag = None
+
+    def _build_runtime_signature(self) -> str:
+        """Build signature used to detect context/config changes safely."""
+        return "|".join(
+            [
+                str(self.working_dir),
+                str(self.workspace),
+                str(self._runtime_workspace_id),
+                str(self._runtime_agent_id),
+            ]
+        )
+
+    def _resolve_llm_router_config(self) -> Optional[Dict[str, Any]]:
+        """Resolve workspace/agent LLM config from common_adapters router store."""
+        if llm_router_config_store is None or self._runtime_workspace_id is None:
+            return None
+
+        try:
+            config = llm_router_config_store.get_effective_configuration(
+                self._runtime_workspace_id,
+                self._runtime_agent_id,
+            )
+            if not config:
+                return None
+
+            current_provider = (config.get("current_provider") or "").strip().lower()
+            if not current_provider:
+                return None
+
+            current_model = config.get("current_model")
+            provider_config = llm_router_config_store.build_config_dict(
+                self._runtime_workspace_id,
+                current_provider,
+                model_override=current_model,
+            )
+            return provider_config
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve LLM router config, falling back to env settings",
+                workspace_id=self._runtime_workspace_id,
+                agent_id=self._runtime_agent_id,
+                error=str(e),
+            )
+            return None
 
     async def _build_llm_func(self) -> Any:
         """
@@ -49,6 +122,45 @@ class LightRAGService:
         Raises:
             ConfigurationException: If LLM configuration is invalid
         """
+        router_config = self._resolve_llm_router_config()
+        if router_config:
+            provider = (router_config.get("provider_name") or "").strip().lower()
+            if provider == "azure":
+                azure_api_key = router_config.get("api_key")
+                azure_api_base = router_config.get("endpoint")
+                azure_api_version = (
+                    router_config.get("api_version")
+                    or settings.lightrag.AZURE_OPENAI_LLM_MODEL_API_VERSION
+                )
+                azure_deployment_name = (
+                    router_config.get("deployment_name") or router_config.get("model")
+                )
+                if all([azure_api_key, azure_api_base, azure_deployment_name]):
+                    self._active_llm_provider = provider
+                    self._active_llm_model = router_config.get("model") or azure_deployment_name
+                    self._active_llm_source = "common_adapters"
+                    logger.info(
+                        "Using workspace/agent LLM configuration from common_adapters",
+                        workspace_id=self._runtime_workspace_id,
+                        agent_id=self._runtime_agent_id,
+                        provider=provider,
+                        model=self._active_llm_model,
+                        deployment=azure_deployment_name,
+                    )
+                    return build_azure_openai_chat_completion_func(
+                        api_key=azure_api_key,
+                        api_base=azure_api_base,
+                        api_version=azure_api_version,
+                        deployment=azure_deployment_name,
+                    )
+            else:
+                logger.warning(
+                    "Current LLM provider from common_adapters is not supported by LightRAG chat builder; using env fallback",
+                    provider=provider,
+                    workspace_id=self._runtime_workspace_id,
+                    agent_id=self._runtime_agent_id,
+                )
+
         azure_api_key = settings.lightrag.AZURE_OPENAI_LLM_MODEL_API_KEY
         azure_api_base = settings.lightrag.AZURE_OPENAI_LLM_MODEL_API_BASE
         azure_api_version = settings.lightrag.AZURE_OPENAI_LLM_MODEL_API_VERSION
@@ -60,45 +172,24 @@ class LightRAGService:
                 config_key="AZURE_OPENAI_LLM_MODEL",
             )
 
-        async def llm_model_func(
-            prompt: str, system_prompt: Optional[str] = None, history_messages: Optional[List] = None, **kwargs
-        ) -> str:
-            """Azure OpenAI LLM function with connection reuse"""
-            headers = {
-                "Content-Type": "application/json",
-                "api-key": azure_api_key,
-            }
-            endpoint = f"{azure_api_base}openai/deployments/{azure_deployment_name}/chat/completions?api-version={azure_api_version}"
+        self._active_llm_provider = "azure"
+        self._active_llm_model = azure_deployment_name
+        self._active_llm_source = "env"
+        logger.info(
+            "Using environment LLM configuration",
+            workspace_id=self._runtime_workspace_id,
+            agent_id=self._runtime_agent_id,
+            provider=self._active_llm_provider,
+            model=self._active_llm_model,
+            api_version=azure_api_version,
+        )
 
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            if history_messages:
-                messages.extend(history_messages)
-            messages.append({"role": "user", "content": prompt})
-
-            payload = {
-                "messages": messages,
-                "temperature": kwargs.get("temperature", 0),
-                "top_p": kwargs.get("top_p", 1),
-                "n": kwargs.get("n", 1),
-            }
-
-            # Reuse HTTP session for connection pooling
-            if self._http_session is None or self._http_session.closed:
-                self._http_session = aiohttp.ClientSession()
-
-            async with self._http_session.post(endpoint, headers=headers, json=payload) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise LightRAGException(
-                        message=f"Azure OpenAI request failed: {error_text}",
-                        operation="llm_request"
-                    )
-                result = await response.json()
-                return result["choices"][0]["message"]["content"]
-
-        return llm_model_func
+        return build_azure_openai_chat_completion_func(
+            api_key=azure_api_key,
+            api_base=azure_api_base,
+            api_version=azure_api_version,
+            deployment=azure_deployment_name,
+        )
 
     def _build_embedding_func(self) -> EmbeddingFunc:
         """
@@ -124,12 +215,12 @@ class LightRAGService:
         return EmbeddingFunc(
             embedding_dim=embedding_dim,
             max_token_size=max_token_size,
-            func=lambda texts: ollama_embed(
-                texts,
-                embed_model=embedding_model,
+            func=build_ollama_embedding_func(
                 host=base_url,
+                embed_model=embedding_model,
             ),
         )
+
 
     async def initialize(self) -> None:
         """
@@ -139,6 +230,11 @@ class LightRAGService:
             ConfigurationException: If configuration is invalid
             LightRAGException: If initialization fails
         """
+        current_signature = self._build_runtime_signature()
+        if self._runtime_signature != current_signature:
+            self._initialized = False
+            self._rag = None
+
         if self._initialized:
             logger.debug("LightRAG already initialized, skipping")
             return
@@ -186,10 +282,14 @@ class LightRAGService:
             await self._rag.initialize_storages()
 
             self._initialized = True
+            self._runtime_signature = current_signature
             logger.info(
                 "LightRAG initialized successfully",
                 graph_storage=settings.lightrag.GRAPH_STORAGE_TYPE,
                 vector_storage=settings.lightrag.VECTOR_STORAGE_TYPE,
+                llm_provider=self._active_llm_provider,
+                llm_model=self._active_llm_model,
+                llm_source=self._active_llm_source,
             )
 
         except ConfigurationException:
@@ -227,7 +327,16 @@ class LightRAGService:
             await self.initialize()
 
         try:
-            logger.info("Executing LightRAG query", query=query[:100], mode=mode)
+            logger.info(
+                "Executing LightRAG query",
+                query=query[:100],
+                mode=mode,
+                llm_provider=self._active_llm_provider,
+                llm_model=self._active_llm_model,
+                llm_source=self._active_llm_source,
+                workspace_id=self._runtime_workspace_id,
+                agent_id=self._runtime_agent_id,
+            )
 
             # Execute query - LightRAG returns string answer or dict with answer+context
             result = await self._rag.aquery(
@@ -278,7 +387,7 @@ class LightRAGService:
 
         Args:
             text: Document text to insert
-            metadata: Optional metadata for the document
+            metadata: Optional metadata for the document (e.g., file_path, file_name, doc_id)
 
         Returns:
             Dict with insertion status
@@ -290,9 +399,22 @@ class LightRAGService:
             await self.initialize()
 
         try:
-            logger.info("Inserting document into LightRAG", text_length=len(text))
+            logger.info("Inserting document into LightRAG", text_length=len(text), metadata=metadata)
 
-            await self._rag.ainsert(text)
+            file_path = None
+            if metadata and isinstance(metadata, dict):
+                file_path = metadata.get("file_path")
+
+            if file_path:
+                normalized_file_path = str(file_path).replace("\\", "/")
+                await self._rag.ainsert(input=text, file_paths=[normalized_file_path])
+            else:
+                try:
+                    await self._rag.ainsert(text, metadata=metadata)
+                except TypeError:
+                    # Fallback for LightRAG versions that don't support metadata parameter.
+                    logger.warning("LightRAG version doesn't support metadata in ainsert, inserting without metadata")
+                    await self._rag.ainsert(text)
 
             logger.info("Document inserted successfully", text_length=len(text))
             return {"status": "success", "message": "Document indexed successfully"}
@@ -613,11 +735,7 @@ class LightRAGService:
         if self._rag:
             # Cleanup logic if needed
             self._initialized = False
-
-        # Close HTTP session
-        if self._http_session and not self._http_session.closed:
-            await self._http_session.close()
-            self._http_session = None
+            self._rag = None
 
         logger.info("LightRAG service closed")
 
