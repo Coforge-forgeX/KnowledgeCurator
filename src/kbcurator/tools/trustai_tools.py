@@ -552,7 +552,7 @@ async def update_regex_pattern(
 
             try:
                 response = await client.put(
-                    f"{TRUSTAI_BASE_URL}/guardrails/regex-patterns/{item_pattern_id}",
+                    f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/regex-patterns/{item_pattern_id}",
                     headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
                     json=item_config_dict
                 )
@@ -656,7 +656,7 @@ async def get_user_token_details(
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{TRUSTAI_BASE_URL}/dashboard/user-token-details",
+            f"{TRUSTAI_BASE_URL}/trustai-api/dashboard/user-token-details",
             headers=_build_headers(config, user_email=user_email, user_id=user_id)
         )
         return _wrap_response(response.json())
@@ -677,7 +677,7 @@ async def batch_update_user_token_limit(
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{TRUSTAI_BASE_URL}/dashboard/user-token-limit/batch",
+            f"{TRUSTAI_BASE_URL}/trustai-api/dashboard/user-token-limit/batch",
             headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
             json={"updates": updates}
         )
@@ -703,7 +703,7 @@ async def list_api_keys(
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            F"{TRUSTAI_BASE_URL}/api/v1/api-keys/",
+            F"{TRUSTAI_BASE_URL}/trustai-api/api/v1/api-keys/",
             params=params,
             headers={
                 "accept": "application/json",
