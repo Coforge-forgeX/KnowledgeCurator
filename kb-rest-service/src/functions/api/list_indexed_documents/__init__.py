@@ -1,5 +1,5 @@
 """List Indexed Documents API - Clean & Optimized"""
-from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
+from src.core.tContext, AbstractRequest, AbstractResponse
 from src.core.auth import get_user_id, get_workspace_ids, require_auth
 from src.core.exceptions import AuthorizationException
 from src.core.logging import get_logger

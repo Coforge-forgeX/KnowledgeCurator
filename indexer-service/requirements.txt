@@ -1,6 +1,7 @@
 git+https://github.com/Coforge-forgeX/forgexpackages.git@main#egg=common-adapters
 azure-storage-blob==12.30.0
 azure-storage-queue==12.9.0
+azure-servicebus==7.12.1
 azure-ai-documentintelligence==1.0.2
 sqlalchemy==2.0.51
 asyncpg>=0.30.0

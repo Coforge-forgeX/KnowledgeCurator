@@ -41,6 +41,7 @@ requests==2.34.2
 azure-functions==1.18.0
 azure-storage-blob==12.30.0
 azure-storage-queue==12.9.0
+azure-servicebus==7.12.1
 
 # RAG and AI
 lightrag-hku==1.4.16

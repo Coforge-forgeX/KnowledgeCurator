@@ -19,6 +19,7 @@ class QueueProvider(str, Enum):
     """Supported queue providers"""
 
     AZURE = "azure"
+    AZURE_SERVICE_BUS = "azure_service_bus"
     AWS = "aws"
     REDIS = "redis"
 
@@ -87,6 +88,25 @@ class QueueFactory:
             return AzureQueueAdapter(
                 connection_string=connection_string,
                 queue_name=queue_name,
+            )
+
+        elif provider_enum == QueueProvider.AZURE_SERVICE_BUS:
+            topic_name = kwargs.get("topic_name")
+            subscription_name = kwargs.get("subscription_name")
+            max_concurrent_calls = kwargs.get("max_concurrent_calls", 1)
+            max_lock_renewal_duration = kwargs.get("max_lock_renewal_duration", 1800)
+
+            if not queue_name and not topic_name:
+                raise ValueError("Either queue_name or topic_name is required for Azure Service Bus")
+
+            from .adapters.azure_service_bus import AzureServiceBusAdapter
+            return AzureServiceBusAdapter(
+                connection_string=connection_string,
+                queue_name=queue_name,
+                topic_name=topic_name,
+                subscription_name=subscription_name,
+                max_concurrent_calls=max_concurrent_calls,
+                max_lock_renewal_duration=max_lock_renewal_duration,
             )
 
         elif provider_enum == QueueProvider.AWS:

@@ -3,6 +3,12 @@
 All queue operations now use the shared adapters from services/shared/adapters/queue.
 This module provides a configured get_queue_adapter() that automatically uses
 kb-rest-service settings.
+
+Supports:
+- Azure Storage Queue (legacy)
+- Azure Service Bus (recommended for production)
+- AWS SQS
+- Redis Queue
 """
 from typing import Optional
 
@@ -39,14 +45,27 @@ def get_queue_adapter(
     if _queue_adapter is None or force_recreate:
         from src.core.config import settings
 
-        queue_provider = settings.active_queue_provider
+        queue_provider = settings.active_queue_provider.lower()
+
+        # Build kwargs for provider-specific options
+        kwargs = {}
+
+        # Service Bus specific
+        if queue_provider == "azure_service_bus":
+            topic_name = getattr(settings.azure, "SERVICE_BUS_TOPIC_NAME", None)
+            if topic_name:
+                kwargs["topic_name"] = topic_name
+
+        # AWS SQS specific
+        elif queue_provider == "aws":
+            kwargs["queue_url"] = settings.SQS_QUEUE_URL
+            kwargs["region_name"] = settings.AWS_REGION
 
         _queue_adapter = _get_shared_adapter(
             provider=queue_provider,
             connection_string=settings.active_queue_connection,
             queue_name=queue_name or settings.active_queue_name,
-            queue_url=settings.SQS_QUEUE_URL if queue_provider == "aws" else None,
-            region_name=settings.AWS_REGION if queue_provider == "aws" else None,
+            **kwargs
         )
 
     return _queue_adapter

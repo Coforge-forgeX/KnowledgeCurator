@@ -16,6 +16,7 @@ import importlib.util
 import os
 import signal
 import sys
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -187,6 +188,8 @@ async def indexing_worker():
 
     queue = get_queue_adapter()
     storage_provider_name = settings.active_storage_provider
+    max_concurrent_jobs = max(1, int(settings.MAX_CONCURRENT_JOBS))
+    in_flight_jobs = 0
 
     # Avoid probing storage adapter on every poll cycle; job handler manages per-job adapter creation.
     storage = None
@@ -195,6 +198,7 @@ async def indexing_worker():
         "Indexing worker initialized",
         queue_provider=queue.provider_name,
         storage_provider=storage_provider_name,
+        max_concurrent_jobs=max_concurrent_jobs,
     )
 
     try:
@@ -203,7 +207,7 @@ async def indexing_worker():
             try:
                 # Poll queue for messages (long polling with 20 second wait)
                 messages = await queue.receive_messages(
-                    max_messages=10,
+                    max_messages=max_concurrent_jobs,
                     visibility_timeout=300,  # 5 minutes to process
                     wait_time_seconds=20,     # Long polling
                 )
@@ -213,10 +217,19 @@ async def indexing_worker():
                     continue
 
                 # Only log when we actually receive jobs
-                logger.info("Received indexing jobs", count=len(messages))
+                batch_size = len(messages)
+                batch_start = time.perf_counter()
+                logger.info(
+                    "Received indexing jobs",
+                    count=batch_size,
+                    in_flight_jobs=in_flight_jobs,
+                    max_concurrent_jobs=max_concurrent_jobs,
+                )
 
-                # Process each message
-                for message in messages:
+                # Process messages concurrently, bounded by max_concurrent_jobs from config.
+                async def _process_single_message(message):
+                    nonlocal in_flight_jobs
+                    in_flight_jobs += 1
                     try:
                         job_data = message.content
                         task_id = job_data.get("task_id")
@@ -227,6 +240,30 @@ async def indexing_worker():
                         # Get retry count from message (dequeue_count - 1 because first dequeue is not a retry)
                         retry_count = max(0, getattr(message, 'dequeue_count', 1) - 1)
 
+                        # Check if max retries exceeded
+                        if retry_count >= settings.MAX_RETRIES:
+                            error_msg = f"Max retries ({settings.MAX_RETRIES}) exceeded"
+                            logger.error(
+                                "Moving message to dead letter queue",
+                                job_id=job_id,
+                                task_id=task_id,
+                                file_path=file_path,
+                                retry_count=retry_count,
+                                max_retries=settings.MAX_RETRIES,
+                                error_msg=error_msg,
+                            )
+                            # Move to dead letter queue
+                            await queue.move_to_dead_letter(
+                                message,
+                                reason="MaxRetriesExceeded",
+                                error_description=f"Job failed after {retry_count} retries: {file_path}"
+                            )
+                            # Update task status to failed
+                            if task_id:
+                                from src.workers.indexing_job_handler import update_file_task_status
+                                await update_file_task_status(task_id, "failed", error_msg)
+                            return  # Skip processing this message
+
                         logger.info(
                             "Processing indexing job",
                             job_id=job_id,
@@ -234,6 +271,7 @@ async def indexing_worker():
                             file_path=file_path,
                             workspace_id=workspace_id,
                             retry_count=retry_count,
+                            max_retries=settings.MAX_RETRIES,
                         )
 
                         # Process the indexing job with retry count
@@ -242,7 +280,7 @@ async def indexing_worker():
 
                         if success:
                             # Delete message from queue - job completed successfully
-                            await queue.delete_message(message.receipt_handle)
+                            await queue.delete_message(message)  # Pass full message object
                             logger.info(
                                 "Successfully processed and removed from queue",
                                 job_id=job_id,
@@ -252,7 +290,7 @@ async def indexing_worker():
                         else:
                             error_msg = result.get("error", "Unknown error")
                             if result.get("non_retryable", False):
-                                await queue.delete_message(message.receipt_handle)
+                                await queue.delete_message(message)  # Pass full message object
                                 logger.warning(
                                     "Dropped non-retryable indexing message",
                                     job_id=job_id,
@@ -278,6 +316,21 @@ async def indexing_worker():
                             exc_info=True,
                         )
                         # Message will become visible again for retry
+                    finally:
+                        in_flight_jobs = max(0, in_flight_jobs - 1)
+
+                await asyncio.gather(
+                    *(_process_single_message(message) for message in messages),
+                    return_exceptions=True,
+                )
+                batch_duration_seconds = round(time.perf_counter() - batch_start, 3)
+                logger.info(
+                    "Completed indexing batch",
+                    batch_size=batch_size,
+                    batch_duration_seconds=batch_duration_seconds,
+                    in_flight_jobs=in_flight_jobs,
+                    max_concurrent_jobs=max_concurrent_jobs,
+                )
 
             except asyncio.CancelledError:
                 logger.info("Worker canceled")

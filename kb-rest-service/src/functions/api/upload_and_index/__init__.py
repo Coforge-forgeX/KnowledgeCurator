@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy import select
 
 from shared.adapters.storage import get_storage_adapter as _get_storage_adapter
-from shared.adapters.queue import get_queue_adapter as _get_queue_adapter
+from src.queue_adapters import get_queue_adapter as _get_queue_adapter
 
 from src.core import (
     AuthorizationException,
@@ -66,18 +66,8 @@ def get_storage_adapter(container_name: Optional[str] = None):
     )
 
 
-def get_queue_adapter():
-    """Get queue adapter configured with kb-rest-service settings"""
-    from src.core.config import settings
-
-    queue_provider = settings.active_queue_provider
-    return _get_queue_adapter(
-        provider=queue_provider,
-        connection_string=settings.active_queue_connection,
-        queue_name=settings.active_queue_name,
-        queue_url=settings.SQS_QUEUE_URL if queue_provider == "aws" else None,
-        region_name=settings.AWS_REGION if queue_provider == "aws" else None,
-    )
+# Queue adapter is imported from src.queue_adapters and handles config automatically
+get_queue_adapter = _get_queue_adapter
 
 
 async def get_workspace_context(workspace_id: int) -> Optional[Dict]:
@@ -432,7 +422,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
     """
     # Parse request
     payload, error_response = parse_request(req, UploadAndIndexRequest)
-    print("Request parsed")
+
     if error_response:
         return error_response
 
@@ -466,10 +456,10 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         raise AuthorizationException(
             message="You do not have permission to curate knowledge base in this workspace"
         )
-    print("All Auth Success")
+
     # Get workspace storage paths (container, upload_path, domain, kb_name)
     workspace_paths = await get_workspace_storage_paths(workspace_id)
-    print(f"workspace path: {workspace_paths}")
+
     if not workspace_paths:
         logger.error("Failed to get workspace storage paths", workspace_id=workspace_id)
         return create_error_response(

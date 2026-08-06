@@ -185,6 +185,17 @@ class AzureSettings(BaseSettings):
     )
     INDEXING_QUEUE_NAME: str = Field(default="kb-indexing-jobs", env="AZURE_INDEXING_QUEUE_NAME")
 
+    # Azure Service Bus (recommended for production)
+    SERVICE_BUS_CONNECTION_STRING: Optional[str] = Field(
+        default=None, env="SERVICE_BUS_CONNECTION_STRING"
+    )
+    SERVICE_BUS_TOPIC_NAME: Optional[str] = Field(
+        default=None, env="SERVICE_BUS_TOPIC_NAME"
+    )
+    SERVICE_BUS_SUBSCRIPTION_NAME: Optional[str] = Field(
+        default=None, env="SERVICE_BUS_SUBSCRIPTION_NAME"
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -242,6 +253,39 @@ class SecuritySettings(BaseSettings):
         if len(v) < 32:
             raise ValueError("JWT_SECRET_KEY must be at least 32 characters long")
         return v
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+
+class ProgressSettings(BaseSettings):
+    """Progress and event bus configuration settings"""
+
+    # Progress backend configuration
+    PROGRESS_BACKEND: str = Field(default="auto", env="PROGRESS_BACKEND")
+    EVENT_BUS_PROVIDER: Optional[str] = Field(default=None, env="EVENT_BUS_PROVIDER")
+
+    # Azure Service Bus settings
+    EVENT_BUS_CONNECTION_STRING: Optional[str] = Field(
+        default=None, env="EVENT_BUS_CONNECTION_STRING"
+    )
+    SERVICE_BUS_CONNECTION_STRING: Optional[str] = Field(
+        default=None, env="SERVICE_BUS_CONNECTION_STRING"
+    )
+    PROGRESS_QUEUE: Optional[str] = Field(default=None, env="PROGRESS_QUEUE")
+    PROGRESS_TOPIC: str = Field(default="agent-progress", env="PROGRESS_TOPIC")
+
+    # AWS EventBridge settings
+    PROGRESS_EVENT_BUS: str = Field(default="default", env="PROGRESS_EVENT_BUS")
+
+    # Local relay settings
+    PROGRESS_LOCAL_RELAY_URL: str = Field(
+        default="http://127.0.0.1:8090/publish", env="PROGRESS_LOCAL_RELAY_URL"
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -379,6 +423,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = DatabaseSettings()
     azure: AzureSettings = AzureSettings()
     security: SecuritySettings = SecuritySettings()
+    progress: ProgressSettings = ProgressSettings()
     lightrag: LightRAGSettings = LightRAGSettings()
     storage: StorageSettings = StorageSettings()
     blob: BlobSettings = BlobSettings()
@@ -445,6 +490,8 @@ class Settings(BaseSettings):
             return self.SQS_QUEUE_URL
         if provider == "redis":
             return self.REDIS_QUEUE_URL or self.database.redis_url
+        if provider == "azure_service_bus":
+            return self.azure.SERVICE_BUS_CONNECTION_STRING
         return self.azure.AZURE_STORAGE_CONNECTION_STRING
 
     model_config = SettingsConfigDict(

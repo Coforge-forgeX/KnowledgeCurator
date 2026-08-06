@@ -94,6 +94,20 @@ class AzureSettings(BaseSettings):
     QUEUE_POLL_INTERVAL: int = Field(default=5)
     WORKSPACE_CONTAINER_NAME: str = Field(default="workspace")
 
+    # Azure Service Bus (recommended for production)
+    SERVICE_BUS_CONNECTION_STRING: Optional[str] = Field(
+        default=None,
+        env="SERVICE_BUS_CONNECTION_STRING",
+    )
+    SERVICE_BUS_TOPIC_NAME: Optional[str] = Field(
+        default=None,
+        env="SERVICE_BUS_TOPIC_NAME",
+    )
+    SERVICE_BUS_SUBSCRIPTION_NAME: Optional[str] = Field(
+        default=None,
+        env="SERVICE_BUS_SUBSCRIPTION_NAME",
+    )
+
     # Azure Document Intelligence
     AZURE_DOC_INTELLIGENCE_ENDPOINT: Optional[str] = Field(
         default=None,
@@ -230,6 +244,10 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_JOBS: int = Field(default=10)
     MESSAGE_VISIBILITY_TIMEOUT: int = Field(default=300)
     MAX_RETRIES: int = Field(default=3)
+    # Maximum lock renewal duration for Service Bus messages (in seconds)
+    # Set this to the maximum expected job duration to prevent lock expiration
+    # Default: 1800 seconds (30 minutes)
+    MAX_LOCK_RENEWAL_DURATION: int = Field(default=1800)
 
     # Nested settings
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)

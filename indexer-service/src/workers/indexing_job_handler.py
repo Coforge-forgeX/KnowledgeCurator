@@ -630,7 +630,7 @@ async def upsert_document_metadata(
                     "content_hash": stmt.excluded.content_hash,
                     "total_chunks": stmt.excluded.total_chunks,
                     "doc_type": stmt.excluded.doc_type,
-                    "doc_metadata": stmt.excluded.doc_metadata,
+                    "metadata": stmt.excluded.metadata,  # Use DB column name for both key and value
                     "indexed_at": stmt.excluded.indexed_at,
                     "updated_at": now,
                 },
