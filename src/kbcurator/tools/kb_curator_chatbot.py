@@ -5,6 +5,7 @@ import ast
 from dotenv import load_dotenv
 import json
 import psycopg2
+import asyncio
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 # Third-party and internal imports
@@ -26,6 +27,15 @@ from kbcurator.utils.access_validation import (
     validate_chatbot_request_scope,
 )
 from kbcurator.utils.request_context import request_var
+
+# Cancellation support (used by UI Stop button via `cancel_conversation` MCP tool)
+from common_adapters.cancel_convesation import (
+    CancelledError,
+    is_cancelled,
+    register_task,
+    unregister_task,
+    clear_cancellation,
+)
 # from tools.userManagementSystem import Session, UserMap
 from kbcurator.utils.db import db
 from fastmcp.server.dependencies import get_http_headers
@@ -302,10 +312,54 @@ class Chatbot:
             return []
 
     async def process_message(self, message: str):
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("No current asyncio task")
+
+        # Frontend sends cancel using conversation_id == session_id.
+        conversation_id = str(self.session_id)
+        register_task(conversation_id=conversation_id, task=task)
+
+        cancel_watcher: asyncio.Task | None = None
+
+        async def _cancel_watch() -> None:
+            try:
+                while True:
+                    if await is_cancelled(conversation_id=conversation_id):
+                        task.cancel()
+                        return
+                    await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                return
+
+        async def _await_with_cancellation(coro, *, poll_interval: float = 0.1):
+            """Await a coroutine while polling cancellation for responsive STOP behavior."""
+            op_task = asyncio.create_task(coro)
+            try:
+                while True:
+                    if op_task.done():
+                        return await op_task
+                    if await is_cancelled(conversation_id=conversation_id):
+                        op_task.cancel()
+                        raise asyncio.CancelledError()
+                    await asyncio.sleep(poll_interval)
+            finally:
+                if not op_task.done():
+                    op_task.cancel()
+
         try:
+            cancel_watcher = asyncio.create_task(_cancel_watch())
+
             print(f"Inside Process message: {message}")
             context = self.get_or_create_context(self.session_id)
             insert_id = self.session.append_message(self.workspace_id, self.user_id, self.session_id, "user", message, [])
+            # Seed title/time once when the first user message for this session is stored.
+            self.session.ensure_conversation_metadata(
+                self.workspace_id,
+                self.user_id,
+                self.session_id,
+                (message or "").strip(),
+            )
             context.conversation_history.append({
                 "timestamp": datetime.now().isoformat(),
                 "user": self.user_id,
@@ -362,7 +416,7 @@ class Chatbot:
         #     return "Sorry, something went wrong while processing your request. Please try again"
             print(f"Detected intent: {intent} for message: {message[:50]}")
 
-            intent_response = await self.route_intent(intent, message, context, self.agent_id)
+            intent_response = await _await_with_cancellation(self.route_intent(intent, message, context, self.agent_id))
             print("Query RAG response: ", str(intent_response)[:50])
             
             # Handle different response types
@@ -420,9 +474,16 @@ class Chatbot:
             
             # print(f"Updated context history length: {context.conversation_history}")
             return response
+        except (asyncio.CancelledError, CancelledError):
+            return {"Request cancelled."}
         except Exception as e:
             print(f"Error processing message: {e}")
             return "Sorry, something went wrong while processing your request. Please try again"
+        finally:
+            if cancel_watcher is not None:
+                cancel_watcher.cancel()
+            unregister_task(conversation_id=conversation_id)
+            clear_cancellation(conversation_id=conversation_id)
         
     async def route_intent(self, intent: str, message: str, context: ChatbotContext, agent_id: str | int):
         """Route to the appropriate handler based on detected intent."""
@@ -489,7 +550,22 @@ class Chatbot:
             history = self.session.load_history(self.workspace_id, self.user_id, self.session_id)
             history = history[-5:]
             # print(f"History: {history}, type: {type(history)}")
-            assistant_message = await self.mcp_tool_obj.query_rag('Search',message, history, self.workspace_id, self.role_id, agent_id=self.agent_id)
+            # Check for cancellation before starting long-running RAG.
+            if await is_cancelled(conversation_id=str(self.session_id)):
+                raise asyncio.CancelledError()
+
+            assistant_message = await self.mcp_tool_obj.query_rag(
+                'Search',
+                message,
+                history,
+                self.workspace_id,
+                self.role_id,
+                agent_id=self.agent_id,
+            )
+
+            # Check cancellation again right after the call.
+            if await is_cancelled(conversation_id=str(self.session_id)):
+                raise asyncio.CancelledError()
             print(f"Query RAG response type: {type(assistant_message)}")
             
             # Check if response is structured (dict with sources) or plain text
@@ -509,6 +585,8 @@ class Chatbot:
                 # Backward compatibility: plain text response
                 print(f"Plain text response: {str(assistant_message)[:50]}")
                 return str(assistant_message)
+        except (asyncio.CancelledError, CancelledError):
+            return {"response": "Request cancelled.", "cancelled": True}
         except Exception as e:
             return (f"Error occurred while handling search: {e}")
 
@@ -1187,11 +1265,15 @@ async def message_gpt(
         response = await bot.process_message(user_message)
         #return {"response": response}
         # Check if response is structured with sources
+        # Cancellation should return plain text, not a JSON object.
+        if isinstance(response, dict) and response.get("cancelled") is True:
+            return {"response": response.get("response", "Request cancelled.")}
+
         if isinstance(response, dict) and ("sources" in response or "task_ids" in response):
             return {
                 "response": response.get("response", ""),
                 "sources": response.get("sources", []),
-             #   "sources": response.get("task_ids", [])
+              #   "sources": response.get("task_ids", [])
                 "task_ids":response.get("task_ids",[])
             }
         else:
@@ -1202,7 +1284,7 @@ async def message_gpt(
 
 @mcp.tool()
 def get_conversation_history(workspace_id: str = None, user_id: str = None, limit: Optional[int] = None) -> Dict[str, Any]:
-    """Get recent conversation history for a user."""
+    """Get recent conversation metadata for a user."""
     if user_id is None:
         return {"status": "error", "error": "user_id cannot be null"}
     # --- JWT-based authentication and workspace-user mapping check (copied from message_gpt and ingestion_new.py tools) ---
@@ -1256,48 +1338,84 @@ def get_conversation_history(workspace_id: str = None, user_id: str = None, limi
 
     try:
         # Treat `limit` as:
-        # - when provided: number of recent sessions to summarize
+        # - when provided: number of recent sessions to return
         # - when omitted/0: return all sessions
         sessions_limit = 0 if (limit is None) else int(limit)
-        con_hist = session.get_recent_sessions(workspace_id_q, user_id_q, limit=sessions_limit)
-
-        # SessionHistoryManager.get_recent_sessions may return a sentinel string list.
-        if not con_hist or (len(con_hist) == 1 and con_hist[0] in ["No sessions found", "Error fetching sessions"]):
-            return {"response": []}
-
-        conversations = []
-        for ses in con_hist:
-            if not ses or ses in ["No sessions found", "Error fetching sessions"]:
-                continue
-            data = session.load_history(workspace_id_q, user_id_q, ses)
-            title = session.get_conversation_title(workspace_id_q, user_id_q, ses)
-
-            if not isinstance(data, list) or not data:
-                conversations.append({
-                    "session_id": ses,
-                    "time_modified": "N/A",
-                    "title": title,
-                    "user": None,
-                    "assistant": None,
-                    "task_ids": None,
-                })
-                continue
-
-            assistant_msg = next((msg for msg in reversed(data) if msg.get("role") == "assistant"), None)
-            user_msg = next((msg for msg in reversed(data) if msg.get("role") == "user"), None)
-            last_msg = data[-1] if data else {}
-            conversations.append({
-                "session_id": ses,
-                "time_modified": last_msg.get("timestamp", "N/A"),
-                "title": title,
-                "user": user_msg.get("content") if user_msg else None,
-                "assistant": assistant_msg.get("content") if assistant_msg else None,
-                "task_ids": assistant_msg.get("task_ids") if assistant_msg else None,
-            })
-
-        return {"response": conversations}
+        conversations = session.get_recent_conversation_summaries(workspace_id_q, user_id_q, limit=sessions_limit)
+        return {"response": conversations or []}
     except Exception as e:
         return {"error":f"Error occurred while retrieving conversation history: {e}"}
+
+@mcp.tool()
+def rename_conversation(workspace_id: str, user_id: str, session_id: str, title: str) -> Dict[str, Any]:
+    """Rename a conversation by updating its title."""
+    if user_id is None:
+        return {"status": "error", "error": "user_id cannot be null"}
+    if not workspace_id:
+        return {"error": "workspace_id is required for authentication."}
+    if not session_id:
+        return {"error": "session_id is required."}
+
+    normalized_title = (title or "").strip()
+    if not normalized_title:
+        return {"error": "title cannot be empty."}
+
+    # Validate user access to workspace
+    valid, err = validate_user_workspace_access(
+        user_id=user_id,
+        workspace_id=workspace_id,
+    )
+    if not valid:
+        return {"error": err}
+
+    # Enforce JWT-based access: only allow if user is mapped to the workspace and user_id matches JWT
+    request = request_var.get(None)
+    if not request or not hasattr(request.state, "jwt_claims"):
+        return {"error": "Unauthorized: JWT claims not found in request context"}
+    claims = request.state.jwt_claims
+    jwt_user_id = claims.get("user_id") or claims.get("sub")
+    if not jwt_user_id:
+        return {"error": "Unauthorized: user_id not found in token claims"}
+    if str(user_id) != str(jwt_user_id):
+        return {"error": "Unauthorized: user_id in request does not match user in token"}
+
+    # Check if user is mapped to this workspace
+    session_db = db.Session()
+    try:
+        user_map = session_db.query(db.UserMap).filter_by(workspace_id=workspace_id, user_id=jwt_user_id, is_active=True).first()
+        if not user_map:
+            session_db.close()
+            return {"error": "You are not authorized to access this workspace."}
+    except Exception as e:
+        session_db.close()
+        return {"error": str(e)}
+    finally:
+        pass
+
+    try:
+        # Normalize IDs to match stored types.
+        try:
+            workspace_id_q = int(workspace_id) if workspace_id is not None else workspace_id
+        except (TypeError, ValueError):
+            workspace_id_q = workspace_id
+        try:
+            user_id_q = int(user_id) if user_id is not None else user_id
+        except (TypeError, ValueError):
+            user_id_q = user_id
+
+        result = session.set_conversation_title(workspace_id_q, user_id_q, session_id, normalized_title)
+        if isinstance(result, dict) and result.get("status") == "error":
+            return {"error": result.get("message", "Failed to rename conversation.")}
+
+        return {
+            "response": {
+                "session_id": session_id,
+                "title": normalized_title,
+                "operation": result.get("operation") if isinstance(result, dict) else "updated",
+            }
+        }
+    except Exception as e:
+        return {"error": f"Error occurred while renaming conversation: {e}"}
 
 @mcp.tool()
 def load_conversation(workspace_id: str, user_id: str, session_id: str) -> Dict[str, Any]:
@@ -1338,8 +1456,19 @@ def load_conversation(workspace_id: str, user_id: str, session_id: str) -> Dict[
     finally:
         pass
 
+    # Mongo history is stored with integer workspace_id/user_id (see message_gpt).
+    # Normalize IDs so callers can pass strings (typical JSON payloads).
     try:
-        response = session.load_history(workspace_id, user_id, session_id)
+        workspace_id_q = int(workspace_id) if workspace_id is not None else workspace_id
+    except (TypeError, ValueError):
+        workspace_id_q = workspace_id
+    try:
+        user_id_q = int(user_id) if user_id is not None else user_id
+    except (TypeError, ValueError):
+        user_id_q = user_id
+
+    try:
+        response = session.load_history(workspace_id_q, user_id_q, session_id)
         return {"response": response}
     except Exception as e:
         return {"error": f"Error occurred while loading conversation: {e}"}
@@ -1383,8 +1512,19 @@ def delete_conversation(workspace_id: str, user_id: str, session_id: str) -> Dic
     finally:
         pass
 
+    # Mongo history is stored with integer workspace_id/user_id (see message_gpt).
+    # Normalize IDs so callers can pass strings (typical JSON payloads).
     try:
-        response = session.delete_session(workspace_id, user_id, session_id)
+        workspace_id_q = int(workspace_id) if workspace_id is not None else workspace_id
+    except (TypeError, ValueError):
+        workspace_id_q = workspace_id
+    try:
+        user_id_q = int(user_id) if user_id is not None else user_id
+    except (TypeError, ValueError):
+        user_id_q = user_id
+
+    try:
+        response = session.delete_session(workspace_id_q, user_id_q, session_id)
         return {"response": response}
     except Exception as e:
         return {"error": f"Error occurred while deleting conversation: {e}"}
