@@ -644,6 +644,48 @@ async def get_dashboard_overview(
 
 @mcp.tool()
 @require_auth_async
+async def get_user_token_details(
+    workspace_id: str,
+    user_email: Optional[str] = None,
+    user_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Get user token quota details for a workspace."""
+    config = server.trustai_db_manager.get_workspace_config(workspace_id)
+    if not config:
+        return {"error": "Workspace configuration not found"}
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{TRUSTAI_BASE_URL}/dashboard/user-token-details",
+            headers=_build_headers(config, user_email=user_email, user_id=user_id)
+        )
+        return _wrap_response(response.json())
+
+
+@mcp.tool()
+@require_auth_async
+async def batch_update_user_token_limit(
+    workspace_id: str,
+    updates: List[Dict[str, Any]],
+    user_email: Optional[str] = None,
+    user_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Batch update user token limits for a workspace."""
+    config = server.trustai_db_manager.get_workspace_config(workspace_id)
+    if not config:
+        return {"error": "Workspace configuration not found"}
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{TRUSTAI_BASE_URL}/dashboard/user-token-limit/batch",
+            headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
+            json={"updates": updates}
+        )
+        return _wrap_response(response.json())
+
+
+@mcp.tool()
+@require_auth_async
 async def list_api_keys(
     workspace_id: str,
     user_email: Optional[str] = None,

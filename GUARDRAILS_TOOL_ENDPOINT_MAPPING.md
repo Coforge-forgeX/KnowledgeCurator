@@ -1,6 +1,6 @@
 # Guardrails Tool-to-Endpoint Mapping
 
-Last updated: 2026-08-04
+Last updated: 2026-08-06
 
 This document captures the backend tool-to-endpoint mapping, input contracts, and real request/response samples.
 
@@ -481,6 +481,110 @@ This document captures the backend tool-to-endpoint mapping, input contracts, an
       "created_at": "2026-08-04T07:00:00Z"
     }
   ]
+}
+```
+
+## 15) Get user token quota details
+- Tool: `get_user_token_details`
+- Method: `GET`
+- Endpoint: `/dashboard/user-token-details`
+- Inputs:
+  - `workspace_id` (required)
+  - `user_email` (required)
+  - `user_id` (optional)
+- Query params: none
+- Real sample request:
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "get_user_token_details",
+    "arguments": {
+      "workspace_id": "220",
+      "user_email": null,
+      "user_id": null
+    }
+  }
+}
+```
+- Real sample response:
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"response\":[{\"id\":\"7e148126-4ed9-40f3-9dfa-6f8766554b0c\",\"user_id\":\"aadarsh.s@coforge.com\",\"max_input_token_limit\":10000,\"current_input_token_usage\":5158,\"record_created_at\":\"2026-08-06T06:23:31.498688\",\"record_updated_at\":\"2026-08-06T08:08:40.750336\"}]}"
+    }
+  ],
+  "structuredContent": {
+    "response": [
+      {
+        "id": "7e148126-4ed9-40f3-9dfa-6f8766554b0c",
+        "user_id": "aadarsh.s@coforge.com",
+        "max_input_token_limit": 10000,
+        "current_input_token_usage": 5158,
+        "record_created_at": "2026-08-06T06:23:31.498688",
+        "record_updated_at": "2026-08-06T08:08:40.750336"
+      }
+    ]
+  },
+  "isError": false,
+  "_meta": {
+    "fastmcp": {
+      "tags": []
+    }
+  }
+}
+```
+
+## 16) Batch update user token quota limits
+- Tool: `batch_update_user_token_limit`
+- Method: `POST`
+- Endpoint: `/dashboard/user-token-limit/batch`
+- Inputs:
+  - `workspace_id` (required)
+  - `updates` (required)
+  - `user_email` (required)
+  - `user_id` (optional)
+- Real sample request:
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "batch_update_user_token_limit",
+    "arguments": {
+      "workspace_id": "220",
+      "updates": [
+        {
+          "id": "7e148126-4ed9-40f3-9dfa-6f8766554b0c",
+          "max_input_token_limit": 20000
+        }
+      ],
+      "user_email": null,
+      "user_id": null
+    }
+  }
+}
+```
+- Real sample response:
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"message\":\"Updated 1 of 1 records\",\"errors\":null}"
+    }
+  ],
+  "structuredContent": {
+    "message": "Updated 1 of 1 records",
+    "errors": null
+  },
+  "isError": false,
+  "_meta": {
+    "fastmcp": {
+      "tags": []
+    }
+  }
 }
 ```
 
