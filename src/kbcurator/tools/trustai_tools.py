@@ -487,23 +487,109 @@ async def update_regex_pattern_status(
 @require_auth_async
 async def update_regex_pattern(
     workspace_id: str,
-    pattern_id: int,
-    config_dict: Dict[str, Any],
+    updates: Any,
     user_email: Optional[str] = None,
     user_id: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Update regex pattern."""
-    config = server.trustai_db_manager.get_workspace_config(workspace_id)
+    """Update regex pattern.
+
+        Canonical payload format:
+        - workspaceId/workspace_id + updates=[{pattern_id, config_dict}, ...]
+
+    Single pattern update also works by sending one item inside updates,
+    or by sending updates as a single object:
+    - updates={"pattern_id": 9, "config_dict": {...}}
+    """
+    resolved_workspace_id = workspace_id 
+    if not resolved_workspace_id:
+        return {"error": "workspace_id is required"}
+
+    config = server.trustai_db_manager.get_workspace_config(resolved_workspace_id)
     if not config:
         return {"error": "Workspace configuration not found"}
 
+    # Normalize to a single canonical format: updates list.
+    normalized_updates: Optional[List[Dict[str, Any]]] = None
+    if isinstance(updates, dict):
+        normalized_updates = [updates]
+    elif isinstance(updates, list):
+        normalized_updates = updates
+
+    if not isinstance(normalized_updates, list):
+        return {
+            "error": "updates is required and must be a list (or a single object with pattern_id and config_dict)"
+        }
+
+    if len(normalized_updates) == 0:
+        return {"error": "updates must not be empty"}
+
+    results: List[Dict[str, Any]] = []
+    success_count = 0
+    failure_count = 0
+
     async with httpx.AsyncClient() as client:
-        response = await client.put(
-            f"{TRUSTAI_BASE_URL}/trustai-api/guardrails/regex-patterns/{pattern_id}",
-            headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
-            json=config_dict
-        )
-        return _wrap_response(response.json())
+        for item in normalized_updates:
+            if not isinstance(item, dict):
+                failure_count += 1
+                results.append({
+                    "status": "error",
+                    "error": "Each item in updates must be an object",
+                    "item": item
+                })
+                continue
+
+            item_pattern_id = item.get("pattern_id")
+            item_config_dict = item.get("config_dict")
+
+            if item_pattern_id is None or not isinstance(item_config_dict, dict):
+                failure_count += 1
+                results.append({
+                    "status": "error",
+                    "pattern_id": item_pattern_id,
+                    "error": "Each update item must include pattern_id and config_dict"
+                })
+                continue
+
+            try:
+                response = await client.put(
+                    f"{TRUSTAI_BASE_URL}/guardrails/regex-patterns/{item_pattern_id}",
+                    headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
+                    json=item_config_dict
+                )
+                wrapped = _wrap_response(response.json())
+
+                if response.is_error:
+                    failure_count += 1
+                    results.append({
+                        "status": "error",
+                        "pattern_id": item_pattern_id,
+                        "http_status": response.status_code,
+                        "response": wrapped
+                    })
+                else:
+                    success_count += 1
+                    results.append({
+                        "status": "success",
+                        "pattern_id": item_pattern_id,
+                        "response": wrapped
+                    })
+            except Exception as exc:
+                failure_count += 1
+                results.append({
+                    "status": "error",
+                    "pattern_id": item_pattern_id,
+                    "error": str(exc)
+                })
+
+    overall_status = "success" if failure_count == 0 else ("partial_success" if success_count > 0 else "error")
+    return {
+        "status": overall_status,
+        "workspace_id": resolved_workspace_id,
+        "total": len(normalized_updates),
+        "updated_count": success_count,
+        "failed_count": failure_count,
+        "results": results
+    }
 
 
 @mcp.tool()
@@ -552,6 +638,48 @@ async def get_dashboard_overview(
             f"{TRUSTAI_BASE_URL}/trustai-api/dashboard/overview",
             params={"start_date": start_date, "end_date": end_date},
             headers=_build_headers(config, user_email=user_email, user_id=user_id)
+        )
+        return _wrap_response(response.json())
+
+
+@mcp.tool()
+@require_auth_async
+async def get_user_token_details(
+    workspace_id: str,
+    user_email: Optional[str] = None,
+    user_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Get user token quota details for a workspace."""
+    config = server.trustai_db_manager.get_workspace_config(workspace_id)
+    if not config:
+        return {"error": "Workspace configuration not found"}
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{TRUSTAI_BASE_URL}/dashboard/user-token-details",
+            headers=_build_headers(config, user_email=user_email, user_id=user_id)
+        )
+        return _wrap_response(response.json())
+
+
+@mcp.tool()
+@require_auth_async
+async def batch_update_user_token_limit(
+    workspace_id: str,
+    updates: List[Dict[str, Any]],
+    user_email: Optional[str] = None,
+    user_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Batch update user token limits for a workspace."""
+    config = server.trustai_db_manager.get_workspace_config(workspace_id)
+    if not config:
+        return {"error": "Workspace configuration not found"}
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{TRUSTAI_BASE_URL}/dashboard/user-token-limit/batch",
+            headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True),
+            json={"updates": updates}
         )
         return _wrap_response(response.json())
 
