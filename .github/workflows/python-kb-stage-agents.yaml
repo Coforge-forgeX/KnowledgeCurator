@@ -4,17 +4,17 @@ on:
   workflow_dispatch: 
   push:
     branches:
-      - main
+      - stage
     paths:    
       - 'src/kbcurator/**'
       - 'Dockerfile'
-      - '.github/workflows/python-kb-prod-agents.yaml'
+      - '.github/workflows/python-kb-stage-agents.yaml'
    
 env:
-  AZURE_WEBAPP_NAME: forgeX2-kb                     
+  AZURE_WEBAPP_NAME: forgeX-stg-kb                     
   REGISTRY: ${{ secrets.registry }}
-  DOCKER_IMAGE_NAME: prod-poly-kbcurator
-  rg_name: ${{ secrets.PROD_RG_NAME }}
+  DOCKER_IMAGE_NAME: stg-poly-kbcurator
+  rg_name: ${{ secrets.STG_RG_NAME }}
   subscription_id: ${{ secrets.subscription_id }}
 
 jobs:
