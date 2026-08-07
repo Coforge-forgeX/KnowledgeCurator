@@ -479,22 +479,12 @@ class Chatbot:
         except (asyncio.CancelledError, CancelledError):
             return {"Request cancelled."}
         except GuardrailBlockedException as gbe:
-            # Log the guardrail block event
-            logger.warning(
-                f"[GUARDRAIL_BLOCKED] workspace={self.workspace_id} user={self.user_id} "
-                f"session={self.session_id} blocked_by={gbe.blocked_by} "
-                f"details={gbe.details}"
-            )
             # Rollback: delete the user message from session history
             if user_message_id:
                 self.session.delete_message(user_message_id)
                 logger.info(f"[GUARDRAIL_BLOCKED] Rolled back user message {user_message_id}")
-            # Return the block message to user WITHOUT saving to session history
-            return {
-                "response": gbe.get_user_message(),
-                "blocked": True,
-                "blocked_by": gbe.blocked_by
-            }
+            # Re-raise to be handled by message_gpt for consistent UI responses
+            raise
         except Exception as e:
             print(f"Error processing message: {e}")
             return "Sorry, something went wrong while processing your request. Please try again"
@@ -1297,6 +1287,16 @@ async def message_gpt(
             }
         else:
             return {"response": response}
+    except GuardrailBlockedException as gbe:
+        logger.warning(
+            f"[GUARDRAIL_BLOCKED] workspace={workspace_id} user={user_id} "
+            f"blocked_by={gbe.blocked_by} details={gbe.details}"
+        )
+        return {
+            "response": gbe.get_user_message(),
+            "blocked": True,
+            "blocked_by": gbe.blocked_by
+        }
     except Exception as e:
         print(f"Error in message_gpt: {e}")
         return {"error":f"Sorry, something went wrong while processing your request. Please try again.{e}"}
