@@ -244,6 +244,7 @@ def login_user(email: str, password: str):
                         seen_workspaces.add(workspace_id)
                         workspaces.append({
                             'workspace_id': workspace.workspace_id,
+                            'public_workspace_id': str(workspace.public_workspace_id) if workspace.public_workspace_id else None,
                             'workspace_name': workspace.workspace_name,
                             'workspace_desc': workspace.workspace_desc
                         })
@@ -405,6 +406,7 @@ def refresh_jwt_token(refresh_token: str = None):
                 seen_workspaces.add(workspace_id)
                 workspaces.append({
                     'workspace_id': workspace.workspace_id,
+                    'public_workspace_id': str(workspace.public_workspace_id) if workspace.public_workspace_id else None,
                     'workspace_name': workspace.workspace_name,
                     'workspace_desc': workspace.workspace_desc
                 })
@@ -625,6 +627,7 @@ def fetch_workspaces_list(user_id):
                 dummy_workspace_id = 1
             dummy_workspace = {
                 'workspace_id': dummy_workspace_id,
+                'public_workspace_id': None,
                 'workspace_name': dummy_workspace_name,
                 'workspace_desc': dummy_workspace_desc,
                 'agent_count': 0,
@@ -668,6 +671,7 @@ def fetch_workspaces_list(user_id):
 
         base_query = session.query(
             db.Workspace.workspace_id,
+            db.Workspace.public_workspace_id,
             db.Workspace.workspace_name,
             db.Workspace.workspace_desc,
             sql_func.coalesce(agent_count_subq.c.agent_count, 0).label('agent_count'),
@@ -691,6 +695,7 @@ def fetch_workspaces_list(user_id):
         results = [
             {
                 'workspace_id': ws.workspace_id,
+                'public_workspace_id': str(ws.public_workspace_id) if ws.public_workspace_id else None,
                 'workspace_name': ws.workspace_name,
                 'workspace_desc': ws.workspace_desc,
                 'agent_count': ws.agent_count,
@@ -716,6 +721,7 @@ def fetch_workspaces_list(user_id):
                 print(f"Could not assign user {jwt_user_id} to dummy workspace: {assign_exc}")
             results = [{
                 'workspace_id': dummy_ws_id,
+                'public_workspace_id': None,
                 'workspace_name': dummy_ws_name,
                 'workspace_desc': dummy_ws_desc,
                 'agent_count': 0,

@@ -309,6 +309,214 @@ async def mcp_get(request: Request):
 base_app.add_route("/mcp", mcp_get, methods=["GET", "OPTIONS"])
 
 
+# Workspace endpoint - validates user access by public_workspace_id
+async def get_workspace(request: Request):
+    from kbcurator.utils.db import db
+    from sqlalchemy import func as sql_func
+    from datetime import datetime, date
+    from uuid import UUID
+    
+    def serialize_value(val):
+        """Convert non-JSON-serializable types to strings."""
+        if val is None:
+            return None
+        if isinstance(val, (datetime, date)):
+            return val.isoformat()
+        if isinstance(val, UUID):
+            return str(val)
+        return val
+    
+    def serialize_dict(d):
+        """Serialize all values in a dict."""
+        return {k: serialize_value(v) for k, v in d.items()}
+    
+    public_workspace_id = request.path_params.get("public_workspace_id")
+    if not public_workspace_id:
+        return JSONResponse({"error": "public_workspace_id is required"}, status_code=400)
+    
+    # Authenticate user - extract and verify JWT from headers
+    token = extract_token_from_headers(dict(request.headers))
+    if not token:
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+    
+    try:
+        claims = verify_token(token)
+        user_id = claims.get("user_id") or claims.get("sub")
+        if not user_id:
+            return JSONResponse({"error": "Invalid token: no user_id"}, status_code=401)
+    except Exception as e:
+        return JSONResponse({"error": f"Invalid token: {str(e)}"}, status_code=401)
+    
+    session = db.Session()
+    try:
+        # Find workspace by public_workspace_id
+        ws = session.query(db.Workspace).filter(
+            db.Workspace.public_workspace_id == public_workspace_id,
+            db.Workspace.is_active == True
+        ).first()
+        
+        if not ws:
+            return JSONResponse({"error": "Workspace not found"}, status_code=404)
+        
+        workspace_id = ws.workspace_id
+        
+        # Check if user has access to this workspace
+        user_mapping = session.query(db.UserMap).filter(
+            db.UserMap.user_id == user_id,
+            db.UserMap.workspace_id == workspace_id,
+            db.UserMap.is_active == True
+        ).first()
+        
+        if not user_mapping:
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+        
+        # Build workspace info dict
+        ws_info = serialize_dict({col: getattr(ws, col) for col in ws.__table__.columns.keys()})
+        # Convert public_workspace_id to string
+        if ws_info.get('public_workspace_id'):
+            ws_info['public_workspace_id'] = str(ws_info['public_workspace_id'])
+        
+        # Category mapping
+        categories = session.query(db.Category).filter(db.Category.is_active == True).all()
+        cat_map = {str(c.category_id): c.category_name for c in categories}
+        
+        # Fetch industry/subindustry mapping and names
+        ws_ind_map = session.query(db.WorkspaceIndustrySubIndustryMap).filter(
+            db.WorkspaceIndustrySubIndustryMap.workspace_id == workspace_id,
+            db.WorkspaceIndustrySubIndustryMap.is_active == True
+        ).first()
+        industry_id = subindustry_id = intent_id = industry_name = subindustry_name = None
+        if ws_ind_map:
+            industry_id = getattr(ws_ind_map, 'industry_id', None)
+            subindustry_id = getattr(ws_ind_map, 'subindustry_id', None)
+            intent_id = getattr(ws_ind_map, 'intent_id', None)
+            if industry_id:
+                industry_obj = session.query(db.Industry).filter(
+                    db.Industry.industry_id == industry_id, db.Industry.is_active == True
+                ).first()
+                if industry_obj:
+                    industry_name = getattr(industry_obj, 'industry_name', None)
+            if subindustry_id:
+                subindustry_obj = session.query(db.SubIndustry).filter(
+                    db.SubIndustry.subindustry_id == subindustry_id, db.SubIndustry.is_active == True
+                ).first()
+                if subindustry_obj:
+                    subindustry_name = getattr(subindustry_obj, 'subindustry_name', None)
+        
+        # Tools in workspace
+        tool_maps = session.query(db.ToolMap).filter(
+            db.ToolMap.workspace_id == workspace_id, db.ToolMap.is_active == True
+        ).all()
+        tool_map_dict = {tm.tool_id: tm for tm in tool_maps}
+        tool_ids = list(tool_map_dict.keys())
+        tools = []
+        if tool_ids:
+            tool_query = session.query(db.Tool).filter(db.Tool.tool_id.in_(tool_ids))
+            if hasattr(db.Tool, 'is_active'):
+                tool_query = tool_query.filter(db.Tool.is_active == True)
+            for t in tool_query.all():
+                tool_dict = serialize_dict({col: getattr(t, col) for col in t.__table__.columns.keys()})
+                tm = tool_map_dict.get(t.tool_id)
+                last_updated_val = getattr(tm, 'last_updated', None) if tm else None
+                tool_dict['last_updated'] = str(last_updated_val) if last_updated_val else None
+                tool_dict['last_used'] = str(last_updated_val) if last_updated_val else None
+                cat_ids = str(tool_dict.get('tool_category', '') or '').split(',')
+                tool_dict['tool_category'] = [cat_map.get(cid.strip()) for cid in cat_ids if cid.strip() in cat_map]
+                tools.append(tool_dict)
+        
+        # Agents in workspace
+        agent_maps = session.query(db.AgentMap).filter(
+            db.AgentMap.workspace_id == workspace_id, db.AgentMap.is_active == True
+        ).all()
+        agent_map_dict = {am.agent_id: am for am in agent_maps}
+        agent_ids = list(agent_map_dict.keys())
+        agents = []
+        if agent_ids:
+            agent_query = session.query(db.Agent).filter(db.Agent.agent_id.in_(agent_ids))
+            if hasattr(db.Agent, 'is_active'):
+                agent_query = agent_query.filter(db.Agent.is_active == True)
+            for a in agent_query.all():
+                agent_dict = serialize_dict({col: getattr(a, col) for col in a.__table__.columns.keys()})
+                am = agent_map_dict.get(a.agent_id)
+                last_updated_val = getattr(am, 'last_updated', None) if am else None
+                agent_dict['last_updated'] = str(last_updated_val) if last_updated_val else None
+                agent_dict['last_used'] = str(last_updated_val) if last_updated_val else None
+                cat_ids = str(agent_dict.get('agent_category', '') or '').split(',')
+                agent_dict['agent_category'] = [cat_map.get(cid.strip()) for cid in cat_ids if cid.strip() in cat_map]
+                agent_dict['type'] = 'agent'
+                agents.append(agent_dict)
+        
+        # Users in workspace
+        users = []
+        user_data_query = (
+            session.query(db.User, db.Role, db.UserMap)
+            .join(db.UserMap, db.UserMap.user_id == db.User.user_id)
+            .outerjoin(db.Role, (db.UserMap.role_id == db.Role.role_id) & (db.Role.is_active == True))
+            .filter(db.UserMap.workspace_id == workspace_id, db.UserMap.is_active == True)
+        )
+        if hasattr(db.User, 'is_active'):
+            user_data_query = user_data_query.filter(db.User.is_active == True)
+        for user, role, user_map in user_data_query.all():
+            user_dict = serialize_dict({col: getattr(user, col) for col in user.__table__.columns.keys()})
+            user_dict['role'] = getattr(role, 'role_name', None) if role else None
+            user_dict['role_id'] = getattr(user_map, 'role_id', None)
+            user_dict['permissions'] = getattr(user_map, 'permissions', None)
+            user_dict['can_curate_kb'] = getattr(user_map, 'can_curate_kb', None)
+            users.append(user_dict)
+        
+        # Knowledge bases
+        knowledge_bases = []
+        if industry_name and subindustry_name:
+            industry_obj = session.query(db.Industry).filter(
+                sql_func.lower(db.Industry.industry_name) == industry_name.strip().lower(),
+                db.Industry.is_active == True
+            ).first()
+            subindustry_obj = session.query(db.SubIndustry).filter(
+                sql_func.lower(db.SubIndustry.subindustry_name) == subindustry_name.strip().lower(),
+                db.SubIndustry.is_active == True
+            ).first()
+            if industry_obj and subindustry_obj:
+                kb_query = session.query(db.WorkspaceIndustrySubIndustryMap).filter(
+                    db.WorkspaceIndustrySubIndustryMap.industry_id == industry_obj.industry_id,
+                    db.WorkspaceIndustrySubIndustryMap.subindustry_id == subindustry_obj.subindustry_id,
+                    db.WorkspaceIndustrySubIndustryMap.workspace_id == workspace_id,
+                    db.WorkspaceIndustrySubIndustryMap.is_active == True
+                )
+                for row in kb_query.all():
+                    if row.kb_id:
+                        kb_obj = session.query(db.KnowledgeBase).filter(
+                            db.KnowledgeBase.id == row.kb_id, db.KnowledgeBase.is_active == True
+                        ).first()
+                        if kb_obj:
+                            knowledge_bases.append({
+                                'id': getattr(kb_obj, 'id', None),
+                                'title': getattr(kb_obj, 'title', None),
+                                'description': getattr(kb_obj, 'description', None)
+                            })
+        
+        return JSONResponse({
+            "workspace": ws_info,
+            "industry": industry_id,
+            "industry_name": industry_name,
+            "subindustry": subindustry_id,
+            "subindustry_name": subindustry_name,
+            "intent": intent_id,
+            "tools": tools,
+            "agents": agents,
+            "users": users,
+            "knowledge_bases": knowledge_bases
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        session.close()
+
+
+base_app.add_route("/workspaces/{public_workspace_id}", get_workspace, methods=["GET"])
+
+
+
+
 # ---------------------------
 # Cookie wrapper (refresh token)
 # ---------------------------

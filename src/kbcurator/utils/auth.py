@@ -637,7 +637,7 @@ def _fetch_user_workspaces(user_id: int) -> list:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT wm.workspace_id, wm.workspace_name, wm.workspace_desc
+                SELECT wm.workspace_id, wm.public_workspace_id, wm.workspace_name, wm.workspace_desc
                 FROM public.workspace_master wm
                 JOIN public.workspace_users_mapping wum
                   ON wum.workspace_id = wm.workspace_id
