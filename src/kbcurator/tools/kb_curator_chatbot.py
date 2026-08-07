@@ -478,12 +478,9 @@ class Chatbot:
             return response
         except (asyncio.CancelledError, CancelledError):
             return {"Request cancelled."}
-        except GuardrailBlockedException as gbe:
-            # Rollback: delete the user message from session history
-            if user_message_id:
-                self.session.delete_message(user_message_id)
-                logger.info(f"[GUARDRAIL_BLOCKED] Rolled back user message {user_message_id}")
+        except GuardrailBlockedException:
             # Re-raise to be handled by message_gpt for consistent UI responses
+            # User message is preserved in history (same as cancellation)
             raise
         except Exception as e:
             print(f"Error processing message: {e}")
