@@ -52,11 +52,9 @@ HANDLER_MODULE_PATHS: Dict[str, str] = {
     "list_indexed_documents": "src.functions.api.list_indexed_documents",
     "delete_documents": "src.functions.api.delete_documents",
     # Knowledge Base Query
-    "kb_query": "src.functions.api.kb_query",
-    "query_kb": "src.functions.api.query_kb",
+    "query_rag": "src.functions.api.query_rag",  # Optimized RAG query handler
     "kb_index": "src.functions.api.kb_index",
-    # Chat & LLM
-    "kb_chat": "src.functions.api.kb_chat",
+    # LLM
     "llm_route": "src.functions.api.llm_route",
     # Knowledge Graph
     "get_knowledge_graph": "src.functions.api.get_knowledge_graph",
@@ -78,7 +76,7 @@ def get_handler(handler_name: str) -> ModuleType:
     Get handler module by name with lazy loading and caching.
 
     Args:
-        handler_name: Name of the handler (e.g., "upload_and_index", "kb_query")
+        handler_name: Name of the handler (e.g., "upload_and_index", "query_kb")
 
     Returns:
         Handler module with a `main` function

@@ -6,27 +6,20 @@ and updates file_tasks status.
 """
 
 import asyncio
-import base64
 import hashlib
-import io
 import inspect
-import json
 import os
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
-from azure.core.credentials import AzureKeyCredential
-from azure.ai.documentintelligence import DocumentIntelligenceClient
-from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
-from azure.storage.blob import BlobServiceClient
-from docx import Document
-from lightrag import LightRAG, QueryParam
+from lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc
 from shared.lightrag import (
     build_azure_openai_chat_completion_func,
     build_azure_openai_embedding_func,
     RateLimitError,
 )
+from services.text_extraction import TextExtractionError, get_text_extraction_service
 
 from core.config import settings
 from core.logging import get_logger
@@ -159,48 +152,26 @@ async def extract_text_from_file(
         (success, text_content, error_message)
     """
     try:
-        ext = os.path.splitext(file_path)[1].lower()
+        extraction_service = get_text_extraction_service()
+        extraction_result = await extraction_service.extract_text(
+            file_bytes=file_bytes,
+            file_path=file_path,
+        )
+        logger.info(
+            "Text extracted from file",
+            file_path=file_path,
+            extractor=extraction_result.extractor,
+            text_length=len(extraction_result.text),
+        )
+        return True, extraction_result.text, None
 
-        if ext in [".txt", ".md"]:
-            content = file_bytes.decode("utf-8", errors="replace")
-            return True, content, None
-
-        elif ext == ".pdf":
-            # Use Azure Document Intelligence for PDF
-            endpoint = (
-                getattr(settings.azure, "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", None)
-                or getattr(settings.azure, "AZURE_DOC_INTELLIGENCE_ENDPOINT", None)
-            )
-            api_key = (
-                getattr(settings.azure, "AZURE_DOCUMENT_INTELLIGENCE_KEY", None)
-                or getattr(settings.azure, "AZURE_DOC_INTELLIGENCE_KEY", None)
-            )
-
-            if not endpoint or not api_key:
-                return False, None, "Document Intelligence not configured"
-
-            doc_client = DocumentIntelligenceClient(
-                endpoint, AzureKeyCredential(api_key)
-            )
-
-            poller = await asyncio.to_thread(
-                doc_client.begin_analyze_document,
-                "prebuilt-read",
-                body=AnalyzeDocumentRequest(bytes_source=file_bytes),
-                locale="en-US"
-            )
-
-            result = await asyncio.to_thread(poller.result)
-            content = result.content
-            return True, content, None
-
-        elif ext == ".docx":
-            doc = Document(io.BytesIO(file_bytes))
-            content = "\n".join([p.text for p in doc.paragraphs])
-            return True, content, None
-
-        else:
-            return False, None, f"Unsupported file type: {ext}"
+    except TextExtractionError as e:
+        logger.error(
+            "Text extraction failed",
+            error_msg=str(e),
+            file_path=file_path,
+        )
+        return False, None, str(e)
 
     except Exception as e:
         logger.error("Text extraction failed", error_msg=str(e), file_path=file_path)

@@ -19,7 +19,7 @@ from azure.storage.blob import (
 from sqlalchemy import select
 
 from src.core.config import settings
-from src.core.database import DocumentMetadata, FileTask, get_async_session
+from src.core.database import FileTask, get_async_session
 from src.core.exceptions import LightRAGException, ValidationException
 from src.core.lightrag_service import get_lightrag_service
 from src.core.logging import get_logger
@@ -42,114 +42,16 @@ class RAGService:
 
     def __init__(self):
         self.lightrag_service = get_lightrag_service()
-        self.queue_helper = get_indexing_queue_helper()
+        self._queue_helper = None  # Lazy-loaded only when needed
         self.blob_connection_string = settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING
-        self.blob_container_name = settings.storage.AZURE_BLOB_STORAGE_CONTAINER_NAME
+        self.blob_container_name = settings.storage.STORAGE_CONTAINER_NAME
 
-    # ========================================================================
-    # RAG Query Operations
-    # ========================================================================
-
-    async def query_rag(
-        self,
-        query: str,
-        workspace_id: int,
-        role_id: int,
-        mode: str = "hybrid",
-        history: Optional[List[Dict]] = None,
-        only_context: bool = False,
-    ) -> Dict[str, Any]:
-        """
-        Query RAG system with conversation history.
-
-        Args:
-            query: User query string
-            workspace_id: Workspace identifier
-            role_id: User role identifier
-            mode: Query mode (naive, local, global, hybrid)
-            history: Optional conversation history
-            only_context: Return only context without answer
-
-        Returns:
-            Dict containing answer, sources, and retrieved chunks
-        """
-        try:
-            logger.info(
-                "Querying RAG",
-                workspace_id=workspace_id,
-                role_id=role_id,
-                query_length=len(query),
-                mode=mode,
-            )
-
-            # Set working directory for workspace
-            working_dir = self._get_workspace_working_dir(workspace_id)
-            self.lightrag_service.working_dir = working_dir
-
-            # Build context from history if provided
-            context_messages = []
-            if history:
-                for msg in history[-5:]:  # Last 5 messages for context
-                    role = msg.get("role", "user")
-                    content = msg.get("content", "")
-                    context_messages.append(f"{role}: {content}")
-
-            # Augment query with context if needed
-            augmented_query = query
-            if context_messages:
-                context_str = "\n".join(context_messages)
-                augmented_query = f"Context:\n{context_str}\n\nCurrent query: {query}"
-
-            # Execute query
-            result = await self.lightrag_service.query(
-                query=augmented_query,
-                mode=mode,
-                only_need_context=only_context,
-            )
-
-            # Add sources information
-            if result.get("sources"):
-                # Enhance sources with document metadata
-                enhanced_sources = []
-                for source in result["sources"]:
-                    doc_id = source.get("doc_id")
-                    if doc_id:
-                        # Get document metadata from database
-                        async with get_async_session() as session:
-                            stmt = select(DocumentMetadata).where(
-                                DocumentMetadata.doc_id == doc_id,
-                                DocumentMetadata.workspace_id == workspace_id
-                            )
-                            db_result = await session.execute(stmt)
-                            doc_meta = db_result.scalar_one_or_none()
-
-                            if doc_meta:
-                                source["file_name"] = doc_meta.file_name
-                                source["file_path"] = doc_meta.file_path
-                                source["indexed_at"] = str(doc_meta.indexed_at) if doc_meta.indexed_at else None
-
-                    enhanced_sources.append(source)
-
-                result["sources"] = enhanced_sources
-
-            logger.info(
-                "RAG query completed",
-                workspace_id=workspace_id,
-                has_sources=bool(result.get("sources")),
-            )
-
-            return result
-
-        except Exception as e:
-            logger.error(
-                "RAG query failed",
-                error=e,
-                workspace_id=workspace_id,
-            )
-            raise LightRAGException(
-                message=f"Failed to query RAG: {str(e)}",
-                operation="query_rag"
-            )
+    @property
+    def queue_helper(self):
+        """Lazy-load queue helper only when needed (for indexing operations)"""
+        if self._queue_helper is None:
+            self._queue_helper = get_indexing_queue_helper()
+        return self._queue_helper
 
     # ========================================================================
     # Document Upload & Indexing
@@ -679,16 +581,69 @@ class RAGService:
     # Helper Methods
     # ========================================================================
 
-    def _get_workspace_working_dir(self, workspace_id: int) -> str:
+    async def _get_workspace_working_dir(
+        self,
+        workspace_id: int,
+        domain: Optional[str] = None,
+        kb_name: Optional[str] = None
+    ) -> str:
         """
         Get LightRAG working directory for workspace.
 
-        Uses workspace_id_to_alpha for compatibility with KnowledgeCurator.
+        If domain/kb_name not provided, fetches from database for proper scoping.
+
+        Args:
+            workspace_id: Workspace identifier
+            domain: Optional domain (fetched from DB if not provided)
+            kb_name: Optional KB name (fetched from DB if not provided)
+
+        Returns:
+            Full working directory path for LightRAG
+
+        Raises:
+            Exception: If workspace storage paths cannot be retrieved
         """
+        from src.helpers.workspace_helpers import get_workspace_storage_paths
         from shared.workspace_helpers import get_workspace_working_dir
+
         base_dir = settings.lightrag.LIGHTRAG_WORKING_DIR
-        # TODO: Add domain/kb_name support when available in the request context
-        return get_workspace_working_dir(workspace_id, base_dir)
+
+        # Fetch domain/kb_name from database if not provided
+        if domain is None or kb_name is None:
+            storage_paths = await get_workspace_storage_paths(workspace_id)
+            if not storage_paths:
+                logger.error(
+                    "Failed to get workspace storage paths for working directory",
+                    workspace_id=workspace_id
+                )
+                # Fallback to basic working dir if storage paths unavailable
+                return get_workspace_working_dir(workspace_id, base_dir)
+
+            domain = storage_paths.get("domain")
+            kb_name = storage_paths.get("kb_name")
+
+            logger.debug(
+                "Retrieved domain/kb_name from database for working directory",
+                workspace_id=workspace_id,
+                domain=domain,
+                kb_name=kb_name
+            )
+
+        # Build working directory with domain/kb_name for proper scoping
+        working_dir = get_workspace_working_dir(
+            workspace_id=workspace_id,
+            base_dir=base_dir,
+            domain=domain,
+            kb_name=kb_name
+        )
+
+        logger.debug(
+            "Built workspace working directory",
+            workspace_id=workspace_id,
+            working_dir=working_dir
+        )
+
+        return working_dir
 
     def _construct_blob_path(
         self,

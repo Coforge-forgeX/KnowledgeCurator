@@ -11,41 +11,48 @@ from pydantic import BaseModel, Field, validator
 
 class QueryRAGRequest(BaseModel):
     """
-    Request model for query_rag endpoint.
+    Minimal request model for query_rag endpoint.
 
-    SECURITY: Domain and KB name are fetched from database based on workspace_id.
-    This prevents tampering and ensures consistency.
+    DESIGN: User provides minimal input - workspace_id is used to fetch:
+    - domain (from workspace metadata)
+    - kb_name (from workspace metadata)
+    - role_id (from user-workspace membership)
+    - all_kb_titles (for multi-KB queries)
+
+    This prevents tampering and ensures data consistency.
     """
 
-    # Required fields
+    # ============================================================================
+    # Required Fields (User Must Provide)
+    # ============================================================================
+
     query: str = Field(
         ...,
-        description="User query string",
+        description="User's question to the knowledge base",
         min_length=1,
         max_length=5000
     )
     workspace_id: int = Field(
         ...,
-        description="Workspace identifier",
-        ge=0
+        description="Workspace ID - used to fetch domain, KB name, and access permissions",
+        ge=1
     )
 
-    # Optional fields
+    # ============================================================================
+    # Optional Fields (Defaults Provided)
+    # ============================================================================
+
     mode: str = Field(
         default="hybrid",
-        description="Query mode: naive, local, global, hybrid, mix"
+        description="Query strategy - hybrid (recommended), local, global, naive, or mix"
     )
     history: Optional[List[dict]] = Field(
         default=None,
-        description="Conversation history"
+        description="Conversation history for context-aware responses (optional)"
     )
     agent_id: Optional[int] = Field(
         default=None,
-        description="Agent ID for LLM routing"
-    )
-    only_context: bool = Field(
-        default=False,
-        description="Return only context without answer"
+        description="Agent ID for custom LLM routing (optional, uses workspace default if not provided)"
     )
 
     @validator("query")
@@ -67,13 +74,7 @@ class QueryRAGRequest(BaseModel):
         schema_extra = {
             "example": {
                 "query": "What is asset management?",
-                "workspace_id": 123,
-                "mode": "hybrid",
-                "history": [
-                    {"role": "user", "content": "Hello"},
-                    {"role": "assistant", "content": "Hi! How can I help you?"}
-                ],
-                "agent_id": 1
+                "workspace_id": 123
             }
         }
 

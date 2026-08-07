@@ -4,7 +4,7 @@ Upload and Index API - Request/Response Models
 Optimized payload validation for file upload and indexing.
 """
 
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from src.helpers.file_validation import validate_file_extension
@@ -33,6 +33,12 @@ class UploadAndIndexRequest(BaseModel):
 
     workspace_id: int = Field(..., gt=0, description="Workspace ID")
     files: List[FileUpload] = Field(..., min_length=1, description="Files to upload")
+    idempotency_key: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Optional idempotency key to prevent duplicate uploads (can also be provided via Idempotency-Key header)"
+    )
 
     @field_validator("files")
     @classmethod

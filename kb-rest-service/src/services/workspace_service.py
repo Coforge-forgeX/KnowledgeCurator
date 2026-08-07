@@ -9,41 +9,11 @@ from typing import Optional, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.database import get_async_session
+from src.core.database import get_async_session, Workspace, UserMap
 from src.core.exceptions import AuthorizationException, ValidationException
 from src.core.logging import get_logger
 
 logger = get_logger(__name__)
-
-
-# Database models (assuming these exist in your schema)
-# If not, these need to be added to src/core/database.py
-try:
-    from src.core.database import Workspace, UserMap
-except ImportError:
-    # Fallback - define minimal models here
-    from sqlalchemy import Boolean, Column, Integer, String
-    from sqlalchemy.ext.declarative import declarative_base
-
-    Base = declarative_base()
-
-    class Workspace(Base):
-        __tablename__ = "workspaces"
-
-        workspace_id = Column(Integer, primary_key=True)
-        domain = Column(String, nullable=False)
-        kb_name = Column(String, nullable=False)
-        is_active = Column(Boolean, default=True)
-        keywords = Column(String)  # Workspace type: KG, DM, etc.
-
-    class UserMap(Base):
-        __tablename__ = "user_map"
-
-        id = Column(Integer, primary_key=True)
-        user_id = Column(Integer, nullable=False)
-        workspace_id = Column(Integer, nullable=False)
-        role_id = Column(Integer, nullable=False)
-        is_active = Column(Boolean, default=True)
 
 
 class WorkspaceConfig:
@@ -51,14 +21,20 @@ class WorkspaceConfig:
     def __init__(
         self,
         workspace_id: int,
-        domain: str,
-        kb_name: str,
-        workspace_type: Optional[str] = None
+        workspace_name: str,
+        namespace: Optional[str] = None,
+        workspace_desc: Optional[str] = None,
+        workspace_logo: Optional[str] = None,
+        workspace_type: Optional[str] = None,
+        keywords: Optional[str] = None
     ):
         self.workspace_id = workspace_id
-        self.domain = domain
-        self.kb_name = kb_name
+        self.workspace_name = workspace_name
+        self.namespace = namespace
+        self.workspace_desc = workspace_desc
+        self.workspace_logo = workspace_logo
         self.workspace_type = workspace_type
+        self.keywords = keywords
 
 
 class WorkspaceService:
@@ -82,7 +58,7 @@ class WorkspaceService:
             workspace_id: Workspace identifier
 
         Returns:
-            WorkspaceConfig with domain, kb_name, etc.
+            WorkspaceConfig with workspace_name, namespace, etc.
 
         Raises:
             ValidationException: If workspace not found or inactive
@@ -113,16 +89,20 @@ class WorkspaceService:
 
                 config = WorkspaceConfig(
                     workspace_id=workspace.workspace_id,
-                    domain=workspace.domain,
-                    kb_name=workspace.kb_name,
-                    workspace_type=workspace_type
+                    workspace_name=workspace.workspace_name,
+                    namespace=workspace.namespace,
+                    workspace_desc=workspace.workspace_desc,
+                    workspace_logo=workspace.workspace_logo,
+                    workspace_type=workspace_type,
+                    keywords=workspace.keywords
                 )
 
                 logger.info(
                     f"Retrieved workspace config",
                     workspace_id=workspace_id,
-                    domain=config.domain,
-                    kb_name=config.kb_name
+                    workspace_name=config.workspace_name,
+                    namespace=config.namespace,
+                    workspace_type=config.workspace_type
                 )
 
                 return config

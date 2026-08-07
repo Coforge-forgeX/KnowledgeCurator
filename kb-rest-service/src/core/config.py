@@ -106,19 +106,45 @@ class DatabaseSettings(BaseSettings):
     )
 
 
+class CacheSettings(BaseSettings):
+    """Redis caching configuration settings"""
+
+    # Redis connection
+    REDIS_URL: str = Field(
+        default="redis://localhost:6379/0",
+        env="REDIS_URL"
+    )
+    REDIS_ENABLED: bool = Field(default=True, env="REDIS_ENABLED")
+
+    # Cache TTL settings (in seconds)
+    QUERY_CACHE_TTL: int = Field(default=3600, env="QUERY_CACHE_TTL")  # 1 hour
+    WORKSPACE_CONFIG_CACHE_TTL: int = Field(default=300, env="WORKSPACE_CONFIG_CACHE_TTL")  # 5 minutes
+    INDEXED_FILES_CACHE_TTL: int = Field(default=600, env="INDEXED_FILES_CACHE_TTL")  # 10 minutes
+
+    # Rate limiting settings
+    RATE_LIMIT_ENABLED: bool = Field(default=True, env="RATE_LIMIT_ENABLED")
+    RATE_LIMIT_USER_PER_MINUTE: int = Field(default=10, env="RATE_LIMIT_USER_PER_MINUTE")
+    RATE_LIMIT_WORKSPACE_PER_MINUTE: int = Field(default=100, env="RATE_LIMIT_WORKSPACE_PER_MINUTE")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+
 class StorageSettings(BaseSettings):
     """Storage configuration (multi-cloud support)"""
 
     # Storage provider
     STORAGE_PROVIDER: str = Field(default="azure", env="STORAGE_PROVIDER")
     STORAGE_CONTAINER_NAME: str = Field(default="aksknowledgecurator", env="STORAGE_CONTAINER_NAME")
+    WORKSPACE_CONTAINER_NAME: str = Field(default="workspace", env="WORKSPACE_CONTAINER_NAME")
 
     # Azure Blob Storage
     AZURE_BLOB_STORAGE_CONNECTION_STRING: Optional[str] = Field(
         default=None, env="AZURE_BLOB_STORAGE_CONNECTION_STRING"
-    )
-    AZURE_BLOB_STORAGE_CONTAINER_NAME: str = Field(
-        default="aksknowledgecurator", env="AZURE_BLOB_STORAGE_CONTAINER_NAME"
     )
 
     # AWS S3
@@ -138,7 +164,6 @@ class StorageSettings(BaseSettings):
 
     # Local Storage (for development)
     LOCAL_STORAGE_PATH: str = Field(default="./local_storage", env="LOCAL_STORAGE_PATH")
-    LOCAL_STORAGE_CONTAINER: str = Field(default="documents", env="LOCAL_STORAGE_CONTAINER")
     LOCAL_STORAGE_PATH_PREFIX: str = Field(default="", env="LOCAL_STORAGE_PATH_PREFIX")
     LOCAL_STORAGE_BASE_URL: str = Field(default="", env="LOCAL_STORAGE_BASE_URL")
 
@@ -176,8 +201,7 @@ class AzureSettings(BaseSettings):
     BLOB_STORAGE_CONNECTION_STRING: str = Field(
         default="", env="BLOB_STORAGE_CONNECTION_STRING"
     )
-    BLOB_CONTAINER_NAME: str = Field(default="kb-documents", env="AZURE_BLOB_STORAGE_CONTAINER_NAME")
-    WORKSPACE_CONTAINER_NAME: str = Field(default="workspace", env="AZURE_BLOB_STORAGE_WORKSPACE_CONTAINER_NAME")
+    BLOB_CONTAINER_NAME: str = Field(default="kb-documents", env="STORAGE_CONTAINER_NAME")
 
     # Azure Queue Storage
     QUEUE_STORAGE_CONNECTION_STRING: str = Field(
@@ -421,6 +445,7 @@ class Settings(BaseSettings):
 
     # Nested settings
     database: DatabaseSettings = DatabaseSettings()
+    cache: CacheSettings = CacheSettings()
     azure: AzureSettings = AzureSettings()
     security: SecuritySettings = SecuritySettings()
     progress: ProgressSettings = ProgressSettings()

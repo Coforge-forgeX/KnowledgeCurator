@@ -27,7 +27,7 @@ class DOCXProcessor(DocumentProcessor):
         if content_type and "wordprocessingml" in content_type.lower():
             return True
 
-        return file_name.lower().endswith((".docx", ".doc"))
+        return file_name.lower().endswith(".docx")
 
     async def process(self, content: bytes, file_name: str) -> ProcessedDocument:
         """Process DOCX and extract text"""

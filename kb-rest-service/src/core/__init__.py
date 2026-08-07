@@ -54,6 +54,12 @@ from .neo4j_driver import (
     initialize_neo4j_driver,
 )
 from .redis import get_redis_client, is_redis_available
+from .idempotency import (
+    check_idempotency,
+    cleanup_expired_records,
+    get_stats,
+    store_idempotency_result,
+)
 
 __all__ = [
     # Config
@@ -114,4 +120,9 @@ __all__ = [
     # Redis
     "get_redis_client",
     "is_redis_available",
+    # Idempotency
+    "check_idempotency",
+    "store_idempotency_result",
+    "cleanup_expired_records",
+    "get_stats",
 ]

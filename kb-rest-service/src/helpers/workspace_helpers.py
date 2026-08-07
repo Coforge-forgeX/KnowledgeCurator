@@ -27,12 +27,19 @@ async def get_workspace_storage_paths(workspace_id: int) -> Optional[Dict[str, s
 
     Fetches workspace from database and builds correct storage paths.
     For KG workspaces, also fetches industry, sub_industry, and kb details.
+    For non-KG workspaces with multiple KBs, returns all KB titles for querying.
 
     Args:
         workspace_id: Workspace ID
 
     Returns:
-        Dict with container, upload_path, domain, kb_name, is_kg
+        Dict with:
+            - container: Storage container name
+            - upload_path: Base path for uploads
+            - domain: Domain identifier
+            - kb_name: Primary knowledge base name (for indexing)
+            - is_kg: Boolean indicating KG workspace
+            - all_kb_titles: List of all KB titles (for querying across multiple KBs)
         or None if workspace not found
     """
     try:
@@ -52,9 +59,10 @@ async def get_workspace_storage_paths(workspace_id: int) -> Optional[Dict[str, s
             industry_name = "general"
             sub_industry_name = "general"
             kb_title = ""
+            all_kb_titles = []
 
             # Query for workspace-industry-kb mapping with joins
-            # Try to fetch for all workspace types, not just KG
+            # Fetch ALL mappings for non-KG workspaces with multiple KBs
             mapping_stmt = (
                 select(
                     Industry.industry_name,
@@ -71,18 +79,25 @@ async def get_workspace_storage_paths(workspace_id: int) -> Optional[Dict[str, s
                 )
             )
             mapping_result = await session.execute(mapping_stmt)
-            mapping_row = mapping_result.first()
+            mapping_rows = mapping_result.fetchall()
 
-            if mapping_row:
-                industry_name = mapping_row.industry_name or "general"
-                sub_industry_name = mapping_row.subindustry_name or "general"
-                kb_title = mapping_row.title or ""
+            if mapping_rows:
+                # Use first row for primary paths (indexing)
+                first_row = mapping_rows[0]
+                industry_name = first_row.industry_name or "general"
+                sub_industry_name = first_row.subindustry_name or "general"
+                kb_title = first_row.title or ""
+
+                # Collect all KB titles for multi-KB querying
+                all_kb_titles = [row.title for row in mapping_rows if row.title]
+
                 logger.debug(
                     "Fetched workspace metadata",
                     workspace_id=workspace_id,
                     industry=industry_name,
                     sub_industry=sub_industry_name,
-                    kb=kb_title
+                    kb=kb_title,
+                    total_kbs=len(all_kb_titles)
                 )
             else:
                 logger.warning(
@@ -92,12 +107,8 @@ async def get_workspace_storage_paths(workspace_id: int) -> Optional[Dict[str, s
                 )
 
             # Build paths using shared function
-            kg_container = settings.storage.AZURE_BLOB_STORAGE_CONTAINER_NAME or settings.storage.STORAGE_CONTAINER_NAME
-            workspace_container = settings.storage.LOCAL_STORAGE_CONTAINER or settings.storage.STORAGE_CONTAINER_NAME
-
-            # Keep legacy Azure workspace container override if provided.
-            if getattr(settings.azure, "WORKSPACE_CONTAINER_NAME", None):
-                workspace_container = settings.azure.WORKSPACE_CONTAINER_NAME
+            kg_container = settings.storage.STORAGE_CONTAINER_NAME
+            workspace_container = settings.storage.WORKSPACE_CONTAINER_NAME
 
             paths = _build_storage_paths(
                 workspace_id=workspace.workspace_id,
@@ -109,10 +120,14 @@ async def get_workspace_storage_paths(workspace_id: int) -> Optional[Dict[str, s
                 workspace_container=workspace_container,
             )
 
+            # Add list of all KB titles for multi-KB querying
+            paths["all_kb_titles"] = all_kb_titles
+
             logger.info(
                 "Built workspace storage paths",
                 workspace_id=workspace_id,
-                **paths
+                kb_count=len(all_kb_titles),
+                **{k: v for k, v in paths.items() if k != "all_kb_titles"}
             )
 
             return paths

@@ -30,6 +30,7 @@ from src.core import (
 )
 from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
 from src.core.database import DocumentMetadata, FileTask, Workspace, User, UserMap, get_async_session
+from src.core.idempotency import check_idempotency, store_idempotency_result
 from src.helpers.file_validation import get_content_type
 from src.helpers.workspace_helpers import get_workspace_storage_paths
 from src.helpers.workspace_kb_helpers import get_kb_id_for_upload
@@ -501,6 +502,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
     POST /api/upload-and-index
     Headers:
         Authorization: Bearer <token>
+        Idempotency-Key: <unique-key> (optional, recommended)
     Body:
         {
             "workspace_id": 1,
@@ -510,7 +512,8 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
                     "file_content": "<base64>",
                     "file_size": 12345
                 }
-            ]
+            ],
+            "idempotency_key": "<unique-key>" (optional, can be in header or body)
         }
 
     Domain, KB name, and container are derived from workspace context.
@@ -531,8 +534,30 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
 
     user_id = get_user_id(req)
     # user_workspaces = get_workspace_ids(req)
-    
+
     workspace_id = payload.workspace_id
+
+    # Check for idempotency key (from header or body)
+    idempotency_key = req.get_header("Idempotency-Key") or getattr(payload, "idempotency_key", None)
+
+    if idempotency_key:
+        # Check if this request was already processed
+        cached_response = await check_idempotency(
+            idempotency_key=idempotency_key,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            endpoint="/api/v2/documents/upload",
+            request_body=payload.model_dump(),
+        )
+
+        if cached_response:
+            logger.info(
+                "Returning cached response for duplicate upload request",
+                idempotency_key=idempotency_key,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
+            return cached_response
 
     # # Check workspace access
     # if workspace_id not in user_workspaces:
@@ -717,9 +742,23 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         failed_files=failed_files,
     )
 
-    return create_success_response(
+    response = create_success_response(
         message=response_data.message,
         data=response_data.model_dump(),
         status_code=202,  # Accepted
         correlation_id=context.request_id,
     )
+
+    # Store idempotency result for future duplicate requests
+    if idempotency_key:
+        await store_idempotency_result(
+            idempotency_key=idempotency_key,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            endpoint="/api/v2/documents/upload",
+            request_body=payload.model_dump(),
+            response_status=response.status_code,
+            response_body=response.body if isinstance(response.body, dict) else {},
+        )
+
+    return response

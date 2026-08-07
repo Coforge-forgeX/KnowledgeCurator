@@ -11,8 +11,10 @@ import uuid
 from src.core.database import ConversationSession, get_async_session
 from src.core.exceptions import DatabaseException, ValidationException
 from src.core.logging import get_logger
+from src.helpers.workspace_helpers import get_workspace_storage_paths
 from src.services.mongodb_service import get_mongodb_service
 from src.services.rag_service import get_rag_service
+from src.services.rag_query_service import get_rag_query_service
 from sqlalchemy import select, and_
 
 logger = get_logger(__name__)
@@ -30,7 +32,8 @@ class ChatService:
 
     def __init__(self):
         self.mongo_service = get_mongodb_service()
-        self.rag_service = get_rag_service()
+        self.rag_service = get_rag_service()  # For document operations
+        self.rag_query_service = get_rag_query_service()  # For optimized queries
 
     async def initialize(self) -> None:
         """Initialize chat service dependencies"""
@@ -482,16 +485,45 @@ class ChatService:
                 limit=5,  # Last 5 messages for context
             )
 
-            rag_result = await self.rag_service.query_rag(
+            # Get workspace storage paths for security (domain, kb_name from DB)
+            storage_paths = await get_workspace_storage_paths(workspace_id)
+            if not storage_paths:
+                raise ValidationException(
+                    message=f"Failed to retrieve workspace configuration for workspace {workspace_id}"
+                )
+
+            domain = storage_paths.get("domain", "")
+            kb_name = storage_paths.get("kb_name", "")
+            all_kb_titles = storage_paths.get("all_kb_titles", [])
+
+            # For multi-KB workspaces, pass additional KBs
+            additional_kbs = None
+            if len(all_kb_titles) > 1:
+                additional_kbs = all_kb_titles[1:]
+
+            # Use optimized RAG query service
+            rag_result = await self.rag_query_service.query(
                 query=user_message,
                 workspace_id=workspace_id,
                 role_id=role_id,
+                domain=domain,
+                kb_name=kb_name,
                 mode="hybrid",
                 history=history,
+                knowledge_bases=additional_kbs,
+                agent_id=agent_id,
             )
 
-            response_text = rag_result.get("answer", "I don't have enough information to answer that question.")
-            sources = rag_result.get("sources", [])
+            response_text = rag_result.answer or "I don't have enough information to answer that question."
+            # Convert EnrichedSource objects to dicts for MongoDB storage
+            sources = [
+                {
+                    "file_name": src.file_name,
+                    "download_url": src.download_url,
+                    "citation": src.citation,
+                }
+                for src in rag_result.sources
+            ]
 
             # Save assistant response
             await self.mongo_service.append_message(

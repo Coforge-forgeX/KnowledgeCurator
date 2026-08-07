@@ -41,16 +41,6 @@ async def health(req: func.HttpRequest, context: func.Context) -> func.HttpRespo
     return await _handle(req, context)
 
 
-@app.route(route="api/v2/kb/query", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-async def kb_query(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return await _handle(req, context)
-
-
-@app.route(route="api/v2/kb/chat", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-async def kb_chat(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return await _handle(req, context)
-
-
 @app.route(route="api/v2/kb/index", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 async def kb_index(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
@@ -88,11 +78,6 @@ async def llm_route(req: func.HttpRequest, context: func.Context) -> func.HttpRe
 
 @app.route(route="api/v2/query-kb", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 async def query_kb_v2(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return await _handle(req, context)
-
-
-@app.route(route="api/query-kb", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-async def query_kb_legacy(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
 
 

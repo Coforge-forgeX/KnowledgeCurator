@@ -21,8 +21,6 @@ logger = get_logger(__name__)
 
 # HTTP route -> handler mapping shared across all serverless runtimes.
 ROUTE_TO_HANDLER = {
-    ("POST", "/api/v2/kb/query"): "kb_query",
-    ("POST", "/api/v2/kb/chat"): "kb_chat",
     ("POST", "/api/v2/kb/index"): "kb_index",
     ("POST", "/api/v2/documents/upload"): "upload_and_index",
     ("POST", "/api/v2/documents/status"): "check_indexing_status",
@@ -30,9 +28,7 @@ ROUTE_TO_HANDLER = {
     ("DELETE", "/api/v2/documents"): "delete_documents",
     ("POST", "/api/v2/kb/graph"): "get_knowledge_graph",
     ("POST", "/api/v2/llm/route"): "llm_route",
-    # Legacy/internal handlers that still exist in src/functions/api.
-    ("POST", "/api/query-kb"): "query_kb",
-    ("POST", "/api/v2/query-kb"): "query_kb",
+    ("POST", "/api/v2/query-kb"): "query_rag",  # Using optimized query_rag handler
     ("GET", "/api/sharepoint/list"): "sharepoint_list",
     ("GET", "/api/v2/sharepoint/list"): "sharepoint_list",
 }

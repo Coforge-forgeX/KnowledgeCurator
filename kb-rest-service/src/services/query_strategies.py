@@ -8,6 +8,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 
+from src.core.config import settings
 from src.core.lightrag_service import get_lightrag_service, QueryParam
 from src.core.logging import get_logger
 from src.core.prompt_builder import get_prompt_builder
@@ -22,6 +23,7 @@ from src.models.rag_models import (
     RAGQueryResult,
     RetrievedChunk,
 )
+from shared.workspace_helpers import get_workspace_working_dir
 
 logger = get_logger(__name__)
 
@@ -174,16 +176,38 @@ class QueryStrategy(ABC):
         return []
 
     def _get_working_dir(self, kb: KnowledgeBase) -> str:
-        """Get working directory for knowledge base"""
-        # TODO: Implement based on actual directory structure
-        # This should match the workspace_working_dir logic from KnowledgeCurator
-        base_dir = "/path/to/lightrag"  # Get from config
-        workspace_name = WorkspaceResolver.build_workspace_name(
-            kb.domain,
-            kb.name,
-            WorkspaceResolver.workspace_id_to_alpha(kb.workspace_id) if kb.workspace_id else ""
+        """
+        Get working directory for knowledge base.
+
+        Uses the shared workspace_helpers to build the working directory
+        consistently with other services.
+
+        Args:
+            kb: Knowledge base with domain, name, and workspace_id
+
+        Returns:
+            Full working directory path for LightRAG
+        """
+        base_dir = settings.lightrag.LIGHTRAG_WORKING_DIR
+
+        # Use shared helper to build workspace working directory
+        # This ensures consistency with indexing and other services
+        working_dir = get_workspace_working_dir(
+            workspace_id=kb.workspace_id,
+            base_dir=base_dir,
+            domain=kb.domain,
+            kb_name=kb.name
         )
-        return f"{base_dir}/{workspace_name}"
+
+        logger.debug(
+            "Built working directory for KB",
+            domain=kb.domain,
+            kb_name=kb.name,
+            workspace_id=kb.workspace_id,
+            working_dir=working_dir
+        )
+
+        return working_dir
 
 
 class SingleKBStrategy(QueryStrategy):

@@ -29,68 +29,14 @@ class KnowledgeBaseService:
 
     def __init__(self):
         self.lightrag_service = get_lightrag_service()
-        self.queue_helper = get_indexing_queue_helper()
+        self._queue_helper = None  # Lazy-loaded only when needed
 
-    async def query_knowledge_base(
-        self,
-        query: str,
-        workspace_id: int,
-        mode: str = "hybrid",
-        only_context: bool = False,
-    ) -> Dict[str, Any]:
-        """
-        Query the knowledge base with the given parameters.
-
-        Args:
-            query: User query string
-            workspace_id: Workspace identifier
-            mode: Query mode (naive, local, global, hybrid)
-            only_context: Return only context without answer
-
-        Returns:
-            Dict containing answer, sources, and retrieved chunks
-
-        Raises:
-            LightRAGException: If query execution fails
-        """
-        try:
-            logger.info(
-                "Querying knowledge base",
-                workspace_id=workspace_id,
-                query_length=len(query),
-                mode=mode,
-            )
-
-            # Set working directory for workspace
-            working_dir = self._get_workspace_working_dir(workspace_id)
-            self.lightrag_service.working_dir = working_dir
-            self.lightrag_service.set_runtime_context(workspace_id=workspace_id)
-
-            # Execute query
-            result = await self.lightrag_service.query(
-                query=query,
-                mode=mode,
-                only_need_context=only_context,
-            )
-
-            logger.info(
-                "Query executed successfully",
-                workspace_id=workspace_id,
-                has_sources=bool(result.get("sources")),
-            )
-
-            return result
-
-        except Exception as e:
-            logger.error(
-                "Query execution failed",
-                error=e,
-                workspace_id=workspace_id,
-            )
-            raise LightRAGException(
-                message=f"Failed to query knowledge base: {str(e)}",
-                operation="query",
-            )
+    @property
+    def queue_helper(self):
+        """Lazy-load queue helper only when needed (for indexing operations)"""
+        if self._queue_helper is None:
+            self._queue_helper = get_indexing_queue_helper()
+        return self._queue_helper
 
     async def queue_document_for_indexing(
         self,
@@ -182,7 +128,7 @@ class KnowledgeBaseService:
                 offset=offset,
             )
 
-            working_dir = self._get_workspace_working_dir(workspace_id)
+            working_dir = await self._get_workspace_working_dir(workspace_id)
             self.lightrag_service.working_dir = working_dir
 
             # Get paginated documents from LightRAG service with workspace filter
@@ -235,7 +181,7 @@ class KnowledgeBaseService:
                 count=len(doc_ids),
             )
 
-            working_dir = self._get_workspace_working_dir(workspace_id)
+            working_dir = await self._get_workspace_working_dir(workspace_id)
             self.lightrag_service.working_dir = working_dir
 
             # Delete documents
@@ -304,7 +250,7 @@ class KnowledgeBaseService:
                 workspace_id=workspace_id,
             )
 
-            working_dir = self._get_workspace_working_dir(workspace_id)
+            working_dir = await self._get_workspace_working_dir(workspace_id)
             self.lightrag_service.working_dir = working_dir
 
             # Get KG from LightRAG
@@ -390,17 +336,73 @@ class KnowledgeBaseService:
             )
             raise
 
-    def _get_workspace_working_dir(self, workspace_id: int) -> str:
+    async def _get_workspace_working_dir(
+        self,
+        workspace_id: int,
+        domain: Optional[str] = None,
+        kb_name: Optional[str] = None
+    ) -> str:
         """
         Get LightRAG working directory for a specific workspace.
 
         DRY principle: Centralize workspace directory logic.
-        Uses workspace_id_to_alpha for compatibility with KnowledgeCurator.
+        If domain/kb_name not provided, fetches them from database.
+
+        Args:
+            workspace_id: Workspace identifier
+            domain: Optional domain (fetched from DB if not provided)
+            kb_name: Optional KB name (fetched from DB if not provided)
+
+        Returns:
+            Full working directory path for LightRAG
+
+        Raises:
+            Exception: If workspace storage paths cannot be retrieved
         """
-        from src.helpers.workspace_helpers import get_workspace_working_dir
+        from src.helpers.workspace_helpers import get_workspace_storage_paths
+        from shared.workspace_helpers import get_workspace_working_dir
+
         base_dir = settings.lightrag.LIGHTRAG_WORKING_DIR
-        # TODO: Add domain/kb_name support when available in the request context
-        return get_workspace_working_dir(workspace_id, base_dir)
+
+        # Fetch domain/kb_name from database if not provided
+        if domain is None or kb_name is None:
+            storage_paths = await get_workspace_storage_paths(workspace_id)
+            if not storage_paths:
+                logger.error(
+                    "Failed to get workspace storage paths for working directory",
+                    workspace_id=workspace_id
+                )
+                raise ValidationException(
+                    message=f"Cannot determine working directory for workspace {workspace_id}"
+                )
+
+            domain = storage_paths.get("domain")
+            kb_name = storage_paths.get("kb_name")
+
+            logger.debug(
+                "Retrieved domain/kb_name from database",
+                workspace_id=workspace_id,
+                domain=domain,
+                kb_name=kb_name
+            )
+
+        # Build working directory with domain/kb_name for proper scoping
+        working_dir = get_workspace_working_dir(
+            workspace_id=workspace_id,
+            base_dir=base_dir,
+            domain=domain,
+            kb_name=kb_name
+        )
+
+        logger.debug(
+            "Built workspace working directory",
+            workspace_id=workspace_id,
+            domain=domain,
+            kb_name=kb_name,
+            working_dir=working_dir
+        )
+
+        return working_dir
 
 
 # Singleton instance

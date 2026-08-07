@@ -223,7 +223,7 @@ class RAGQueryService:
         self.blob_connection_string = blob_connection_string or \
             settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING
         self.blob_container_name = blob_container_name or \
-            settings.storage.AZURE_BLOB_STORAGE_CONTAINER_NAME
+            settings.storage.STORAGE_CONTAINER_NAME
 
         if not self.blob_connection_string:
             logger.warning("Blob storage not configured - source enrichment disabled")
