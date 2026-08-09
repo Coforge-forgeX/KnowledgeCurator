@@ -514,6 +514,65 @@ class LightRAGService:
                 operation="query"
             )
 
+    async def query_data(
+        self,
+        query: str,
+        mode: str = "mix",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Retrieve structured data from LightRAG without LLM answer generation.
+
+        Args:
+            query: Query string
+            mode: Query mode - usually "mix" for combined graph + vector retrieval
+            **kwargs: Additional QueryParam fields (top_k, chunk_top_k, etc.)
+
+        Returns:
+            Dict with keys: status, message, data, metadata
+
+        Raises:
+            LightRAGException: If query data retrieval fails
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        try:
+            logger.info(
+                "Executing LightRAG structured data query",
+                query=query[:100],
+                mode=mode,
+                workspace_id=self._runtime_workspace_id,
+                agent_id=self._runtime_agent_id,
+            )
+
+            result = await self._rag.aquery_data(
+                query,
+                param=QueryParam(mode=mode, **kwargs)
+            )
+
+            if isinstance(result, dict):
+                return {
+                    "status": result.get("status", "success"),
+                    "message": result.get("message", "Query executed successfully"),
+                    "data": result.get("data", {}) if isinstance(result.get("data"), dict) else {},
+                    "metadata": result.get("metadata", {}) if isinstance(result.get("metadata"), dict) else {},
+                }
+
+            return {
+                "status": "failure",
+                "message": "Invalid response format from LightRAG aquery_data",
+                "data": {},
+                "metadata": {},
+            }
+
+        except Exception as e:
+            logger.error("Structured data query failed", error=e, query=query[:100])
+            raise LightRAGException(
+                message=f"Query data failed: {str(e)}",
+                operation="query_data"
+            )
+
     async def insert(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
         """
         Insert document into the knowledge base.

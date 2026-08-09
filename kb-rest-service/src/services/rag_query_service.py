@@ -356,12 +356,16 @@ class RAGQueryService:
         agent_id: Optional[int]
     ) -> QueryContext:
         """Build query context from parameters"""
+        normalized_mode = (mode or "").lower().strip()
+        if normalized_mode == QueryMode.HYBRID.value:
+            normalized_mode = QueryMode.MIX.value
+
         # Convert mode string to QueryMode enum
         try:
-            query_mode = QueryMode(mode.lower())
+            query_mode = QueryMode(normalized_mode)
         except ValueError:
-            logger.warning(f"Unknown query mode '{mode}', defaulting to HYBRID")
-            query_mode = QueryMode.HYBRID
+            logger.warning(f"Unknown query mode '{mode}', defaulting to MIX")
+            query_mode = QueryMode.MIX
 
         return QueryContext(
             query=query.strip(),

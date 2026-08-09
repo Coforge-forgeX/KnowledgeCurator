@@ -93,13 +93,15 @@ class QueryStrategy(ABC):
             )
 
             requested_mode = context.mode.value
+            if requested_mode == QueryMode.HYBRID.value:
+                requested_mode = QueryMode.MIX.value
 
             # Execute query
             response = await self.lightrag.query(
                 query=prompt,
                 mode=requested_mode,
                 conversation_history=context.history,
-                top_k=2,
+                top_k=5,
                 stream=False
             )
             effective_mode = requested_mode
@@ -129,32 +131,32 @@ class QueryStrategy(ABC):
             return normalized_response
 
         except Exception as e:
-            if context.mode != QueryMode.GLOBAL:
+            if context.mode != QueryMode.HYBRID:
                 logger.warning(
-                    "Query failed, retrying in global mode",
+                    "Query failed, retrying in hybrid mode",
                     kb=kb.full_name,
                     error=str(e),
                     requested_mode=context.mode.value,
                 )
                 fallback_response = await self.lightrag.query(
                     query=prompt,
-                    mode=QueryMode.GLOBAL.value,
+                    mode=QueryMode.HYBRID.value,
                     conversation_history=context.history,
-                    top_k=2,
+                    top_k=5,
                     stream=False,
                 )
                 if isinstance(fallback_response, dict):
-                    fallback_response.setdefault("mode", QueryMode.GLOBAL.value)
+                    fallback_response.setdefault("mode", QueryMode.HYBRID.value)
                     fallback_response["_requested_mode"] = context.mode.value
-                    fallback_response["_effective_mode"] = QueryMode.GLOBAL.value
+                    fallback_response["_effective_mode"] = QueryMode.HYBRID.value
                     return fallback_response
                 return {
                     "answer": str(fallback_response) if fallback_response is not None else "",
                     "retrieved_chunks": [],
                     "sources": [],
-                    "mode": QueryMode.GLOBAL.value,
+                    "mode": QueryMode.HYBRID.value,
                     "_requested_mode": context.mode.value,
-                    "_effective_mode": QueryMode.GLOBAL.value,
+                    "_effective_mode": QueryMode.HYBRID.value,
                 }
 
             logger.error(
@@ -163,14 +165,14 @@ class QueryStrategy(ABC):
             )
             raise
 
-    async def _retrieve_chunks(
+    async def _retrieve_evidence(
         self,
         kb: KnowledgeBase,
         context: QueryContext,
         prompt: str
-    ) -> List[RetrievedChunk]:
+    ) -> Dict[str, Any]:
         """
-        Retrieve document chunks for evaluation.
+        Retrieve structured evidence (chunks + graph) in a single LightRAG call.
 
         Args:
             kb: Knowledge base
@@ -178,13 +180,11 @@ class QueryStrategy(ABC):
             prompt: Query prompt
 
         Returns:
-            List of retrieved chunks
+            Dict containing serialized chunks and raw graph data
         """
         try:
-            # Query for context only
             working_dir = self._get_working_dir(kb)
             self.lightrag.working_dir = working_dir
-            # Keep LightRAG workspace in sync with the KB-specific label namespace.
             self.lightrag.workspace = WorkspaceResolver.build_workspace_name(
                 kb.domain,
                 kb.name,
@@ -194,76 +194,125 @@ class QueryStrategy(ABC):
                 agent_id=context.agent_id,
             )
 
-            requested_mode = context.mode.value
-            context_response = await self.lightrag.query(
+            # Always prefer mix for combined graph+vector retrieval.
+            preferred_mode = QueryMode.MIX.value
+            fallback_mode = QueryMode.HYBRID.value
+
+            data_response = await self.lightrag.query_data(
                 query=prompt,
-                mode=requested_mode,
-                only_need_context=True,
-                chunk_top_k=20,
-                top_k=2,
-                stream=False
+                mode=preferred_mode,
+                conversation_history=context.history,
+                top_k=5,
+                chunk_top_k=5,
+                stream=False,
             )
 
-            # Parse chunks from context
-            chunks = self._parse_chunks(context_response, kb)
+            chunks_payload = []
+            graph_payload = []
 
-            # No-answer is different from failure, but empty context is not useful for eval.
-            # Retry context retrieval in global mode to collect graph evidence when available.
-            if context.mode != QueryMode.GLOBAL and not chunks:
+            if isinstance(data_response, dict):
+                data = data_response.get("data", {}) if isinstance(data_response.get("data"), dict) else {}
+                chunks_payload = data.get("chunks", []) if isinstance(data.get("chunks"), list) else []
+                entities = data.get("entities", []) if isinstance(data.get("entities"), list) else []
+                relationships = data.get("relationships", []) if isinstance(data.get("relationships"), list) else []
+                graph_payload = [
+                    {
+                        "entities": entities,
+                        "relationships": relationships,
+                        "metadata": data_response.get("metadata", {}),
+                    }
+                ]
+
+            # Fallback when mix returns no chunks.
+            if not chunks_payload:
                 logger.warning(
-                    "No chunks in requested mode, retrying context retrieval in global mode",
+                    "No chunks returned in mix mode, retrying in hybrid mode",
                     kb=kb.full_name,
-                    requested_mode=requested_mode,
+                    requested_mode=context.mode.value,
                 )
-                context_response = await self.lightrag.query(
+                data_response = await self.lightrag.query_data(
                     query=prompt,
-                    mode=QueryMode.GLOBAL.value,
-                    only_need_context=True,
-                    chunk_top_k=20,
-                    top_k=2,
+                    mode=fallback_mode,
+                    conversation_history=context.history,
+                    top_k=5,
+                    chunk_top_k=5,
                     stream=False,
                 )
-                chunks = self._parse_chunks(context_response, kb)
+                if isinstance(data_response, dict):
+                    data = data_response.get("data", {}) if isinstance(data_response.get("data"), dict) else {}
+                    chunks_payload = data.get("chunks", []) if isinstance(data.get("chunks"), list) else []
+                    entities = data.get("entities", []) if isinstance(data.get("entities"), list) else []
+                    relationships = data.get("relationships", []) if isinstance(data.get("relationships"), list) else []
+                    graph_payload = [
+                        {
+                            "entities": entities,
+                            "relationships": relationships,
+                            "metadata": data_response.get("metadata", {}),
+                        }
+                    ]
+
+            chunks = self._parse_chunks({"retrieved_chunks": chunks_payload}, kb)
 
             logger.info(
-                f"Retrieved {len(chunks)} chunks from KB {kb.full_name}"
+                "Retrieved structured evidence",
+                kb=kb.full_name,
+                chunk_count=len(chunks),
+                graph_entity_count=len(graph_payload[0].get("entities", [])) if graph_payload else 0,
+                graph_relationship_count=len(graph_payload[0].get("relationships", [])) if graph_payload else 0,
             )
 
-            return chunks
+            return {
+                "chunks": self._serialize_chunks(chunks),
+                "graph": graph_payload,
+            }
 
         except Exception as e:
-            if context.mode != QueryMode.GLOBAL:
+            if context.mode != QueryMode.HYBRID:
                 logger.warning(
-                    "Chunk retrieval failed, retrying context retrieval in global mode",
+                    "Structured evidence retrieval failed, retrying in hybrid mode",
                     kb=kb.full_name,
                     error=str(e),
                     requested_mode=context.mode.value,
                 )
                 try:
-                    context_response = await self.lightrag.query(
+                    data_response = await self.lightrag.query_data(
                         query=prompt,
-                        mode=QueryMode.GLOBAL.value,
-                        only_need_context=True,
-                        chunk_top_k=20,
-                        top_k=2,
+                        mode=QueryMode.HYBRID.value,
+                        conversation_history=context.history,
+                        chunk_top_k=5,
+                        top_k=5,
                         stream=False,
                     )
-                    chunks = self._parse_chunks(context_response, kb)
+                    data = data_response.get("data", {}) if isinstance(data_response, dict) else {}
+                    chunks_payload = data.get("chunks", []) if isinstance(data.get("chunks"), list) else []
+                    entities = data.get("entities", []) if isinstance(data.get("entities"), list) else []
+                    relationships = data.get("relationships", []) if isinstance(data.get("relationships"), list) else []
+
+                    chunks = self._parse_chunks({"retrieved_chunks": chunks_payload}, kb)
                     logger.info(
-                        f"Retrieved {len(chunks)} chunks from KB {kb.full_name} via global fallback"
+                        f"Retrieved {len(chunks)} chunks from KB {kb.full_name} via hybrid fallback"
                     )
-                    return chunks
+                    return {
+                        "chunks": self._serialize_chunks(chunks),
+                        "graph": [
+                            {
+                                "entities": entities,
+                                "relationships": relationships,
+                                "metadata": data_response.get("metadata", {}) if isinstance(data_response, dict) else {},
+                            }
+                        ],
+                    }
                 except Exception as fallback_error:
                     logger.warning(
-                        f"Global fallback chunk retrieval failed for KB {kb.full_name}",
+                        f"Hybrid fallback evidence retrieval failed for KB {kb.full_name}",
                         error=fallback_error,
                     )
 
             logger.warning(
-                f"Chunk retrieval failed for KB {kb.full_name}",
+                f"Evidence retrieval failed for KB {kb.full_name}",
                 error=e
             )
-            return []
+            return {"chunks": [], "graph": []}
 
     def _parse_chunks(
         self,
@@ -307,15 +356,24 @@ class QueryStrategy(ABC):
                 source = str(
                     item.get("source")
                     or item.get("file_path")
+                    or item.get("file_name")
                     or item.get("doc_id")
                     or kb.full_name
                 )
                 chunk_id = str(item.get("chunk_id") or item.get("id") or f"{kb.full_name}:{idx}")
 
                 metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                inferred_file_path = str(
+                    item.get("file_path")
+                    or metadata.get("file_path")
+                    or item.get("source")
+                    or item.get("file_name")
+                    or ""
+                )
                 metadata = {
                     **metadata,
                     "kb": kb.full_name,
+                    "file_path": inferred_file_path,
                     "raw_chunk": item,
                 }
 
@@ -471,8 +529,8 @@ class SingleKBStrategy(QueryStrategy):
             # Clean response (remove references section)
             clean_answer = clean_response(response_text)
 
-            # Retrieve chunks for evaluation
-            chunks = await self._retrieve_chunks(kb, context, prompt)
+            evidence = await self._retrieve_evidence(kb, context, prompt)
+            chunks = self._deserialize_chunks(evidence.get("chunks", []))
 
             # Note: Sources enrichment (URL generation) happens in service layer
             # This keeps strategy focused on query execution
@@ -493,6 +551,8 @@ class SingleKBStrategy(QueryStrategy):
 
             # Store references in metadata for later enrichment
             result.metadata["raw_references"] = references
+            result.metadata["chunks_by_kb"] = {kb.full_name: evidence.get("chunks", [])}
+            result.metadata["graph_context_by_kb"] = {kb.full_name: evidence.get("graph", [])}
 
             logger.info(
                 f"Single KB query completed",
@@ -663,11 +723,13 @@ class MultiKBStrategy(QueryStrategy):
             try:
                 service = kb_services[kb.full_name]
                 requested_mode = context.mode.value
+                if requested_mode == QueryMode.HYBRID.value:
+                    requested_mode = QueryMode.MIX.value
                 response = await service.query(
                     query=prompt,
                     mode=requested_mode,
                     conversation_history=context.history,
-                    top_k=2,
+                    top_k=5,
                     stream=False,
                 )
                 effective_mode = requested_mode
@@ -686,36 +748,49 @@ class MultiKBStrategy(QueryStrategy):
                         "_effective_mode": effective_mode,
                     }
 
-                # Capture raw context and parsed chunks for caching/evaluation.
-                try:
-                    context_response = await service.query(
+                # Retrieve structured evidence in one path (mix first, hybrid fallback).
+                data_response = await service.query_data(
+                    query=prompt,
+                    mode=QueryMode.MIX.value,
+                    conversation_history=context.history,
+                    top_k=5,
+                    chunk_top_k=5,
+                    stream=False,
+                )
+
+                data = data_response.get("data", {}) if isinstance(data_response, dict) else {}
+                chunks_payload = data.get("chunks", []) if isinstance(data.get("chunks"), list) else []
+                entities = data.get("entities", []) if isinstance(data.get("entities"), list) else []
+                relationships = data.get("relationships", []) if isinstance(data.get("relationships"), list) else []
+
+                if not chunks_payload:
+                    hybrid_data_response = await service.query_data(
                         query=prompt,
-                        mode=effective_mode,
-                        only_need_context=True,
-                        chunk_top_k=20,
-                        top_k=2,
+                        mode=QueryMode.HYBRID.value,
+                        conversation_history=context.history,
+                        top_k=5,
+                        chunk_top_k=5,
                         stream=False,
                     )
-                except Exception as context_error:
-                    logger.warning(
-                        "Context retrieval failed for KB after answer query",
-                        kb=kb.full_name,
-                        error=context_error,
-                    )
-                    context_response = {}
+                    hybrid_data = hybrid_data_response.get("data", {}) if isinstance(hybrid_data_response, dict) else {}
+                    chunks_payload = hybrid_data.get("chunks", []) if isinstance(hybrid_data.get("chunks"), list) else []
+                    entities = hybrid_data.get("entities", []) if isinstance(hybrid_data.get("entities"), list) else []
+                    relationships = hybrid_data.get("relationships", []) if isinstance(hybrid_data.get("relationships"), list) else []
 
-                parsed_chunks = self._parse_chunks(context_response, kb)
+                parsed_chunks = self._parse_chunks({"retrieved_chunks": chunks_payload}, kb)
                 response["_retrieved_chunks"] = self._serialize_chunks(parsed_chunks)
-                response["_raw_context"] = (
-                    context_response.get("retrieved_chunks", [])
-                    if isinstance(context_response, dict)
-                    else context_response
-                )
+                response["_raw_context"] = [
+                    {
+                        "entities": entities,
+                        "relationships": relationships,
+                        "metadata": data_response.get("metadata", {}) if isinstance(data_response, dict) else {},
+                    }
+                ]
                 return (kb.full_name, response, None)
             except Exception as e:
-                if context.mode != QueryMode.GLOBAL:
+                if context.mode != QueryMode.HYBRID:
                     logger.warning(
-                        "Query failed, retrying in global mode",
+                        "Query failed, retrying in hybrid mode",
                         kb=kb.full_name,
                         error=str(e),
                         requested_mode=context.mode.value,
@@ -724,23 +799,23 @@ class MultiKBStrategy(QueryStrategy):
                         service = kb_services[kb.full_name]
                         response = await service.query(
                             query=prompt,
-                            mode=QueryMode.GLOBAL.value,
+                            mode=QueryMode.HYBRID.value,
                             conversation_history=context.history,
-                            top_k=2,
+                            top_k=5,
                             stream=False,
                         )
                         if isinstance(response, dict):
-                            response.setdefault("mode", QueryMode.GLOBAL.value)
+                            response.setdefault("mode", QueryMode.HYBRID.value)
                             response["_requested_mode"] = context.mode.value
-                            response["_effective_mode"] = QueryMode.GLOBAL.value
+                            response["_effective_mode"] = QueryMode.HYBRID.value
                         else:
                             response = {
                                 "answer": str(response) if response is not None else "",
                                 "retrieved_chunks": [],
                                 "sources": [],
-                                "mode": QueryMode.GLOBAL.value,
+                                "mode": QueryMode.HYBRID.value,
                                 "_requested_mode": context.mode.value,
-                                "_effective_mode": QueryMode.GLOBAL.value,
+                                "_effective_mode": QueryMode.HYBRID.value,
                             }
                         return (kb.full_name, response, None)
                     except Exception as fallback_error:

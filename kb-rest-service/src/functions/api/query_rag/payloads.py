@@ -85,14 +85,18 @@ class GraphDataModel(BaseModel):
     entities: List[Dict[str, Any]] = Field(default_factory=list)
     relationship: List[Dict[str, Any]] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    chunk_references: Optional[List[Dict[str, str]]] = Field(
+        default=None,
+        description="Graph chunk/document references with chunk_id and file_path"
+    )
 
 
 class KBChunkModel(BaseModel):
     """Chunk entry in per-KB result."""
 
-    source: str = Field(..., description="Source file name or source identifier")
-    chunks: str = Field(..., description="Chunk identifier")
-    chunk: str = Field(..., description="Chunk data")
+    chunk_id: str = Field(..., description="Chunk identifier")
+    chunk: str = Field(..., description="Chunk content/data from vector or graph retrieval")
+    file_path: str = Field(..., description="Source file path from vector retrieval")
 
 
 class KBResultModel(BaseModel):
@@ -124,13 +128,19 @@ class QueryRAGResponse(BaseModel):
                         "graph_data": {
                             "entities": [],
                             "relationship": [],
-                            "metadata": {}
+                            "metadata": {},
+                            "chunk_references": [
+                                {
+                                    "chunk_id": "Other/Demo Instances/Rearch12 & Knowledge:0",
+                                    "file_path": "Other/Demo Instances/Rearch12 & Knowledge"
+                                }
+                            ]
                         },
                         "chunks": [
                             {
-                                "source": "Portfolio_Analysis.pdf",
-                                "chunks": "chunk_123",
-                                "chunk": "Asset management involves..."
+                                "chunk_id": "chunk_123",
+                                "chunk": "Asset management involves...",
+                                "file_path": "Banking/AssetManagement/Portfolio_Analysis.pdf"
                             }
                         ]
                     }

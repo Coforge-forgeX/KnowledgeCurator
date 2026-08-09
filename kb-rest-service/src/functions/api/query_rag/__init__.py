@@ -271,6 +271,124 @@ def _build_response(result, workspace_id: int, domain: str, kb_name: str) -> Que
     """
     metadata = result.metadata if isinstance(result.metadata, dict) else {}
 
+    def _apply_graph_payload(
+        graph_payload: Dict[str, Any],
+        graph_entities: List[Dict[str, Any]],
+        graph_relationships: List[Dict[str, Any]],
+        graph_metadata: Dict[str, Any],
+        graph_chunk_refs: List[Dict[str, str]],
+        seen_graph_refs: set,
+        kb_chunks: List[KBChunkModel],
+        seen_chunk_ids: set,
+        base_chunk_id: str,
+        fallback_file_path: str,
+    ) -> None:
+        """Merge parsed graph payload into response graph_data and chunks."""
+        entities = graph_payload.get("entities", []) if isinstance(graph_payload, dict) else []
+        relationships = graph_payload.get("relationships", []) if isinstance(graph_payload, dict) else []
+        parsed_metadata = graph_payload.get("metadata", {}) if isinstance(graph_payload, dict) else {}
+        document_chunks = graph_payload.get("document_chunks", []) if isinstance(graph_payload, dict) else []
+
+        source_to_file_path: Dict[str, str] = {}
+
+        def _extract_source_ids(raw_source_id: Any) -> List[str]:
+            if raw_source_id is None:
+                return []
+            if isinstance(raw_source_id, list):
+                return [str(s).strip() for s in raw_source_id if str(s).strip()]
+            if isinstance(raw_source_id, (int, float)):
+                return [str(raw_source_id)]
+            text = str(raw_source_id)
+            normalized = text.replace(";", ",").replace("|", ",")
+            return [part.strip() for part in normalized.split(",") if part.strip()]
+
+        if isinstance(relationships, list):
+            graph_relationships.extend([r for r in relationships if isinstance(r, dict)])
+
+        if isinstance(parsed_metadata, dict):
+            graph_metadata.update(parsed_metadata)
+
+        if isinstance(document_chunks, list):
+            for doc_index, doc_chunk in enumerate(document_chunks):
+                if not isinstance(doc_chunk, dict):
+                    continue
+
+                doc_content = str(
+                    doc_chunk.get("content")
+                    or doc_chunk.get("text")
+                    or doc_chunk.get("chunk")
+                    or doc_chunk.get("description")
+                    or ""
+                ).strip()
+                if not doc_content:
+                    continue
+
+                doc_chunk_id = str(
+                    doc_chunk.get("chunk_id")
+                    or doc_chunk.get("id")
+                    or f"{base_chunk_id}:doc:{doc_index}"
+                )
+                if doc_chunk_id in seen_chunk_ids:
+                    continue
+
+                doc_file_path = str(
+                    doc_chunk.get("file_path")
+                    or doc_chunk.get("source")
+                    or doc_chunk.get("file_name")
+                    or fallback_file_path
+                )
+
+                source_to_file_path[doc_chunk_id] = doc_file_path
+
+                for raw_ref in _extract_source_ids(doc_chunk.get("source_id")):
+                    source_to_file_path[raw_ref] = doc_file_path
+
+                kb_chunks.append(
+                    KBChunkModel(
+                        chunk_id=doc_chunk_id,
+                        chunk=doc_content,
+                        file_path=doc_file_path,
+                    )
+                )
+                seen_chunk_ids.add(doc_chunk_id)
+
+                ref_key = (doc_chunk_id, doc_file_path)
+                if ref_key not in seen_graph_refs:
+                    graph_chunk_refs.append(
+                        {
+                            "chunk_id": doc_chunk_id,
+                            "file_path": doc_file_path,
+                        }
+                    )
+                    seen_graph_refs.add(ref_key)
+
+        if isinstance(entities, list):
+            for entity in entities:
+                if not isinstance(entity, dict):
+                    continue
+
+                enriched_entity = dict(entity)
+                source_ids = _extract_source_ids(enriched_entity.get("source_id"))
+
+                if not source_ids:
+                    source_ids = [base_chunk_id] if base_chunk_id else []
+                    if source_ids:
+                        enriched_entity["source_id"] = source_ids[0]
+
+                if not enriched_entity.get("file_path"):
+                    resolved_paths = [
+                        source_to_file_path[sid]
+                        for sid in source_ids
+                        if sid in source_to_file_path and source_to_file_path[sid]
+                    ]
+                    if resolved_paths:
+                        unique_paths = list(dict.fromkeys(resolved_paths))
+                        enriched_entity["file_path"] = unique_paths[0] if len(unique_paths) == 1 else unique_paths
+                    elif fallback_file_path:
+                        enriched_entity["file_path"] = fallback_file_path
+
+                graph_entities.append(enriched_entity)
+
     requested_mode = str(metadata.get("requested_mode") or metadata.get("mode") or "hybrid")
     effective_mode = str(metadata.get("effective_mode") or requested_mode)
 
@@ -286,7 +404,10 @@ def _build_response(result, workspace_id: int, domain: str, kb_name: str) -> Que
             graph_entities: List[Dict[str, Any]] = []
             graph_relationships: List[Dict[str, Any]] = []
             graph_metadata: Dict[str, Any] = {}
+            graph_chunk_refs: List[Dict[str, str]] = []
             kb_chunks: List[KBChunkModel] = []
+            seen_chunk_ids = set()
+            seen_graph_refs = set()
 
             raw_chunks = kb_payload.get("_retrieved_chunks", [])
             if isinstance(raw_chunks, list):
@@ -294,36 +415,116 @@ def _build_response(result, workspace_id: int, domain: str, kb_name: str) -> Que
                     if not isinstance(raw_chunk, dict):
                         continue
 
-                    chunk_dict = {
-                        "chunk_id": str(raw_chunk.get("chunk_id") or ""),
-                        "content": str(raw_chunk.get("content") or ""),
-                        "score": raw_chunk.get("score", 0.0),
-                        "source": str(raw_chunk.get("source") or ""),
-                        "metadata": raw_chunk.get("metadata") if isinstance(raw_chunk.get("metadata"), dict) else {}
-                    }
+                    # Extract metadata
+                    raw_chunk_metadata = raw_chunk.get("metadata") if isinstance(raw_chunk.get("metadata"), dict) else {}
 
-                    enhanced = format_chunk_with_graph_data(chunk_dict)
+                    # Get file_path from multiple possible locations
+                    file_path = str(
+                        raw_chunk.get("file_path")
+                        or raw_chunk_metadata.get("file_path")
+                        or raw_chunk.get("source")
+                        or raw_chunk.get("file_name")
+                        or ""
+                    )
 
-                    if enhanced.get("content_type") == "graph" and isinstance(enhanced.get("graph_data"), dict):
-                        graph_data = enhanced["graph_data"]
-                        entities = graph_data.get("entities", [])
-                        relationships = graph_data.get("relationships", [])
-                        parsed_metadata = graph_data.get("metadata", {})
+                    # Build chunk dict - preserve original content for vector chunks
+                    chunk_id = str(raw_chunk.get("chunk_id") or "")
+                    chunk_content = str(raw_chunk.get("content") or "")
 
-                        if isinstance(entities, list):
-                            graph_entities.extend([e for e in entities if isinstance(e, dict)])
-                        if isinstance(relationships, list):
-                            graph_relationships.extend([r for r in relationships if isinstance(r, dict)])
-                        if isinstance(parsed_metadata, dict):
-                            graph_metadata.update(parsed_metadata)
+                    # Only format as graph data if it actually contains graph markers
+                    if "Knowledge Graph Data" in chunk_content:
+                        chunk_dict = {
+                            "chunk_id": chunk_id,
+                            "content": chunk_content,
+                            "score": raw_chunk.get("score", 0.0),
+                            "source": str(raw_chunk.get("source") or ""),
+                            "metadata": raw_chunk_metadata
+                        }
+                        enhanced = format_chunk_with_graph_data(chunk_dict)
+                        final_content = enhanced.get("summary", chunk_content)
 
+                        graph_payload = enhanced.get("graph_data") if isinstance(enhanced, dict) else None
+                        if isinstance(graph_payload, dict):
+                            _apply_graph_payload(
+                                graph_payload=graph_payload,
+                                graph_entities=graph_entities,
+                                graph_relationships=graph_relationships,
+                                graph_metadata=graph_metadata,
+                                graph_chunk_refs=graph_chunk_refs,
+                                seen_graph_refs=seen_graph_refs,
+                                kb_chunks=kb_chunks,
+                                seen_chunk_ids=seen_chunk_ids,
+                                base_chunk_id=chunk_id,
+                                fallback_file_path=file_path,
+                            )
+                    else:
+                        # This is a vector chunk - use original content
+                        final_content = chunk_content
+
+                    # Add chunk with proper structure: chunk_id, chunk (content), file_path
                     kb_chunks.append(
                         KBChunkModel(
-                            source=str(enhanced.get("source") or ""),
-                            chunks=str(enhanced.get("chunk_id") or ""),
-                            chunk=str(enhanced.get("content") or "")
+                            chunk_id=chunk_id,
+                            chunk=final_content,  # This is chunk_data
+                            file_path=file_path
                         )
                     )
+                    seen_chunk_ids.add(chunk_id)
+
+                    if "Knowledge Graph Data" in chunk_content:
+                        ref_key = (chunk_id, file_path)
+                        if ref_key not in seen_graph_refs:
+                            graph_chunk_refs.append(
+                                {
+                                    "chunk_id": chunk_id,
+                                    "file_path": file_path,
+                                }
+                            )
+                            seen_graph_refs.add(ref_key)
+
+            graph_context = kb_payload.get("_raw_context", [])
+            graph_context_items = graph_context if isinstance(graph_context, list) else [graph_context]
+            for graph_item in graph_context_items:
+                if not graph_item:
+                    continue
+                if isinstance(graph_item, dict):
+                    context_chunk_id = str(kb_source) + ":raw_context"
+                    _apply_graph_payload(
+                        graph_payload=graph_item,
+                        graph_entities=graph_entities,
+                        graph_relationships=graph_relationships,
+                        graph_metadata=graph_metadata,
+                        graph_chunk_refs=graph_chunk_refs,
+                        seen_graph_refs=seen_graph_refs,
+                        kb_chunks=kb_chunks,
+                        seen_chunk_ids=seen_chunk_ids,
+                        base_chunk_id=context_chunk_id,
+                        fallback_file_path=str(kb_source),
+                    )
+                    continue
+                graph_chunk_dict = {
+                    "chunk_id": "",
+                    "content": str(graph_item),
+                    "score": 0.0,
+                    "source": kb_source,
+                    "metadata": {},
+                }
+                graph_enhanced = format_chunk_with_graph_data(graph_chunk_dict)
+                if graph_enhanced.get("content_type") != "graph" or not isinstance(graph_enhanced.get("graph_data"), dict):
+                    continue
+                context_chunk_id = str(kb_source) + ":raw_context"
+                _apply_graph_payload(
+                    graph_payload=graph_enhanced["graph_data"],
+                    graph_entities=graph_entities,
+                    graph_relationships=graph_relationships,
+                    graph_metadata=graph_metadata,
+                    graph_chunk_refs=graph_chunk_refs,
+                    seen_graph_refs=seen_graph_refs,
+                    kb_chunks=kb_chunks,
+                    seen_chunk_ids=seen_chunk_ids,
+                    base_chunk_id=context_chunk_id,
+                    fallback_file_path=str(kb_source),
+                )
 
             per_kb_results.append(
                 KBResultModel(
@@ -332,6 +533,7 @@ def _build_response(result, workspace_id: int, domain: str, kb_name: str) -> Que
                         entities=graph_entities,
                         relationship=graph_relationships,
                         metadata=graph_metadata,
+                        chunk_references=graph_chunk_refs if graph_chunk_refs else None,
                     ),
                     chunks=kb_chunks,
                 )
@@ -341,40 +543,122 @@ def _build_response(result, workspace_id: int, domain: str, kb_name: str) -> Que
         graph_entities: List[Dict[str, Any]] = []
         graph_relationships: List[Dict[str, Any]] = []
         graph_metadata: Dict[str, Any] = {}
+        graph_chunk_refs: List[Dict[str, str]] = []
         kb_chunks: List[KBChunkModel] = []
+        seen_chunk_ids = set()
+        seen_graph_refs = set()
 
         kb_source = metadata.get("kb") or f"{domain}/{kb_name}"
 
         for chunk in result.retrieved_chunks:
-            chunk_dict = {
-                "chunk_id": str(getattr(chunk, "chunk_id", "")),
-                "content": str(getattr(chunk, "content", "")),
-                "score": getattr(chunk, "score", 0.0),
-                "source": str(getattr(chunk, "source", "")),
-                "metadata": getattr(chunk, "metadata", {}) if isinstance(getattr(chunk, "metadata", {}), dict) else {},
-            }
+            chunk_metadata = getattr(chunk, "metadata", {}) if isinstance(getattr(chunk, "metadata", {}), dict) else {}
+            chunk_content = str(getattr(chunk, "content", ""))
+            chunk_id = str(getattr(chunk, "chunk_id", ""))
 
-            enhanced = format_chunk_with_graph_data(chunk_dict)
+            # Get file_path from multiple possible locations
+            file_path = str(
+                chunk_metadata.get("file_path")
+                or getattr(chunk, "file_path", "")
+                or getattr(chunk, "source", "")
+                or chunk_metadata.get("source")
+                or ""
+            )
 
-            if enhanced.get("content_type") == "graph" and isinstance(enhanced.get("graph_data"), dict):
-                graph_data = enhanced["graph_data"]
-                entities = graph_data.get("entities", [])
-                relationships = graph_data.get("relationships", [])
-                parsed_metadata = graph_data.get("metadata", {})
+            # Only format as graph data if it actually contains graph markers
+            if "Knowledge Graph Data" in chunk_content:
+                chunk_dict = {
+                    "chunk_id": chunk_id,
+                    "content": chunk_content,
+                    "score": getattr(chunk, "score", 0.0),
+                    "source": str(getattr(chunk, "source", "")),
+                    "metadata": chunk_metadata,
+                }
+                enhanced = format_chunk_with_graph_data(chunk_dict)
+                final_content = enhanced.get("summary", chunk_content)
 
-                if isinstance(entities, list):
-                    graph_entities.extend([e for e in entities if isinstance(e, dict)])
-                if isinstance(relationships, list):
-                    graph_relationships.extend([r for r in relationships if isinstance(r, dict)])
-                if isinstance(parsed_metadata, dict):
-                    graph_metadata.update(parsed_metadata)
+                graph_payload = enhanced.get("graph_data") if isinstance(enhanced, dict) else None
+                if isinstance(graph_payload, dict):
+                    _apply_graph_payload(
+                        graph_payload=graph_payload,
+                        graph_entities=graph_entities,
+                        graph_relationships=graph_relationships,
+                        graph_metadata=graph_metadata,
+                        graph_chunk_refs=graph_chunk_refs,
+                        seen_graph_refs=seen_graph_refs,
+                        kb_chunks=kb_chunks,
+                        seen_chunk_ids=seen_chunk_ids,
+                        base_chunk_id=chunk_id,
+                        fallback_file_path=file_path,
+                    )
+            else:
+                # This is a vector chunk - use original content
+                final_content = chunk_content
 
             kb_chunks.append(
                 KBChunkModel(
-                    source=str(enhanced.get("source") or ""),
-                    chunks=str(enhanced.get("chunk_id") or ""),
-                    chunk=str(enhanced.get("content") or "")
+                    chunk_id=chunk_id,
+                    chunk=final_content,  # This is chunk_data
+                    file_path=file_path
                 )
+            )
+            seen_chunk_ids.add(chunk_id)
+
+            if "Knowledge Graph Data" in chunk_content:
+                ref_key = (chunk_id, file_path)
+                if ref_key not in seen_graph_refs:
+                    graph_chunk_refs.append(
+                        {
+                            "chunk_id": chunk_id,
+                            "file_path": file_path,
+                        }
+                    )
+                    seen_graph_refs.add(ref_key)
+
+        raw_graph_context = metadata.get("graph_context_by_kb", {}).get(kb_source, []) if isinstance(metadata.get("graph_context_by_kb"), dict) else []
+        graph_context_items = raw_graph_context if isinstance(raw_graph_context, list) else [raw_graph_context]
+        for graph_item in graph_context_items:
+            if not graph_item:
+                continue
+
+            if isinstance(graph_item, dict):
+                context_chunk_id = str(kb_source) + ":raw_context"
+                _apply_graph_payload(
+                    graph_payload=graph_item,
+                    graph_entities=graph_entities,
+                    graph_relationships=graph_relationships,
+                    graph_metadata=graph_metadata,
+                    graph_chunk_refs=graph_chunk_refs,
+                    seen_graph_refs=seen_graph_refs,
+                    kb_chunks=kb_chunks,
+                    seen_chunk_ids=seen_chunk_ids,
+                    base_chunk_id=context_chunk_id,
+                    fallback_file_path=str(kb_source),
+                )
+                continue
+
+            graph_chunk_dict = {
+                "chunk_id": "",
+                "content": str(graph_item),
+                "score": 0.0,
+                "source": kb_source,
+                "metadata": {},
+            }
+            graph_enhanced = format_chunk_with_graph_data(graph_chunk_dict)
+            if graph_enhanced.get("content_type") != "graph" or not isinstance(graph_enhanced.get("graph_data"), dict):
+                continue
+
+            context_chunk_id = str(kb_source) + ":raw_context"
+            _apply_graph_payload(
+                graph_payload=graph_enhanced["graph_data"],
+                graph_entities=graph_entities,
+                graph_relationships=graph_relationships,
+                graph_metadata=graph_metadata,
+                graph_chunk_refs=graph_chunk_refs,
+                seen_graph_refs=seen_graph_refs,
+                kb_chunks=kb_chunks,
+                seen_chunk_ids=seen_chunk_ids,
+                base_chunk_id=context_chunk_id,
+                fallback_file_path=str(kb_source),
             )
 
         per_kb_results.append(
@@ -384,6 +668,7 @@ def _build_response(result, workspace_id: int, domain: str, kb_name: str) -> Que
                     entities=graph_entities,
                     relationship=graph_relationships,
                     metadata=graph_metadata,
+                    chunk_references=graph_chunk_refs if graph_chunk_refs else None,
                 ),
                 chunks=kb_chunks,
             )
