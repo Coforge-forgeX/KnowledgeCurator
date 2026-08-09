@@ -13,6 +13,7 @@ Multi-cloud deployment support: Azure, AWS, GCP, Docker
 """
 import asyncio
 import importlib.util
+import json
 import os
 import signal
 import sys
@@ -49,6 +50,10 @@ def _ensure_shared_package_resolution() -> None:
         raise ModuleNotFoundError(
             "Unable to resolve shared.adapters; ensure services/shared is importable"
         )
+
+# Configure Windows console for UTF-8 encoding (prevents Unicode crashes)
+from shared.windows_encoding import configure_windows_console_encoding
+configure_windows_console_encoding()
 
 from core.logging import get_logger, setup_logging
 from src.core.config import settings

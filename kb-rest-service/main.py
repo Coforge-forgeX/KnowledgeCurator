@@ -52,6 +52,10 @@ try:
 except ImportError as e:
     print(f"[STARTUP] ✗ Failed to import shared.adapters: {e}")
 
+# Configure Windows console for UTF-8 encoding (prevents Unicode crashes)
+from shared.windows_encoding import configure_windows_console_encoding
+configure_windows_console_encoding()
+
 from src.core.config import settings
 from src.core.exceptions import (
     APIException,

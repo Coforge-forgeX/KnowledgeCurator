@@ -6,7 +6,7 @@ All request/response models with proper validation for Swagger/OpenAPI documenta
 
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field, field_validator
-from enum import Enum
+from src.models.rag_models import QueryMode
 
 
 # ============================================================================
@@ -29,14 +29,6 @@ class PaginationParams(BaseModel):
 # ============================================================================
 # Query Models
 # ============================================================================
-
-class QueryMode(str, Enum):
-    """Query modes for LightRAG"""
-    NAIVE = "naive"
-    LOCAL = "local"
-    GLOBAL = "global"
-    HYBRID = "hybrid"
-    MIX = "mix"
 
 
 class KBQueryRequest(BaseModel):

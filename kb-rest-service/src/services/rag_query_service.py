@@ -244,7 +244,8 @@ class RAGQueryService:
         mode: str = "hybrid",
         history: Optional[List[dict]] = None,
         knowledge_bases: Optional[List[str]] = None,
-        agent_id: Optional[int] = None
+        agent_id: Optional[int] = None,
+        is_kg: Optional[bool] = None,
     ) -> RAGQueryResult:
         """
         Execute RAG query with full orchestration.
@@ -286,7 +287,8 @@ class RAGQueryService:
                 domain,
                 kb_name,
                 workspace_id,
-                knowledge_bases
+                knowledge_bases,
+                is_kg=is_kg,
             )
 
             logger.info(
@@ -375,29 +377,73 @@ class RAGQueryService:
         domain: str,
         kb_name: str,
         workspace_id: int,
-        knowledge_bases: Optional[List[str]]
+        knowledge_bases: Optional[List[str]],
+        is_kg: Optional[bool] = None,
     ) -> List[KnowledgeBase]:
-        """Resolve list of knowledge bases to query"""
-        kb_list = []
+        """Resolve list of knowledge bases to query.
 
-        # Add workspace-scoped KB
-        scoped_kb_name = WorkspaceResolver.build_kb_name(kb_name, workspace_id)
-        kb_list.append(KnowledgeBase(
-            domain=domain,
-            name=scoped_kb_name,
-            workspace_id=workspace_id
-        ))
+        Rules:
+        - Non-KG workspace: one workspace-level graph + domain-level graphs.
+        - KG workspace: only one domain-level graph.
+        """
+        kb_list: List[KnowledgeBase] = []
+        seen_names = set()
 
-        # Add additional KBs if provided
+        def normalize_kb_name(raw_name: str) -> str:
+            """Normalize KB name and strip domain prefix if present."""
+            normalized = (raw_name or "").strip().strip("/")
+            if not normalized:
+                return ""
+            domain_prefix = f"{domain}/"
+            if normalized.startswith(domain_prefix):
+                normalized = normalized[len(domain_prefix):]
+            return normalized
+
+        def add_kb_if_new(raw_name: str) -> None:
+            normalized_name = normalize_kb_name(raw_name)
+            if not normalized_name:
+                return
+            dedupe_key = normalized_name.lower()
+            if dedupe_key in seen_names:
+                return
+            seen_names.add(dedupe_key)
+            kb_list.append(
+                KnowledgeBase(
+                    domain=domain,
+                    name=normalized_name,
+                    workspace_id=workspace_id,
+                )
+            )
+
+        normalized_primary = normalize_kb_name(kb_name)
+        primary_parts = [part for part in normalized_primary.split("/") if part]
+        subindustry = primary_parts[0] if primary_parts else ""
+
+        # Always include the primary graph first.
+        add_kb_if_new(normalized_primary)
+
+        # KG workspace has exactly one domain-level graph.
+        if is_kg:
+            logger.debug("KG workspace detected; skipping additional KB graphs")
+            logger.debug(f"Resolved {len(kb_list)} knowledge bases for query")
+            return kb_list
+
+        # Non-KG workspace: add domain-level graphs for additional KB titles.
         if knowledge_bases:
-            for kb_suffix in knowledge_bases:
-                if kb_suffix and kb_suffix.strip():
-                    additional_kb_name = f"{kb_name}/{kb_suffix.strip()}"
-                    kb_list.append(KnowledgeBase(
-                        domain=domain,
-                        name=additional_kb_name,
-                        workspace_id=workspace_id
-                    ))
+            for kb_entry in knowledge_bases:
+                title = (kb_entry or "").strip().strip("/")
+                if not title:
+                    continue
+
+                # If caller already passed a scoped path, keep it.
+                if "/" in title:
+                    add_kb_if_new(title)
+                    continue
+
+                if subindustry:
+                    add_kb_if_new(f"{subindustry}/{title}")
+                else:
+                    add_kb_if_new(title)
 
         logger.debug(f"Resolved {len(kb_list)} knowledge bases for query")
         return kb_list

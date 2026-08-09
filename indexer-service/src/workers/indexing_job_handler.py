@@ -43,11 +43,6 @@ async def initialize_lightrag(domain: str, kb_name: str) -> LightRAG:
     # Create workspace name (alphanumeric only)
     workspace_name = ''.join(c for c in f"{domain}{kb_name}" if c.isalpha())
 
-    # IMPORTANT: Neo4j Community Edition only supports ONE database (default).
-    # Don't set NEO4J_DATABASE - let it use the default database.
-    # Workspace isolation is handled by the 'workspace' parameter in LightRAG constructor.
-    # os.environ['NEO4J_DATABASE'] = workspace_name
-
     # Set PostgreSQL environment variables for LightRAG
     os.environ['POSTGRES_HOST'] = settings.database.POSTGRESQL_DATABASE_HOST
     os.environ['POSTGRES_USER'] = settings.database.POSTGRESQL_DATABASE_USER

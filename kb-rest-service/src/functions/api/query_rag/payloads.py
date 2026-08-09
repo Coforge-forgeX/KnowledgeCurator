@@ -4,7 +4,7 @@ Query RAG API Payloads - UPDATED
 Request and response models for the query_rag endpoint.
 Simplified - domain and kb_name fetched from database.
 """
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, validator
 
@@ -51,8 +51,8 @@ class QueryRAGRequest(BaseModel):
         description="Conversation history for context-aware responses (optional)"
     )
     agent_id: Optional[int] = Field(
-        default=None,
-        description="Agent ID for custom LLM routing (optional, uses workspace default if not provided)"
+        default=1,
+        description="Agent ID for custom LLM routing (default: 1)"
     )
 
     @validator("query")
@@ -71,7 +71,7 @@ class QueryRAGRequest(BaseModel):
         return v.lower()
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "query": "What is asset management?",
                 "workspace_id": 123
@@ -79,85 +79,64 @@ class QueryRAGRequest(BaseModel):
         }
 
 
-class SourceInfo(BaseModel):
-    """Source document information"""
-    file_name: str = Field(..., description="File name with citation")
-    download_url: str = Field(..., description="Download URL with SAS token")
-    container_name: str = Field(..., description="Blob container name")
-    blob_path: str = Field(..., description="Blob storage path")
-    download_name: str = Field(..., description="Download file name")
-    citation: Optional[str] = Field(None, description="Citation number (e.g., [1])")
+class GraphDataModel(BaseModel):
+    """Structured graph data per KB."""
+
+    entities: List[Dict[str, Any]] = Field(default_factory=list)
+    relationship: List[Dict[str, Any]] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-class RetrievedChunkInfo(BaseModel):
-    """Retrieved document chunk information"""
-    chunk_id: str = Field(..., description="Unique chunk identifier")
-    content: str = Field(..., description="Chunk content")
-    score: float = Field(..., description="Relevance score", ge=0.0, le=1.0)
-    source: str = Field(..., description="Source identifier")
-    metadata: dict = Field(default_factory=dict, description="Additional metadata")
+class KBChunkModel(BaseModel):
+    """Chunk entry in per-KB result."""
+
+    source: str = Field(..., description="Source file name or source identifier")
+    chunks: str = Field(..., description="Chunk identifier")
+    chunk: str = Field(..., description="Chunk data")
+
+
+class KBResultModel(BaseModel):
+    """Per-knowledge-base response section."""
+
+    source: str = Field(..., description="KB name")
+    graph_data: GraphDataModel = Field(default_factory=GraphDataModel)
+    chunks: List[KBChunkModel] = Field(default_factory=list)
 
 
 class QueryRAGResponse(BaseModel):
-    """Response model for query_rag endpoint"""
+    """Compact response model for query_rag endpoint."""
 
-    response: str = Field(..., description="Generated answer")
-    sources: List[SourceInfo] = Field(
+    final_answer: str = Field(..., description="Final combined answer across all KBs")
+    kb_results: List[KBResultModel] = Field(
         default_factory=list,
-        description="Source documents with download URLs"
+        description="Per-KB graph and chunk evidence"
     )
-    retrieved_chunks: List[RetrievedChunkInfo] = Field(
-        default_factory=list,
-        description="Retrieved document chunks (for evaluation)"
-    )
-    metadata: dict = Field(
-        default_factory=dict,
-        description="Additional metadata about the query"
-    )
-
-    # Legacy compatibility fields
-    LightRAG: Optional[str] = Field(None, description="Legacy field - same as response")
-    task_ids: List[int] = Field(default_factory=list, description="Legacy field - task IDs")
-
-    def __init__(self, **data):
-        """Initialize with legacy field compatibility"""
-        super().__init__(**data)
-        # Populate legacy LightRAG field for backward compatibility
-        if not self.LightRAG and self.response:
-            self.LightRAG = self.response
+    requested_mode: str = Field(..., description="Requested query mode")
+    effective_mode: str = Field(..., description="Effective query mode")
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
-                "response": "Asset management is...",
-                "sources": [
+                "final_answer": "Asset management is...",
+                "kb_results": [
                     {
-                        "file_name": "[1] Portfolio_Analysis.pdf",
-                        "download_url": "https://storage.blob.core.windows.net/...",
-                        "container_name": "knowledgecurator",
-                        "blob_path": "Banking/AssetManagement/Portfolio_Analysis.pdf",
-                        "download_name": "Portfolio_Analysis.pdf",
-                        "citation": "[1]"
+                        "source": "Banking/AssetManagement",
+                        "graph_data": {
+                            "entities": [],
+                            "relationship": [],
+                            "metadata": {}
+                        },
+                        "chunks": [
+                            {
+                                "source": "Portfolio_Analysis.pdf",
+                                "chunks": "chunk_123",
+                                "chunk": "Asset management involves..."
+                            }
+                        ]
                     }
                 ],
-                "retrieved_chunks": [
-                    {
-                        "chunk_id": "chunk_123",
-                        "content": "Asset management involves...",
-                        "score": 0.95,
-                        "source": "Portfolio_Analysis.pdf",
-                        "metadata": {}
-                    }
-                ],
-                "metadata": {
-                    "mode": "hybrid",
-                    "workspace_id": 123,
-                    "domain": "Banking",
-                    "kb_name": "AssetManagement",
-                    "reference_count": 3
-                },
-                "LightRAG": "Asset management is...",
-                "task_ids": []
+                "requested_mode": "hybrid",
+                "effective_mode": "hybrid"
             }
         }
 
@@ -170,7 +149,7 @@ class ErrorResponse(BaseModel):
     correlation_id: Optional[str] = Field(None, description="Request correlation ID")
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "error": "Failed to execute RAG query",
                 "error_code": "QUERY_FAILED",

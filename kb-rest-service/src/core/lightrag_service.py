@@ -1,11 +1,13 @@
 """LightRAG service for knowledge base operations"""
 import os
+import tempfile
 from typing import Any, Dict, List, Optional
 
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc
 from shared.lightrag import (
     build_azure_openai_chat_completion_func,
+    build_azure_openai_embedding_func,
     build_ollama_embedding_func,
 )
 
@@ -39,7 +41,12 @@ class LightRAGService:
             working_dir: Working directory for LightRAG data
             workspace: Workspace identifier for multi-tenancy in Neo4j/PostgreSQL
         """
-        self.working_dir = working_dir or settings.lightrag.LIGHTRAG_WORKING_DIR
+        serverless_mode = bool(getattr(settings.database, "SERVERLESS", True))
+        configured_working_dir = working_dir or settings.lightrag.LIGHTRAG_WORKING_DIR
+        if serverless_mode and not working_dir:
+            configured_working_dir = os.path.join(tempfile.gettempdir(), "lightrag_data")
+
+        self.working_dir = configured_working_dir
         self.workspace = workspace
         self._rag: Optional[LightRAG] = None
         self._initialized = False
@@ -50,7 +57,17 @@ class LightRAGService:
         self._active_llm_model: Optional[str] = None
         self._active_llm_source: Optional[str] = None
 
-        logger.info("LightRAG service initialized", working_dir=self.working_dir, workspace=workspace)
+        try:
+            os.makedirs(self.working_dir, exist_ok=True)
+        except Exception as e:
+            logger.warning("Failed to ensure LightRAG working directory", working_dir=self.working_dir, error=str(e))
+
+        logger.info(
+            "LightRAG service initialized",
+            working_dir=self.working_dir,
+            workspace=workspace,
+            serverless_mode=serverless_mode,
+        )
 
     def set_runtime_context(
         self,
@@ -201,6 +218,31 @@ class LightRAGService:
         Raises:
             ConfigurationException: If embedding configuration is invalid
         """
+        # Prefer Azure embedding config to match indexer-service behavior.
+        azure_api_key = settings.lightrag.AZURE_OPENAI_EMBEDDING_MODEL_API_KEY
+        azure_api_base = settings.lightrag.AZURE_OPENAI_EMBEDDING_MODEL_API_BASE
+        azure_api_version = settings.lightrag.AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION
+        azure_deployment = settings.lightrag.AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL
+
+        if all([azure_api_key, azure_api_base, azure_deployment]):
+            logger.info(
+                "Using Azure OpenAI embedding configuration",
+                deployment=azure_deployment,
+                api_version=azure_api_version,
+            )
+            return EmbeddingFunc(
+                embedding_dim=settings.lightrag.EMBEDDING_DIM,
+                max_token_size=settings.lightrag.MAX_TOKEN_SIZE,
+                func=build_azure_openai_embedding_func(
+                    api_key=azure_api_key,
+                    api_base=azure_api_base,
+                    api_version=azure_api_version,
+                    deployment=azure_deployment,
+                    dimensions=settings.lightrag.EMBEDDING_DIM,
+                ),
+            )
+
+        # Fallback to Ollama for local/dev use cases.
         base_url = settings.lightrag.OLLAMA_MODEL_BASE_URL
         embedding_model = settings.lightrag.OLLAMA_MODEL_EMBEDDING_MODEL
         embedding_dim = settings.lightrag.OLLAMA_MODEL_EMBEDDING_MODEL_DIMS
@@ -208,10 +250,18 @@ class LightRAGService:
 
         if not all([base_url, embedding_model]):
             raise ConfigurationException(
-                message="Ollama embedding configuration is incomplete",
-                config_key="OLLAMA_MODEL",
+                message=(
+                    "Embedding configuration is incomplete. Provide Azure OpenAI embedding "
+                    "settings or Ollama settings."
+                ),
+                config_key="AZURE_OPENAI_EMBEDDING_MODEL_* or OLLAMA_MODEL_*",
             )
 
+        logger.warning(
+            "Azure embedding settings not found; falling back to Ollama embeddings",
+            ollama_host=base_url,
+            ollama_model=embedding_model,
+        )
         return EmbeddingFunc(
             embedding_dim=embedding_dim,
             max_token_size=max_token_size,
@@ -242,20 +292,100 @@ class LightRAGService:
         try:
             logger.info("Initializing LightRAG instance")
 
-            # Set Neo4j environment variables for LightRAG
-            os.environ["NEO4J_URI"] = settings.database.NEO4J_URI or "bolt://localhost:7687"
-            os.environ["NEO4J_USERNAME"] = settings.database.NEO4J_USER or "neo4j"
-            os.environ["NEO4J_PASSWORD"] = settings.database.NEO4J_PASSWORD or ""
+            if settings.database.SERVERLESS:
+                logger.info(
+                    "Serverless mode detected; local LightRAG working directory is ephemeral and persistent state must come from external stores",
+                    working_dir=self.working_dir,
+                    graph_storage=settings.lightrag.GRAPH_STORAGE_TYPE,
+                    vector_storage=settings.lightrag.VECTOR_STORAGE_TYPE,
+                )
+
+            # Set Neo4j environment variables for LightRAG.
+            # Prefer direct environment values because Pydantic defaults can mask missing mappings.
+            neo4j_uri = (
+                os.getenv("NEO4J_DATABASE_NEO4J_BOLT_URI")
+                or settings.database.NEO4J_URI
+            )
+            neo4j_user = (
+                os.getenv("NEO4J_DATABASE_NEO4J_USER")
+                or settings.database.NEO4J_USER
+            )
+            neo4j_password = (
+                os.getenv("NEO4J_DATABASE_NEO4J_PASSWORD")
+                or settings.database.NEO4J_PASSWORD
+            )
+
+            if not all([neo4j_uri, neo4j_user, neo4j_password]):
+                raise ConfigurationException(
+                    message="Neo4j configuration is incomplete",
+                    config_key="NEO4J_DATABASE_NEO4J_*",
+                )
+
+            os.environ["NEO4J_URI"] = neo4j_uri
+            os.environ["NEO4J_USERNAME"] = neo4j_user
+            os.environ["NEO4J_PASSWORD"] = neo4j_password
+
+            logger.debug(
+                "Neo4j connection configured",
+                uri=neo4j_uri,
+                user=neo4j_user,
+                has_password=bool(neo4j_password),
+            )
 
             # Set PostgreSQL environment variables for PGVectorStorage
-            if settings.lightrag.LIGHTRAG_POSTGRESQL_HOST:
-                os.environ["POSTGRES_HOST"] = settings.lightrag.LIGHTRAG_POSTGRESQL_HOST
-            if settings.lightrag.LIGHTRAG_POSTGRESQL_USER:
-                os.environ["POSTGRES_USER"] = settings.lightrag.LIGHTRAG_POSTGRESQL_USER
-            if settings.lightrag.LIGHTRAG_POSTGRESQL_PASSWORD:
-                os.environ["POSTGRES_PASSWORD"] = settings.lightrag.LIGHTRAG_POSTGRESQL_PASSWORD
-            if settings.lightrag.LIGHTRAG_POSTGRESQL_DATABASE:
-                os.environ["POSTGRES_DATABASE"] = settings.lightrag.LIGHTRAG_POSTGRESQL_DATABASE
+            # Use settings first, then fallback to direct env vars if settings are None
+            postgres_host = (
+                settings.lightrag.LIGHTRAG_POSTGRESQL_HOST
+                or os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_HOST")
+            )
+            postgres_user = (
+                settings.lightrag.LIGHTRAG_POSTGRESQL_USER
+                or os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_USER")
+            )
+            postgres_password = (
+                settings.lightrag.LIGHTRAG_POSTGRESQL_PASSWORD
+                or os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_PASSWORD")
+            )
+            postgres_database = (
+                settings.lightrag.LIGHTRAG_POSTGRESQL_DATABASE
+                or os.getenv("LIGHTRAG_POSTGRESQL_DATABASE_DATABASE")
+            )
+
+            if postgres_host:
+                os.environ["POSTGRES_HOST"] = postgres_host
+            if postgres_user:
+                os.environ["POSTGRES_USER"] = postgres_user
+            if postgres_password:
+                os.environ["POSTGRES_PASSWORD"] = postgres_password
+            if postgres_database:
+                os.environ["POSTGRES_DATABASE"] = postgres_database
+
+            if settings.database.SERVERLESS and not all(
+                [postgres_host, postgres_user, postgres_password, postgres_database]
+            ):
+                raise ConfigurationException(
+                    message=(
+                        "Serverless deployment requires PostgreSQL configuration for persistent vector/KV state"
+                    ),
+                    config_key="LIGHTRAG_POSTGRESQL_DATABASE_*",
+                )
+
+            # Keep LightRAG embedding worker config aligned with indexer-service.
+            os.environ["EMBEDDING_TIMEOUT"] = str(settings.lightrag.EMBEDDING_TIMEOUT_SECONDS)
+            os.environ["EMBEDDING_FUNC_MAX_ASYNC"] = str(settings.lightrag.EMBEDDING_FUNC_MAX_ASYNC)
+            os.environ["EMBEDDING_BATCH_NUM"] = str(settings.lightrag.EMBEDDING_BATCH_NUM)
+
+            # Log what was configured for debugging
+            logger.debug(
+                "PostgreSQL environment variables configured for PGVectorStorage",
+                has_host=bool(postgres_host),
+                has_user=bool(postgres_user),
+                has_password=bool(postgres_password),
+                has_database=bool(postgres_database),
+                host=postgres_host if postgres_host else "NOT_SET",
+                user=postgres_user if postgres_user else "NOT_SET",
+                database=postgres_database if postgres_database else "NOT_SET",
+            )
 
             # Build LLM and embedding functions
             llm_func = await self._build_llm_func()
@@ -270,6 +400,9 @@ class LightRAGService:
                 "vector_storage": settings.lightrag.VECTOR_STORAGE_TYPE,
                 "chunk_token_size": settings.lightrag.CHUNK_TOKEN_SIZE,
                 "chunk_overlap_token_size": settings.lightrag.CHUNK_OVERLAP_TOKEN_SIZE,
+                "embedding_batch_num": settings.lightrag.EMBEDDING_BATCH_NUM,
+                "embedding_func_max_async": settings.lightrag.EMBEDDING_FUNC_MAX_ASYNC,
+                "default_embedding_timeout": settings.lightrag.EMBEDDING_TIMEOUT_SECONDS,
             }
 
             # Add workspace if specified (for Neo4j/PostgreSQL multi-tenancy)

@@ -350,10 +350,21 @@ class LightRAGSettings(BaseSettings):
     )
 
     # Chunk settings
-    CHUNK_TOKEN_SIZE: int = Field(default=1000, env="LIGHTRAG_CHUNK_TOKEN_SIZE")
+    CHUNK_TOKEN_SIZE: int = Field(default=600, env="LIGHTRAG_CHUNK_TOKEN_SIZE")
     CHUNK_OVERLAP_TOKEN_SIZE: int = Field(
-        default=200, env="LIGHTRAG_CHUNK_OVERLAP_TOKEN_SIZE"
+        default=150, env="LIGHTRAG_CHUNK_OVERLAP_TOKEN_SIZE"
     )
+
+    # Embedding behavior settings
+    EMBEDDING_DIM: int = Field(default=1024, validation_alias="LIGHTRAG_EMBEDDING_DIM")
+    MAX_TOKEN_SIZE: int = Field(default=8192, validation_alias="LIGHTRAG_MAX_TOKEN_SIZE")
+    EMBEDDING_TIMEOUT_SECONDS: int = Field(
+        default=120, validation_alias="LIGHTRAG_EMBEDDING_TIMEOUT_SECONDS"
+    )
+    EMBEDDING_FUNC_MAX_ASYNC: int = Field(
+        default=4, validation_alias="LIGHTRAG_EMBEDDING_FUNC_MAX_ASYNC"
+    )
+    EMBEDDING_BATCH_NUM: int = Field(default=4, validation_alias="LIGHTRAG_EMBEDDING_BATCH_NUM")
 
     # Ollama embedding settings
     OLLAMA_MODEL_BASE_URL: Optional[str] = Field(
@@ -381,6 +392,20 @@ class LightRAGSettings(BaseSettings):
     )
     AZURE_OPENAI_LLM_MODEL_LLM_MODEL: Optional[str] = Field(
         default=None, env="AZURE_OPENAI_LLM_MODEL_LLM_MODEL"
+    )
+
+    # Azure OpenAI embedding settings
+    AZURE_OPENAI_EMBEDDING_MODEL_API_KEY: Optional[str] = Field(
+        default=None, env="AZURE_OPENAI_EMBEDDING_MODEL_API_KEY"
+    )
+    AZURE_OPENAI_EMBEDDING_MODEL_API_BASE: Optional[str] = Field(
+        default=None, env="AZURE_OPENAI_EMBEDDING_MODEL_API_BASE"
+    )
+    AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION: str = Field(
+        default="2024-02-01", env="AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION"
+    )
+    AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL: Optional[str] = Field(
+        default=None, env="AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL"
     )
 
     model_config = SettingsConfigDict(

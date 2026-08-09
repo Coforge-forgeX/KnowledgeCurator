@@ -512,6 +512,7 @@ class ChatService:
                 history=history,
                 knowledge_bases=additional_kbs,
                 agent_id=agent_id,
+                is_kg=storage_paths.get("is_kg"),
             )
 
             response_text = rag_result.answer or "I don't have enough information to answer that question."

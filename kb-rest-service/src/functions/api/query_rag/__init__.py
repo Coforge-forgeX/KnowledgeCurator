@@ -9,6 +9,7 @@ REST API endpoint with proper security and performance optimizations:
 - Follows SOLID principles and security best practices
 """
 import time
+from typing import Any, Dict, List
 
 from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
 from src.core.auth import get_user_id, require_auth
@@ -18,12 +19,14 @@ from src.core.logging import get_logger
 from src.core.redis import get_query_cache, set_query_cache, redis_manager
 from src.functions.api.query_rag.payloads import (
     ErrorResponse,
+    KBChunkModel,
+    KBResultModel,
+    GraphDataModel,
     QueryRAGRequest,
     QueryRAGResponse,
-    RetrievedChunkInfo,
-    SourceInfo,
 )
 from src.helpers.workspace_helpers import get_workspace_storage_paths
+from src.helpers.graph_parser import format_chunk_with_graph_data
 from src.services.rag_query_service import get_rag_query_service
 from src.services.workspace_service import get_workspace_service
 from src.shared import create_error_response, create_success_response, parse_request
@@ -96,7 +99,10 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
                     response_time_ms=round(cache_elapsed * 1000, 2),
                 )
                 return create_success_response(
-                    data=cached_result, status_code=200, correlation_id=correlation_id
+                    message="Query processed successfully (cached)",
+                    data=cached_result,
+                    status_code=200,
+                    correlation_id=correlation_id
                 )
 
         # SECURITY: Validate user-workspace membership
@@ -175,7 +181,8 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             mode=payload.mode,
             history=payload.history,
             knowledge_bases=additional_kbs,  # Additional KBs for multi-KB search
-            agent_id=payload.agent_id
+            agent_id=payload.agent_id,
+            is_kg=storage_paths.get("is_kg"),
         )
 
         # Convert to response model
@@ -195,14 +202,15 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             "Query RAG completed successfully",
             correlation_id=correlation_id,
             workspace_id=workspace_id,
-            answer_length=len(response_data.response),
-            source_count=len(response_data.sources),
-            chunk_count=len(response_data.retrieved_chunks),
+            answer_length=len(response_data.final_answer),
+            kb_count=len(response_data.kb_results),
+            chunk_count=sum(len(kb.chunks) for kb in response_data.kb_results),
             cache_hit=False,
             total_time_ms=round(total_elapsed * 1000, 2),
         )
 
         return create_success_response(
+            message="Query processed successfully",
             data=response_dict,
             status_code=200,
             correlation_id=correlation_id
@@ -259,48 +267,133 @@ def _build_response(result, workspace_id: int, domain: str, kb_name: str) -> Que
     - Converts domain models to API models
     - Adds workspace metadata
     - Adds legacy compatibility fields
+    - Parses and structures graph data into JSON
     """
-    # Convert sources
-    sources = [
-        SourceInfo(
-            file_name=src.file_name,
-            download_url=src.download_url,
-            container_name=src.container_name,
-            blob_path=src.blob_path,
-            download_name=src.download_name,
-            citation=src.citation
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+
+    requested_mode = str(metadata.get("requested_mode") or metadata.get("mode") or "hybrid")
+    effective_mode = str(metadata.get("effective_mode") or requested_mode)
+
+    kb_results_payload = metadata.get("kb_results") if isinstance(metadata.get("kb_results"), dict) else {}
+
+    per_kb_results: List[KBResultModel] = []
+
+    if kb_results_payload:
+        for kb_source, kb_payload in kb_results_payload.items():
+            if not isinstance(kb_payload, dict) or "error" in kb_payload:
+                continue
+
+            graph_entities: List[Dict[str, Any]] = []
+            graph_relationships: List[Dict[str, Any]] = []
+            graph_metadata: Dict[str, Any] = {}
+            kb_chunks: List[KBChunkModel] = []
+
+            raw_chunks = kb_payload.get("_retrieved_chunks", [])
+            if isinstance(raw_chunks, list):
+                for raw_chunk in raw_chunks:
+                    if not isinstance(raw_chunk, dict):
+                        continue
+
+                    chunk_dict = {
+                        "chunk_id": str(raw_chunk.get("chunk_id") or ""),
+                        "content": str(raw_chunk.get("content") or ""),
+                        "score": raw_chunk.get("score", 0.0),
+                        "source": str(raw_chunk.get("source") or ""),
+                        "metadata": raw_chunk.get("metadata") if isinstance(raw_chunk.get("metadata"), dict) else {}
+                    }
+
+                    enhanced = format_chunk_with_graph_data(chunk_dict)
+
+                    if enhanced.get("content_type") == "graph" and isinstance(enhanced.get("graph_data"), dict):
+                        graph_data = enhanced["graph_data"]
+                        entities = graph_data.get("entities", [])
+                        relationships = graph_data.get("relationships", [])
+                        parsed_metadata = graph_data.get("metadata", {})
+
+                        if isinstance(entities, list):
+                            graph_entities.extend([e for e in entities if isinstance(e, dict)])
+                        if isinstance(relationships, list):
+                            graph_relationships.extend([r for r in relationships if isinstance(r, dict)])
+                        if isinstance(parsed_metadata, dict):
+                            graph_metadata.update(parsed_metadata)
+
+                    kb_chunks.append(
+                        KBChunkModel(
+                            source=str(enhanced.get("source") or ""),
+                            chunks=str(enhanced.get("chunk_id") or ""),
+                            chunk=str(enhanced.get("content") or "")
+                        )
+                    )
+
+            per_kb_results.append(
+                KBResultModel(
+                    source=kb_source,
+                    graph_data=GraphDataModel(
+                        entities=graph_entities,
+                        relationship=graph_relationships,
+                        metadata=graph_metadata,
+                    ),
+                    chunks=kb_chunks,
+                )
+            )
+    else:
+        # Single-KB fallback if strategy metadata does not include multi-KB payload.
+        graph_entities: List[Dict[str, Any]] = []
+        graph_relationships: List[Dict[str, Any]] = []
+        graph_metadata: Dict[str, Any] = {}
+        kb_chunks: List[KBChunkModel] = []
+
+        kb_source = metadata.get("kb") or f"{domain}/{kb_name}"
+
+        for chunk in result.retrieved_chunks:
+            chunk_dict = {
+                "chunk_id": str(getattr(chunk, "chunk_id", "")),
+                "content": str(getattr(chunk, "content", "")),
+                "score": getattr(chunk, "score", 0.0),
+                "source": str(getattr(chunk, "source", "")),
+                "metadata": getattr(chunk, "metadata", {}) if isinstance(getattr(chunk, "metadata", {}), dict) else {},
+            }
+
+            enhanced = format_chunk_with_graph_data(chunk_dict)
+
+            if enhanced.get("content_type") == "graph" and isinstance(enhanced.get("graph_data"), dict):
+                graph_data = enhanced["graph_data"]
+                entities = graph_data.get("entities", [])
+                relationships = graph_data.get("relationships", [])
+                parsed_metadata = graph_data.get("metadata", {})
+
+                if isinstance(entities, list):
+                    graph_entities.extend([e for e in entities if isinstance(e, dict)])
+                if isinstance(relationships, list):
+                    graph_relationships.extend([r for r in relationships if isinstance(r, dict)])
+                if isinstance(parsed_metadata, dict):
+                    graph_metadata.update(parsed_metadata)
+
+            kb_chunks.append(
+                KBChunkModel(
+                    source=str(enhanced.get("source") or ""),
+                    chunks=str(enhanced.get("chunk_id") or ""),
+                    chunk=str(enhanced.get("content") or "")
+                )
+            )
+
+        per_kb_results.append(
+            KBResultModel(
+                source=str(kb_source),
+                graph_data=GraphDataModel(
+                    entities=graph_entities,
+                    relationship=graph_relationships,
+                    metadata=graph_metadata,
+                ),
+                chunks=kb_chunks,
+            )
         )
-        for src in result.sources
-    ]
 
-    # Convert chunks
-    chunks = [
-        RetrievedChunkInfo(
-            chunk_id=chunk.chunk_id,
-            content=chunk.content,
-            score=chunk.score,
-            source=chunk.source,
-            metadata=chunk.metadata
-        )
-        for chunk in result.retrieved_chunks
-    ]
-
-    # Build metadata with workspace info
-    metadata = dict(result.metadata)
-    metadata.update({
-        "workspace_id": workspace_id,
-        "domain": domain,
-        "kb_name": kb_name,
-    })
-
-    # Build response
     response = QueryRAGResponse(
-        response=result.answer,
-        sources=sources,
-        retrieved_chunks=chunks,
-        metadata=metadata,
-        LightRAG=result.answer,  # Legacy compatibility
-        task_ids=[]  # Legacy compatibility
+        final_answer=result.answer,
+        kb_results=per_kb_results,
+        requested_mode=requested_mode,
+        effective_mode=effective_mode,
     )
 
     return response
