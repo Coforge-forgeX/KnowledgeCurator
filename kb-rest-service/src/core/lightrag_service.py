@@ -573,6 +573,69 @@ class LightRAGService:
                 operation="query_data"
             )
 
+    async def query_llm(
+        self,
+        query: str,
+        mode: str = "mix",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Execute unified LightRAG query that returns answer + structured data.
+
+        Args:
+            query: Query string
+            mode: Query mode - usually "mix" for combined graph + vector retrieval
+            **kwargs: Additional QueryParam fields (top_k, chunk_top_k, etc.)
+
+        Returns:
+            Dict with keys: llm_response, data, metadata
+
+        Raises:
+            LightRAGException: If unified query fails
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        try:
+            logger.info(
+                "Executing LightRAG unified query",
+                query=query[:100],
+                mode=mode,
+                workspace_id=self._runtime_workspace_id,
+                agent_id=self._runtime_agent_id,
+            )
+
+            result = await self._rag.aquery_llm(
+                query,
+                param=QueryParam(mode=mode, **kwargs)
+            )
+
+            if isinstance(result, dict):
+                llm_response = result.get("llm_response", {})
+                data = result.get("data", {})
+                metadata = result.get("metadata", {})
+                return {
+                    "llm_response": llm_response if isinstance(llm_response, dict) else {},
+                    "data": data if isinstance(data, dict) else {},
+                    "metadata": metadata if isinstance(metadata, dict) else {},
+                }
+
+            return {
+                "llm_response": {
+                    "content": str(result) if result is not None else "",
+                    "is_streaming": False,
+                },
+                "data": {},
+                "metadata": {},
+            }
+
+        except Exception as e:
+            logger.error("Unified LightRAG query failed", error=e, query=query[:100])
+            raise LightRAGException(
+                message=f"Query llm failed: {str(e)}",
+                operation="query_llm"
+            )
+
     async def insert(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
         """
         Insert document into the knowledge base.
