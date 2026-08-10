@@ -416,6 +416,9 @@ async def get_workspace(request: Request):
                 tool_query = tool_query.filter(db.Tool.is_active == True)
             for t in tool_query.all():
                 tool_dict = serialize_dict({col: getattr(t, col) for col in t.__table__.columns.keys()})
+                # Convert public_tool_id to string
+                if tool_dict.get('public_tool_id'):
+                    tool_dict['public_tool_id'] = str(tool_dict['public_tool_id'])
                 tm = tool_map_dict.get(t.tool_id)
                 last_updated_val = getattr(tm, 'last_updated', None) if tm else None
                 tool_dict['last_updated'] = str(last_updated_val) if last_updated_val else None
@@ -437,6 +440,9 @@ async def get_workspace(request: Request):
                 agent_query = agent_query.filter(db.Agent.is_active == True)
             for a in agent_query.all():
                 agent_dict = serialize_dict({col: getattr(a, col) for col in a.__table__.columns.keys()})
+                # Convert public_agent_id to string
+                if agent_dict.get('public_agent_id'):
+                    agent_dict['public_agent_id'] = str(agent_dict['public_agent_id'])
                 am = agent_map_dict.get(a.agent_id)
                 last_updated_val = getattr(am, 'last_updated', None) if am else None
                 agent_dict['last_updated'] = str(last_updated_val) if last_updated_val else None
@@ -515,6 +521,150 @@ async def get_workspace(request: Request):
 base_app.add_route("/workspaces/{public_workspace_id}", get_workspace, methods=["GET"])
 
 
+# Bookmark endpoint - validates and returns workspace/agent/tool details by public IDs
+async def get_bookmark(request: Request):
+    from kbcurator.utils.db import db
+    from sqlalchemy import func as sql_func
+    from datetime import datetime, date
+    from uuid import UUID
+    
+    def serialize_value(val):
+        """Convert non-JSON-serializable types to strings."""
+        if val is None:
+            return None
+        if isinstance(val, (datetime, date)):
+            return val.isoformat()
+        if isinstance(val, UUID):
+            return str(val)
+        return val
+    
+    def serialize_dict(d):
+        """Serialize all values in a dict."""
+        return {k: serialize_value(v) for k, v in d.items()}
+    
+    # Get query params
+    public_workspace_id = request.query_params.get("wgid")
+    public_agent_id = request.query_params.get("agid")
+    public_tool_id = request.query_params.get("tgid")
+    
+    if not public_workspace_id:
+        return JSONResponse({"error": "wgid (public_workspace_id) is required"}, status_code=400)
+    
+    # Authenticate user
+    token = extract_token_from_headers(dict(request.headers))
+    if not token:
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+    
+    try:
+        claims = verify_token(token)
+        user_id = claims.get("user_id") or claims.get("sub")
+        if not user_id:
+            return JSONResponse({"error": "Invalid token: no user_id"}, status_code=401)
+    except Exception as e:
+        return JSONResponse({"error": f"Invalid token: {str(e)}"}, status_code=401)
+    
+    session = db.Session()
+    try:
+        # Find workspace by public_workspace_id
+        ws = session.query(db.Workspace).filter(
+            db.Workspace.public_workspace_id == public_workspace_id,
+            db.Workspace.is_active == True
+        ).first()
+        
+        if not ws:
+            return JSONResponse({"error": "Workspace not found"}, status_code=404)
+        
+        workspace_id = ws.workspace_id
+        
+        # Check if user has access to this workspace
+        user_mapping = session.query(db.UserMap).filter(
+            db.UserMap.user_id == user_id,
+            db.UserMap.workspace_id == workspace_id,
+            db.UserMap.is_active == True
+        ).first()
+        
+        if not user_mapping:
+            return JSONResponse({"error": "Access denied to workspace"}, status_code=403)
+        
+        # Category mapping
+        categories = session.query(db.Category).filter(db.Category.is_active == True).all()
+        cat_map = {str(c.category_id): c.category_name for c in categories}
+        
+        result = {
+            "workspace": {
+                "workspace_id": workspace_id,
+                "public_workspace_id": str(ws.public_workspace_id) if ws.public_workspace_id else None,
+                "workspace_name": ws.workspace_name,
+                "workspace_desc": ws.workspace_desc
+            },
+            "agent": None,
+            "tool": None
+        }
+        
+        # Validate and fetch agent if agid provided
+        if public_agent_id:
+            agent = session.query(db.Agent).filter(
+                db.Agent.public_agent_id == public_agent_id,
+                db.Agent.is_active == True
+            ).first()
+            
+            if not agent:
+                return JSONResponse({"error": "Agent not found"}, status_code=404)
+            
+            # Verify agent is mapped to this workspace
+            agent_mapping = session.query(db.AgentMap).filter(
+                db.AgentMap.workspace_id == workspace_id,
+                db.AgentMap.agent_id == agent.agent_id,
+                db.AgentMap.is_active == True
+            ).first()
+            
+            if not agent_mapping:
+                return JSONResponse({"error": "Agent not mapped to this workspace"}, status_code=403)
+            
+            agent_dict = serialize_dict({col: getattr(agent, col) for col in agent.__table__.columns.keys()})
+            if agent_dict.get('public_agent_id'):
+                agent_dict['public_agent_id'] = str(agent_dict['public_agent_id'])
+            cat_ids = str(agent_dict.get('agent_category', '') or '').split(',')
+            agent_dict['agent_category'] = [cat_map.get(cid.strip()) for cid in cat_ids if cid.strip() in cat_map]
+            agent_dict['type'] = 'agent'
+            result["agent"] = agent_dict
+        
+        # Validate and fetch tool if tgid provided
+        if public_tool_id:
+            tool = session.query(db.Tool).filter(
+                db.Tool.public_tool_id == public_tool_id,
+                db.Tool.is_active == True
+            ).first()
+            
+            if not tool:
+                return JSONResponse({"error": "Tool not found"}, status_code=404)
+            
+            # Verify tool is mapped to this workspace
+            tool_mapping = session.query(db.ToolMap).filter(
+                db.ToolMap.workspace_id == workspace_id,
+                db.ToolMap.tool_id == tool.tool_id,
+                db.ToolMap.is_active == True
+            ).first()
+            
+            if not tool_mapping:
+                return JSONResponse({"error": "Tool not mapped to this workspace"}, status_code=403)
+            
+            tool_dict = serialize_dict({col: getattr(tool, col) for col in tool.__table__.columns.keys()})
+            if tool_dict.get('public_tool_id'):
+                tool_dict['public_tool_id'] = str(tool_dict['public_tool_id'])
+            cat_ids = str(tool_dict.get('tool_category', '') or '').split(',')
+            tool_dict['tool_category'] = [cat_map.get(cid.strip()) for cid in cat_ids if cid.strip() in cat_map]
+            tool_dict['type'] = 'tool'
+            result["tool"] = tool_dict
+        
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        session.close()
+
+
+base_app.add_route("/bookmark/", get_bookmark, methods=["GET"])
 
 
 # ---------------------------
