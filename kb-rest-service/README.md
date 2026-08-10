@@ -267,6 +267,11 @@ Authorization: Bearer <your-jwt-token>
 
 ### Key Endpoints
 
+Detailed endpoint documentation:
+
+- Full API reference (all current endpoints): see [API_REFERENCE.md](API_REFERENCE.md)
+- Graph mutation endpoint (`POST /api/v2/kb/graph/mutate`): see [MUTATE_KNOWLEDGE_GRAPH_API.md](MUTATE_KNOWLEDGE_GRAPH_API.md)
+
 #### Query Knowledge Base
 ```http
 POST /query-kb
