@@ -8,7 +8,9 @@ REST API endpoint with proper security and performance optimizations:
 - Workspace config caching
 - Follows SOLID principles and security best practices
 """
+import json
 import time
+import hashlib
 from typing import Any, Dict, List
 
 from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
@@ -24,14 +26,37 @@ from src.functions.api.query_rag.payloads import (
     GraphDataModel,
     QueryRAGRequest,
     QueryRAGResponse,
+    SourceReferenceModel,
 )
 from src.helpers.workspace_helpers import get_workspace_storage_paths
 from src.helpers.graph_parser import format_chunk_with_graph_data
+from src.helpers.file_token import create_signed_file_id
 from src.services.rag_query_service import get_rag_query_service
 from src.services.workspace_service import get_workspace_service
 from src.shared import create_error_response, create_success_response, parse_request
 
 logger = get_logger(__name__)
+
+QUERY_EVIDENCE_TTL_SECONDS = 30 * 60
+
+
+def _normalize_query_text(query: str) -> str:
+    """Normalize user query text so semantically identical spacing maps to one key."""
+    return " ".join((query or "").strip().split())
+
+
+def _make_query_evidence_key(workspace_id: int, query: str, mode: str) -> str:
+    """Create deterministic redis key for cached query evidence payload."""
+    normalized_query = _normalize_query_text(query)
+    normalized_mode = (mode or "").strip().lower()
+    key_material = f"{workspace_id}|{normalized_mode}|{normalized_query}"
+    query_hash = hashlib.sha256(key_material.encode("utf-8")).hexdigest()[:24]
+    return f"query_evidence:{workspace_id}:{query_hash}"
+
+
+def _make_source_mapping_key(file_id: str) -> str:
+    """Create redis key for file token to storage mapping."""
+    return f"query_file:{file_id}"
 
 
 @require_auth()
@@ -185,8 +210,65 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             is_kg=storage_paths.get("is_kg"),
         )
 
-        # Convert to response model
-        response_data = _build_response(result, workspace_id, domain, kb_name)
+        # Convert to response model and cache heavyweight evidence separately.
+        response_data, kb_results = _build_response(result, workspace_id, domain, kb_name)
+
+        if redis_manager.is_available and getattr(settings.cache, 'REDIS_ENABLED', True):
+            evidence_cache_key = _make_query_evidence_key(workspace_id, payload.query, payload.mode)
+            evidence_payload = {
+                "workspace_id": workspace_id,
+                "query": payload.query,
+                "requested_mode": payload.mode,
+                "source": [source_item.dict() for source_item in response_data.source],
+                "kb_results": [kb.dict() for kb in kb_results],
+            }
+            try:
+                redis_manager.setex(
+                    evidence_cache_key,
+                    QUERY_EVIDENCE_TTL_SECONDS,
+                    json.dumps(evidence_payload),
+                )
+            except Exception as cache_error:
+                logger.warning(
+                    "Failed to cache query evidence; continuing without cache",
+                    error=cache_error,
+                    correlation_id=correlation_id,
+                    workspace_id=workspace_id,
+                )
+
+            for source_item in response_data.source:
+                file_id = create_signed_file_id(
+                    workspace_id=workspace_id,
+                    container_name=source_item.container_name,
+                    blob_path=source_item.blob_path,
+                    provider=source_item.provider,
+                    file_name=source_item.file_name,
+                )
+                source_mapping = {
+                    "file_id": file_id,
+                    "workspace_id": workspace_id,
+                    "container_name": source_item.container_name,
+                    "blob_path": source_item.blob_path,
+                    "provider": source_item.provider,
+                    "file_name": source_item.file_name,
+                    "citation": source_item.citation,
+                    "evidence_cache_key": evidence_cache_key,
+                }
+                try:
+                    redis_manager.setex(
+                        _make_source_mapping_key(file_id),
+                        QUERY_EVIDENCE_TTL_SECONDS,
+                        json.dumps(source_mapping),
+                    )
+                except Exception as cache_error:
+                    logger.warning(
+                        "Failed to cache source mapping; signed file_id remains usable",
+                        error=cache_error,
+                        correlation_id=correlation_id,
+                        workspace_id=workspace_id,
+                    )
+                source_item.file_id = file_id
+
         response_dict = response_data.dict()
 
         # ===========================================
@@ -194,6 +276,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         # ===========================================
         if redis_manager.is_available and getattr(settings.cache, 'REDIS_ENABLED', True):
             cache_ttl = getattr(settings.cache, 'QUERY_CACHE_TTL', 3600)
+            cache_ttl = min(cache_ttl, QUERY_EVIDENCE_TTL_SECONDS)
             set_query_cache(workspace_id, payload.query, payload.mode, response_dict, ttl=cache_ttl)
 
         total_elapsed = time.time() - start_time
@@ -203,8 +286,9 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             correlation_id=correlation_id,
             workspace_id=workspace_id,
             answer_length=len(response_data.final_answer),
-            kb_count=len(response_data.kb_results),
-            chunk_count=sum(len(kb.chunks) for kb in response_data.kb_results),
+            source_count=len(response_data.source),
+            kb_count=len(kb_results),
+            chunk_count=sum(len(kb.chunks) for kb in kb_results),
             cache_hit=False,
             total_time_ms=round(total_elapsed * 1000, 2),
         )
@@ -259,7 +343,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         )
 
 
-def _build_response(result, workspace_id: int, domain: str, kb_name: str) -> QueryRAGResponse:
+def _build_response(result, workspace_id: int, domain: str, kb_name: str) -> tuple[QueryRAGResponse, List[KBResultModel]]:
     """
     Build API response from service result.
 
@@ -676,9 +760,67 @@ def _build_response(result, workspace_id: int, domain: str, kb_name: str) -> Que
 
     response = QueryRAGResponse(
         final_answer=result.answer,
-        kb_results=per_kb_results,
+        source=_build_source_references(result, per_kb_results),
         requested_mode=requested_mode,
         effective_mode=effective_mode,
     )
 
-    return response
+    return response, per_kb_results
+
+
+def _build_source_references(result, kb_results: List[KBResultModel]) -> List[SourceReferenceModel]:
+    """Build compact source payload for client-side download URL generation."""
+    output: List[SourceReferenceModel] = []
+    seen: set = set()
+
+    for src in getattr(result, "sources", []) or []:
+        file_name = str(getattr(src, "download_name", "") or getattr(src, "file_name", "")).strip()
+        container_name = str(getattr(src, "container_name", "")).strip()
+        blob_path = str(getattr(src, "blob_path", "")).strip()
+        if not file_name or not container_name or not blob_path:
+            continue
+
+        key = (container_name, blob_path)
+        if key in seen:
+            continue
+
+        seen.add(key)
+        output.append(
+            SourceReferenceModel(
+                file_id="",
+                file_name=file_name,
+                container_name=container_name,
+                blob_path=blob_path,
+                provider=str(getattr(settings.storage, "STORAGE_PROVIDER", "azure") or "azure"),
+                citation=getattr(src, "citation", None),
+            )
+        )
+
+    if output:
+        return output
+
+    # Fallback when LLM citations are missing: infer from chunks.
+    for kb in kb_results:
+        for chunk in kb.chunks:
+            raw_path = str(chunk.file_path or "").strip()
+            if not raw_path:
+                continue
+
+            file_name = raw_path.split("/")[-1]
+            key = ("", raw_path)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            output.append(
+                SourceReferenceModel(
+                    file_id="",
+                    file_name=file_name,
+                    container_name=str(getattr(settings.storage, "STORAGE_CONTAINER_NAME", "") or ""),
+                    blob_path=raw_path,
+                    provider=str(getattr(settings.storage, "STORAGE_PROVIDER", "azure") or "azure"),
+                    citation=None,
+                )
+            )
+
+    return output

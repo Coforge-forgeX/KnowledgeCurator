@@ -114,7 +114,7 @@ class DocumentMetadata(Base):
     total_chunks: Mapped[int] = mapped_column(Integer, default=0, comment="Number of chunks in lightrag_vdb_chunks")
     doc_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="Document type: pdf, docx, txt, etc.")
     indexed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True, comment="When indexing completed")
-    doc_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, comment="Additional flexible metadata")
+    doc_metadata: Mapped[Optional[dict]] = mapped_column("metadata", JSON, nullable=True, comment="Additional flexible metadata")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), comment="Creation timestamp")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), comment="Last update timestamp")
 

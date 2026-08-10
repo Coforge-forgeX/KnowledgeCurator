@@ -181,7 +181,8 @@ class RAGService:
                             task = result.scalar_one_or_none()
                             if task:
                                 task.status = "failed"
-                                task.error_message = str(e)
+                                if hasattr(task, "error_message"):
+                                    task.error_message = str(e)
                                 await session.commit()
 
             return {
@@ -407,7 +408,7 @@ class RAGService:
                             "status": task.status,
                             "workspace_id": task.workspace_id,
                             "file_size": task.file_size,
-                            "error_message": task.error_message,
+                            "error_message": getattr(task, "error_message", None),
                             "created_at": str(task.created_at) if task.created_at else None,
                             "updated_at": str(task.updated_at) if task.updated_at else None,
                         })

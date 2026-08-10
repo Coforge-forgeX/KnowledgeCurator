@@ -107,13 +107,39 @@ class KBResultModel(BaseModel):
     chunks: List[KBChunkModel] = Field(default_factory=list)
 
 
+class SourceReferenceModel(BaseModel):
+    """Compact source reference for delayed download URL generation."""
+
+    file_id: str = Field(..., description="Opaque file reference token for download API")
+    file_name: str = Field(..., description="Display file name")
+    container_name: str = Field(
+        default="",
+        exclude=True,
+        description="Internal storage container name used for server-side file_id generation"
+    )
+    blob_path: str = Field(
+        default="",
+        exclude=True,
+        description="Internal blob path used for server-side file_id generation"
+    )
+    provider: str = Field(
+        default="azure",
+        exclude=True,
+        description="Internal storage provider used for server-side file_id generation"
+    )
+    citation: Optional[str] = Field(
+        default=None,
+        description="Optional citation label from the generated answer"
+    )
+
+
 class QueryRAGResponse(BaseModel):
     """Compact response model for query_rag endpoint."""
 
     final_answer: str = Field(..., description="Final combined answer across all KBs")
-    kb_results: List[KBResultModel] = Field(
+    source: List[SourceReferenceModel] = Field(
         default_factory=list,
-        description="Per-KB graph and chunk evidence"
+        description="Compact source references for creating short-lived download URLs"
     )
     requested_mode: str = Field(..., description="Requested query mode")
     effective_mode: str = Field(..., description="Effective query mode")
@@ -122,27 +148,11 @@ class QueryRAGResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "final_answer": "Asset management is...",
-                "kb_results": [
+                "source": [
                     {
-                        "source": "Banking/AssetManagement",
-                        "graph_data": {
-                            "entities": [],
-                            "relationship": [],
-                            "metadata": {},
-                            "chunk_references": [
-                                {
-                                    "chunk_id": "Other/Demo Instances/Rearch12 & Knowledge:0",
-                                    "file_path": "Other/Demo Instances/Rearch12 & Knowledge"
-                                }
-                            ]
-                        },
-                        "chunks": [
-                            {
-                                "chunk_id": "chunk_123",
-                                "chunk": "Asset management involves...",
-                                "file_path": "Banking/AssetManagement/Portfolio_Analysis.pdf"
-                            }
-                        ]
+                        "file_id": "qfs1_eyJibG9iX3BhdGgiOiJkb21haW4va2IvZmlsZS5wZGYiLCJjb250YWluZXJfbmFtZSI6IndvcmtzcGFjZSIsImZpbGVfbmFtZSI6ImZpbGUucGRmIiwicHJvdmlkZXIiOiJhenVyZSIsInYiOjEsIndvcmtzcGFjZV9pZCI6MTIzfQ.tnDU7PkP9S9PUcPMfTVz7vVjPJs1wmb1R-lZa-6SXxw",
+                        "file_name": "Portfolio_Analysis.pdf",
+                        "citation": "[1]"
                     }
                 ],
                 "requested_mode": "hybrid",

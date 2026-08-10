@@ -14,7 +14,7 @@ import asyncio
 import base64
 import hashlib
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from sqlalchemy import select
 
@@ -22,18 +22,17 @@ from shared.adapters.storage import get_storage_adapter as _get_storage_adapter
 from src.queue_adapters import get_queue_adapter as _get_queue_adapter
 
 from src.core import (
-    AuthorizationException,
     get_logger,
     get_user_id,
-    get_workspace_ids,
     require_auth,
 )
 from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
-from src.core.database import DocumentMetadata, FileTask, Workspace, User, UserMap, get_async_session
+from src.core.database import DocumentMetadata, FileTask, User, get_async_session
 from src.core.idempotency import check_idempotency, store_idempotency_result
 from src.helpers.file_validation import get_content_type
 from src.helpers.workspace_helpers import get_workspace_storage_paths
 from src.helpers.workspace_kb_helpers import get_kb_id_for_upload
+from src.helpers.workspace_permissions import require_workspace_admin_curator
 from src.shared import (
     create_error_response,
     create_success_response,
@@ -70,88 +69,6 @@ def get_storage_adapter(container_name: Optional[str] = None):
 
 # Queue adapter is imported from src.queue_adapters and handles config automatically
 get_queue_adapter = _get_queue_adapter
-
-
-async def get_workspace_context(workspace_id: int) -> Optional[Dict]:
-    """
-    Get workspace context including namespace and workspace name.
-    These are used to derive domain and KB name.
-
-    Returns:
-        Dict with workspace_name, namespace, or None if not found
-    """
-    try:
-        async with get_async_session() as session:
-            stmt = select(Workspace).where(
-                Workspace.workspace_id == workspace_id,
-                Workspace.is_active == True
-            )
-            result = await session.execute(stmt)
-            workspace = result.scalar_one_or_none()
-
-            if not workspace:
-                logger.warning("Workspace not found", workspace_id=workspace_id)
-                return None
-
-            return {
-                "workspace_id": workspace.workspace_id,
-                "workspace_name": workspace.workspace_name or f"workspace_{workspace_id}",
-                "namespace": workspace.namespace or "default",
-            }
-
-    except Exception as e:
-        logger.error("Failed to get workspace context", error=e, workspace_id=workspace_id)
-        return None
-
-
-async def check_user_permission(
-    workspace_id: int, user_id: int
-) -> bool:
-    """
-    Check if user has can_curate_kb permission in workspace.
-
-    Returns:
-        True if user has can_curate_kb permission, False otherwise
-    """
-    try:
-        async with get_async_session() as session:
-            # Query workspace_users_mapping table for can_curate_kb permission directly
-            stmt = select(UserMap.can_curate_kb).where(
-                UserMap.workspace_id == workspace_id,
-                UserMap.user_id == user_id,
-                UserMap.is_active == True
-            )
-
-            result = await session.execute(stmt)
-            row = result.first()
-
-            if not row:
-                logger.warning(
-                    "User not found in workspace",
-                    user_id=user_id,
-                    workspace_id=workspace_id,
-                )
-                return False
-
-            has_permission = row[0] is True
-
-            logger.info(
-                "Permission check",
-                user_id=user_id,
-                workspace_id=workspace_id,
-                can_curate_kb=has_permission,
-            )
-
-            return has_permission
-
-    except Exception as e:
-        logger.error(
-            "Permission check failed",
-            error=e,
-            user_id=user_id,
-            workspace_id=workspace_id,
-        )
-        return False
 
 
 async def upload_file_to_storage(
@@ -433,7 +350,8 @@ async def update_file_task_status_direct(
             if file_task:
                 file_task.status = status
                 if error_message:
-                    file_task.error_message = error_message
+                    if hasattr(file_task, "error_message"):
+                        file_task.error_message = error_message
                 file_task.updated_at = datetime.now(timezone.utc)
                 await session.commit()
 
@@ -570,20 +488,11 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
     #         message="You do not have access to this workspace"
     #     )
 
-    # Check can_curate_kb permission
-    has_permission = await check_user_permission(
-        workspace_id=workspace_id, user_id=user_id
+    await require_workspace_admin_curator(
+        user_id=user_id,
+        workspace_id=workspace_id,
+        action_description="upload and index documents",
     )
-
-    if not has_permission:
-        logger.warning(
-            "User lacks can_curate_kb permission",
-            user_id=user_id,
-            workspace_id=workspace_id,
-        )
-        raise AuthorizationException(
-            message="You do not have permission to curate knowledge base in this workspace"
-        )
 
     # Get workspace storage paths (container, upload_path, domain, kb_name)
     workspace_paths = await get_workspace_storage_paths(workspace_id)

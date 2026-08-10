@@ -230,9 +230,8 @@ All entrypoints delegate to shared routing in `src/adapters/cloud_function_adapt
 - `POST /api/v2/kb/chat` -> `kb_chat`
 - `POST /api/v2/kb/index` -> `kb_index`
 - `POST /api/v2/documents/upload` -> `upload_and_index`
-- `POST /api/v2/documents/status` -> `check_indexing_status`
-- `POST /api/v2/documents/list` -> `list_indexed_documents`
-- `DELETE /api/v2/documents` -> `delete_documents`
+- `GET /api/v2/documents/status` -> `file_tasks_status`
+- `DELETE /api/v2/files` -> `delete_files_by_id`
 - `POST /api/v2/kb/graph` -> `get_knowledge_graph`
 - `POST /api/v2/llm/route` -> `llm_route`
 - `GET /health` -> health response

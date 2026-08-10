@@ -48,16 +48,20 @@ _bootstrap_import_paths()
 HANDLER_MODULE_PATHS: Dict[str, str] = {
     # Document Upload & Indexing
     "upload_and_index": "src.functions.api.upload_and_index",
-    "check_indexing_status": "src.functions.api.check_indexing_status",
-    "list_indexed_documents": "src.functions.api.list_indexed_documents",
-    "delete_documents": "src.functions.api.delete_documents",
+    "index_workspace_files": "src.functions.api.index_workspace_files",
+    "file_tasks_status": "src.functions.api.file_tasks_status",
+    "workspace_documents": "src.functions.api.workspace_documents_grouped",
+    "delete_files_by_id": "src.functions.api.delete_files_by_id",
     # Knowledge Base Query
     "query_rag": "src.functions.api.query_rag",  # Optimized RAG query handler
+    "query_source_download_url": "src.functions.api.query_source_download_url",
     "kb_index": "src.functions.api.kb_index",
     # LLM
     "llm_route": "src.functions.api.llm_route",
     # Knowledge Graph
     "get_knowledge_graph": "src.functions.api.get_knowledge_graph",
+    "fetch_graph": "src.functions.api.fetch_graph",
+    "mutate_knowledge_graph": "src.functions.api.mutate_knowledge_graph",
     # SharePoint Integration
     "sharepoint_list": "src.functions.api.sharepoint_list",
 }

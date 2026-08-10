@@ -6,6 +6,30 @@ from typing import Any, Dict, Optional
 from src.core.abstractions import AbstractResponse
 
 
+def _should_include_error_details(status_code: int, explicit: Optional[bool] = None) -> bool:
+    """Determine whether error details should be returned to API callers.
+
+    Policy:
+    - 4xx: include details by default (client-correctable input/auth issues)
+    - 5xx: hide details by default to avoid leaking internals (SQL, stack traces, etc.)
+    - DEBUG=true overrides and exposes details for troubleshooting.
+    - explicit flag (when provided) has highest priority.
+    """
+    if explicit is not None:
+        return bool(explicit)
+
+    if status_code < 500:
+        return True
+
+    try:
+        from src.core.config import settings
+
+        return bool(getattr(settings, "DEBUG", False))
+    except Exception:
+        # Fail-safe: never leak internals if settings cannot be loaded.
+        return False
+
+
 def create_success_response(
     message: str,
     data: Optional[Any] = None,
@@ -54,6 +78,7 @@ def create_error_response(
     details: Optional[Dict[str, Any]] = None,
     status_code: int = 400,
     correlation_id: Optional[str] = None,
+    include_details: Optional[bool] = None,
 ) -> AbstractResponse:
     """
     Create a standardized error response.
@@ -64,6 +89,7 @@ def create_error_response(
         details: Optional error details
         status_code: HTTP status code (default: 400)
         correlation_id: Optional correlation ID for tracking
+        include_details: Optional override for details visibility policy
 
     Returns:
         AbstractResponse: Formatted error response
@@ -75,7 +101,7 @@ def create_error_response(
         "timestamp": datetime.utcnow().isoformat(),
     }
 
-    if details:
+    if details and _should_include_error_details(status_code, include_details):
         response_body["details"] = details
 
     if correlation_id:

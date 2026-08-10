@@ -96,66 +96,6 @@ class KnowledgeBaseService:
             )
             raise
 
-    async def get_indexed_documents(
-        self,
-        workspace_id: int,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> Dict[str, Any]:
-        """
-        Get paginated list of indexed documents for a workspace.
-
-        Args:
-            workspace_id: Workspace identifier
-            limit: Maximum number of documents to return per page (default: 100, max: 1000)
-            offset: Number of documents to skip for pagination (default: 0)
-
-        Returns:
-            Dict containing:
-            - documents: List of indexed document metadata
-            - total: Total count of documents
-            - limit: Limit used in query
-            - offset: Offset used in query
-            - has_more: Boolean indicating if more documents exist
-            - page: Current page number
-            - total_pages: Total number of pages
-        """
-        try:
-            logger.info(
-                "Fetching indexed documents",
-                workspace_id=workspace_id,
-                limit=limit,
-                offset=offset,
-            )
-
-            working_dir = await self._get_workspace_working_dir(workspace_id)
-            self.lightrag_service.working_dir = working_dir
-
-            # Get paginated documents from LightRAG service with workspace filter
-            result = await self.lightrag_service.get_indexed_documents(
-                workspace_id=workspace_id,
-                limit=limit,
-                offset=offset,
-            )
-
-            logger.info(
-                "Fetched indexed documents",
-                workspace_id=workspace_id,
-                count=len(result["documents"]),
-                total=result["total"],
-                page=result["page"],
-            )
-
-            return result
-
-        except Exception as e:
-            logger.error(
-                "Failed to fetch indexed documents",
-                error=e,
-                workspace_id=workspace_id,
-            )
-            raise
-
     async def delete_documents(
         self,
         doc_ids: List[str],

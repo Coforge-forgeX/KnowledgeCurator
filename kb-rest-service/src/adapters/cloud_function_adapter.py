@@ -23,12 +23,15 @@ logger = get_logger(__name__)
 ROUTE_TO_HANDLER = {
     ("POST", "/api/v2/kb/index"): "kb_index",
     ("POST", "/api/v2/documents/upload"): "upload_and_index",
-    ("POST", "/api/v2/documents/status"): "check_indexing_status",
-    ("POST", "/api/v2/documents/list"): "list_indexed_documents",
-    ("DELETE", "/api/v2/documents"): "delete_documents",
+    ("POST", "/api/v2/workspaces/index-files"): "index_workspace_files",
+    ("GET", "/api/v2/documents/status"): "file_tasks_status",
+    ("GET", "/api/v2/workspaces/documents"): "workspace_documents",
+    ("DELETE", "/api/v2/files"): "delete_files_by_id",
     ("POST", "/api/v2/kb/graph"): "get_knowledge_graph",
+    ("POST", "/api/v2/kb/graph/mutate"): "mutate_knowledge_graph",
     ("POST", "/api/v2/llm/route"): "llm_route",
     ("POST", "/api/v2/query-kb"): "query_rag",  # Using optimized query_rag handler
+    ("GET", "/api/v2/files/{file_id}/download"): "query_source_download_url",
     ("GET", "/api/sharepoint/list"): "sharepoint_list",
     ("GET", "/api/v2/sharepoint/list"): "sharepoint_list",
 }
@@ -124,6 +127,18 @@ def _normalize_path(raw_path: str) -> str:
     return path
 
 
+def _route_to_handler(method: str, path: str) -> Optional[str]:
+    """Resolve handler for exact and templated routes."""
+    handler = ROUTE_TO_HANDLER.get((method, path))
+    if handler:
+        return handler
+
+    if method == "GET" and path.startswith("/api/v2/files/") and path.endswith("/download"):
+        return ROUTE_TO_HANDLER.get((method, "/api/v2/files/{file_id}/download"))
+
+    return None
+
+
 def _parse_cookie_header(cookie_header: Optional[str]) -> Dict[str, str]:
     cookies: Dict[str, str] = {}
     if not cookie_header:
@@ -172,7 +187,7 @@ async def dispatch_request(req: AbstractRequest, ctx: AbstractContext) -> Abstra
             mimetype="text/plain",
         )
 
-    handler_name = ROUTE_TO_HANDLER.get((method, path))
+    handler_name = _route_to_handler(method, path)
     if not handler_name:
         return AbstractResponse(
             body={

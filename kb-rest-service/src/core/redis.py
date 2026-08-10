@@ -43,22 +43,30 @@ class RedisClient:
             return False
 
         try:
+            # Azure Cache for Redis commonly uses TLS endpoint (*.redis.azure.net:10000).
+            redis_host = str(settings.database.REDIS_HOST or "")
+            redis_port = int(settings.database.REDIS_PORT)
+            use_ssl = redis_port == 10000 or redis_host.endswith(".redis.azure.net")
+
             self._client = redis.Redis(
-                host=settings.database.REDIS_HOST,
-                port=settings.database.REDIS_PORT,
+                host=redis_host,
+                port=redis_port,
                 password=settings.database.REDIS_PASSWORD,
                 db=settings.database.REDIS_DB,
                 decode_responses=True,
                 socket_connect_timeout=5,
                 socket_timeout=5,
+                ssl=use_ssl,
+                ssl_cert_reqs=None if use_ssl else "required",
             )
             # Test connection
             self._client.ping()
             self._is_connected = True
             logger.info(
                 "Redis connected successfully",
-                redis_host=settings.database.REDIS_HOST,
-                redis_port=settings.database.REDIS_PORT,
+                redis_host=redis_host,
+                redis_port=redis_port,
+                ssl_enabled=use_ssl,
             )
             return True
         except Exception as e:
@@ -100,6 +108,13 @@ class RedisClient:
     @property
     def is_available(self) -> bool:
         """Check if Redis is available and connected"""
+        if not REDIS_AVAILABLE:
+            return False
+
+        # Lazy initialize on first availability check.
+        if self._client is None and not self._is_connected:
+            self.initialize()
+
         return REDIS_AVAILABLE and self._is_connected
 
     def get(self, key: str) -> Optional[str]:

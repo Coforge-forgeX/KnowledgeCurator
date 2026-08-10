@@ -189,36 +189,6 @@ class IndexingStatusResponse(BaseModel):
     tasks: List[TaskStatusInfo]
 
 
-class ListDocumentsRequest(BaseModel):
-    """GET /api/list-indexed-documents request"""
-    workspace_id: int = Field(..., gt=0, description="Workspace ID")
-    page: int = Field(default=1, ge=1, description="Page number")
-    page_size: int = Field(default=20, ge=1, le=100, description="Items per page")
-    status: Optional[DocumentStatus] = Field(None, description="Filter by status")
-
-
-class DocumentInfo(BaseModel):
-    """Individual document information"""
-    id: int
-    file_name: str
-    file_path: str
-    workspace_id: int
-    status: str
-    file_size: Optional[str] = None
-    num_chunks: int = 0
-    created_at: str
-    updated_at: str
-
-
-class ListDocumentsResponse(BaseModel):
-    """GET /api/list-indexed-documents response"""
-    success: bool = True
-    documents: List[DocumentInfo]
-    total: int
-    page: int
-    page_size: int
-
-
 class DeleteDocumentsRequest(BaseModel):
     """DELETE /api/delete-documents request"""
     workspace_id: int = Field(..., gt=0, description="Workspace ID")

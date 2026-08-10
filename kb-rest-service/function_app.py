@@ -51,23 +51,33 @@ async def upload_and_index(req: func.HttpRequest, context: func.Context) -> func
     return await _handle(req, context)
 
 
-@app.route(route="api/v2/documents/status", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-async def check_indexing_status(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+@app.route(route="api/v2/workspaces/index-files", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def index_workspace_files(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
 
 
-@app.route(route="api/v2/documents/list", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-async def list_indexed_documents(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+@app.route(route="api/v2/documents/status", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
+async def documents_status(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
 
 
-@app.route(route="api/v2/documents", auth_level=func.AuthLevel.ANONYMOUS, methods=["DELETE"])
-async def delete_documents(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+@app.route(route="api/v2/workspaces/documents", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
+async def workspace_documents(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/files", auth_level=func.AuthLevel.ANONYMOUS, methods=["DELETE"])
+async def delete_files_by_id(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
 
 
 @app.route(route="api/v2/kb/graph", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 async def get_knowledge_graph(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/kb/graph/mutate", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def mutate_knowledge_graph(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
 
 
@@ -78,6 +88,11 @@ async def llm_route(req: func.HttpRequest, context: func.Context) -> func.HttpRe
 
 @app.route(route="api/v2/query-kb", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 async def query_kb_v2(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/files/{file_id}/download", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
+async def query_sources_download_url(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
 
 
