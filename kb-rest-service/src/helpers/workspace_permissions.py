@@ -32,10 +32,10 @@ async def require_workspace_admin_curator(
                 message=f"You are not authorized to access workspace {workspace_id}"
             )
 
-        is_admin = bool(getattr(user_map, "role_id", None) == WORKSPACE_ADMIN_ROLE_ID)
+        # is_admin = bool(getattr(user_map, "role_id", None) == WORKSPACE_ADMIN_ROLE_ID)
         can_curate = bool(getattr(user_map, "can_curate_kb", False))
 
-        if not is_admin or not can_curate:
+        if not can_curate:
             raise AuthorizationException(
                 message=(
                     "Only workspace admin with can_curate_kb=true can "

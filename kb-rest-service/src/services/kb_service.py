@@ -12,7 +12,10 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import text
+
 from src.core.config import settings
+from src.core.database import get_async_session
 from src.core.exceptions import LightRAGException, ValidationException
 from src.core.lightrag_service import get_lightrag_service
 from src.core.logging import get_logger
@@ -141,6 +144,14 @@ class KnowledgeBaseService:
                         doc_id=doc_id,
                         error=e,
                     )
+                finally:
+                    cleanup_result = await self._cleanup_lightrag_vector_rows(doc_id)
+                    logger.info(
+                        "Vector table cleanup attempted",
+                        doc_id=doc_id,
+                        chunks_deleted=cleanup_result.get("chunks_deleted", 0),
+                        relations_deleted=cleanup_result.get("relations_deleted", 0),
+                    )
 
             result = {
                 "total": len(doc_ids),
@@ -257,7 +268,7 @@ class KnowledgeBaseService:
                             "status": task.status,
                             "file_name": file_name,
                             "workspace_id": task.workspace_id,
-                            "error_message": task.error_message,
+                            "error_message": getattr(task, "error_message", None),
                             "created_at": str(task.created_at) if task.created_at else None,
                             "updated_at": str(task.updated_at) if task.updated_at else None,
                         })
@@ -343,6 +354,45 @@ class KnowledgeBaseService:
         )
 
         return working_dir
+
+    async def _cleanup_lightrag_vector_rows(self, doc_id: str) -> Dict[str, int]:
+        """
+        Best-effort hard cleanup from LightRAG vector tables by doc_id.
+
+        Deletes from:
+        - lightrag_vdb_chunks
+        - lightrag_vdb_relation / lightrag_vdb_relations
+        """
+        deleted = {"chunks_deleted": 0, "relations_deleted": 0}
+
+        async with get_async_session() as session:
+            chunk_statements = [
+                "DELETE FROM lightrag_vdb_chunks WHERE full_doc_id = :doc_id",
+                "DELETE FROM lightrag_vdb_chunks WHERE source_id = :doc_id",
+            ]
+            for stmt_sql in chunk_statements:
+                try:
+                    result = await session.execute(text(stmt_sql), {"doc_id": doc_id})
+                    if result.rowcount and result.rowcount > 0:
+                        deleted["chunks_deleted"] += int(result.rowcount)
+                except Exception:
+                    continue
+
+            relation_tables = ["lightrag_vdb_relation", "lightrag_vdb_relations"]
+            for table_name in relation_tables:
+                relation_statements = [
+                    f"DELETE FROM {table_name} WHERE source_id = :doc_id",
+                    f"DELETE FROM {table_name} WHERE full_doc_id = :doc_id",
+                ]
+                for stmt_sql in relation_statements:
+                    try:
+                        result = await session.execute(text(stmt_sql), {"doc_id": doc_id})
+                        if result.rowcount and result.rowcount > 0:
+                            deleted["relations_deleted"] += int(result.rowcount)
+                    except Exception:
+                        continue
+
+        return deleted
 
 
 # Singleton instance

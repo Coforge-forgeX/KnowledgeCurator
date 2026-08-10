@@ -66,18 +66,12 @@ from src.core.exceptions import (
 from src.core.logging import get_logger, setup_logging
 from src.registry import get_handler
 from src.models.api_models import (
-    KBQueryRequest,
-    KBQueryResponse,
-    KBChatRequest,
-    KBChatResponse,
     KBIndexRequest,
     KBIndexResponse,
     UploadAndIndexRequest,
     UploadAndIndexResponse,
     IndexingStatusRequest,
     IndexingStatusResponse,
-    ListDocumentsRequest,
-    ListDocumentsResponse,
     DeleteDocumentsRequest,
     DeleteDocumentsResponse,
     KnowledgeGraphRequest,
@@ -86,6 +80,7 @@ from src.models.api_models import (
     LLMRouteResponse,
     StatusResponse,
 )
+from src.functions.api.index_workspace_files.payloads import IndexWorkspaceFilesRequest
 
 # Setup logging BEFORE creating app (important for cold start tracking)
 setup_logging()
@@ -524,25 +519,6 @@ api_router = APIRouter(prefix="/api/v2", tags=["API v2"])
 
 
 @api_router.post(
-    "/kb/query",
-    tags=["Knowledge Base"],
-    summary="Query Knowledge Base",
-    description="Search the knowledge base using LightRAG with proper request/response validation"
-)
-async def kb_query(request: Request):
-    """
-    Query knowledge base with LightRAG.
-
-    Supports multiple query modes:
-    - **naive**: Simple keyword search
-    - **local**: Local context-aware search
-    - **global**: Global knowledge graph search
-    - **hybrid**: Combines local and global (recommended)
-    """
-    return await invoke_handler(request, "kb_query")
-
-
-@api_router.post(
     "/query",
     tags=["Knowledge Base"],
     summary="Query RAG System (Optimized)",
@@ -569,15 +545,15 @@ async def query(request: Request):
     return await invoke_handler(request, "query_rag")
 
 
-@api_router.post(
-    "/kb/chat",
+@api_router.get(
+    "/files/{file_id}/download",
     tags=["Knowledge Base"],
-    summary="Chat with Knowledge Base",
-    description="Conversational interface to the knowledge base with context retention"
+    summary="Generate File Download URL",
+    description="Generate a signed file download URL with 5 minute TTL from opaque file_id"
 )
-async def kb_chat(request: Request):
-    """Chat with the knowledge base using conversational AI"""
-    return await invoke_handler(request, "kb_chat")
+async def query_source_download_url(file_id: str, request: Request):
+    """Create short-lived signed URL for a source returned by query endpoint."""
+    return await invoke_handler(request, "query_source_download_url")
 
 
 @api_router.post(
@@ -653,58 +629,90 @@ async def upload_and_index(request: Request, payload: UploadAndIndexRequest):
 
 
 @api_router.post(
+    "/workspaces/index-files",
+    tags=["Documents"],
+    summary="Index All Existing Workspace Files",
+    description="Queue all existing files from workspace blob path for indexing without uploading again"
+)
+async def index_workspace_files(request: Request, payload: IndexWorkspaceFilesRequest):
+    """Queue existing workspace files for indexing."""
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "index_workspace_files")
+
+
+@api_router.get(
     "/documents/status",
     tags=["Documents"],
-    summary="Check Indexing Status",
-    description="Check the status of document indexing tasks"
+    summary="Get Document Status",
+    description="Get status by file task IDs or by workspace ID via query params"
 )
-async def indexing_status(request: Request):
-    """Check the status of document indexing tasks"""
-    return await invoke_handler(request, "check_indexing_status")
+async def indexing_status_get(request: Request):
+    """Get file task indexing status with file_tasks_id-first behavior via GET query params."""
+    return await invoke_handler(request, "file_tasks_status")
 
 
-@api_router.post(
-    "/documents/list",
+@api_router.get(
+    "/workspaces/documents",
     tags=["Documents"],
-    summary="List Indexed Documents",
-    description="Get a paginated list of indexed documents for a workspace"
+    summary="List Workspace Documents",
+    description="Return workspace documents, including linked KB documents, grouped in response by workspace/KB"
 )
-async def list_documents(request: Request):
-    """List all indexed documents for a workspace with pagination"""
-    return await invoke_handler(request, "list_indexed_documents")
+async def workspace_documents(request: Request):
+    """Get workspace documents with grouping in response payload."""
+    return await invoke_handler(request, "workspace_documents")
 
 
 @api_router.delete(
-    "/documents",
+    "/files",
     tags=["Documents"],
-    summary="Delete Documents",
-    description="Delete documents from the knowledge base"
+    summary="Delete Files By File ID",
+    description="Delete indexed files by file_id token(s) with workspace ownership and curate permission checks"
 )
-async def delete_documents(request: Request):
-    """Delete documents from the knowledge base"""
-    return await invoke_handler(request, "delete_documents")
+async def delete_files_by_id(request: Request):
+    """Delete indexed files by opaque file_id tokens."""
+    return await invoke_handler(request, "delete_files_by_id")
 
 
 @api_router.post(
     "/kb/graph",
     tags=["Knowledge Base"],
-    summary="Get Knowledge Graph",
-    description="Retrieve the knowledge graph for visualization"
+    summary="Fetch Filtered Graph Data",
+    description="Fetch graph data filtered by LLM to show only nodes relevant to the provided answer"
 )
 async def knowledge_graph(request: Request):
-    """Get the knowledge graph structure for a workspace"""
-    return await invoke_handler(request, "get_knowledge_graph")
+    """Fetch filtered graph data for a workspace query and answer."""
+    return await invoke_handler(request, "fetch_graph")
 
 
 @api_router.post(
-    "/llm/route",
-    tags=["LLM"],
-    summary="Route LLM Request",
-    description="Intelligent routing of LLM requests to appropriate models"
+    "/kb/graph/mutate",
+    tags=["Knowledge Base"],
+    summary="Mutate Knowledge Graph",
+    description="Create, update, or delete graph nodes/relationships scoped to indexed workspace data"
 )
-async def llm_route(request: Request):
-    """Route LLM requests to the appropriate model based on task type"""
-    return await invoke_handler(request, "llm_route")
+async def mutate_knowledge_graph(request: Request):
+    """Mutate Neo4j graph and sync LightRAG VDB tables for a workspace-scoped file."""
+    return await invoke_handler(request, "mutate_knowledge_graph")
+
+
+@api_router.post(
+    "/kb/graph-data",
+    tags=["Knowledge Base"],
+    summary="Fetch Filtered Graph Data",
+    description="Fetch graph data filtered by LLM to show only nodes relevant to the answer"
+)
+async def fetch_graph_data(request: Request):
+    """
+    Fetch filtered graph data for a query and answer.
+
+    This endpoint:
+    1. Checks Redis cache for existing filtered graph
+    2. If not cached, fetches context from LightRAG
+    3. Uses LLM to filter only relevant nodes/relationships
+    4. Caches the result for future requests
+    5. Returns filtered graph data
+    """
+    return await invoke_handler(request, "fetch_graph")
 
 
 # ============================================================================

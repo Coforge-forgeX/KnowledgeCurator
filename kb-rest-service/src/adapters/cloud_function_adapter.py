@@ -27,9 +27,8 @@ ROUTE_TO_HANDLER = {
     ("GET", "/api/v2/documents/status"): "file_tasks_status",
     ("GET", "/api/v2/workspaces/documents"): "workspace_documents",
     ("DELETE", "/api/v2/files"): "delete_files_by_id",
-    ("POST", "/api/v2/kb/graph"): "get_knowledge_graph",
+    ("POST", "/api/v2/kb/graph"): "fetch_graph",
     ("POST", "/api/v2/kb/graph/mutate"): "mutate_knowledge_graph",
-    ("POST", "/api/v2/llm/route"): "llm_route",
     ("POST", "/api/v2/query-kb"): "query_rag",  # Using optimized query_rag handler
     ("GET", "/api/v2/files/{file_id}/download"): "query_source_download_url",
     ("GET", "/api/sharepoint/list"): "sharepoint_list",

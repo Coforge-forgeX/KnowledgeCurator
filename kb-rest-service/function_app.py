@@ -81,11 +81,6 @@ async def mutate_knowledge_graph(req: func.HttpRequest, context: func.Context) -
     return await _handle(req, context)
 
 
-@app.route(route="api/v2/llm/route", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
-async def llm_route(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return await _handle(req, context)
-
-
 @app.route(route="api/v2/query-kb", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 async def query_kb_v2(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
@@ -93,14 +88,4 @@ async def query_kb_v2(req: func.HttpRequest, context: func.Context) -> func.Http
 
 @app.route(route="api/v2/files/{file_id}/download", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
 async def query_sources_download_url(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return await _handle(req, context)
-
-
-@app.route(route="api/v2/sharepoint/list", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
-async def sharepoint_list_v2(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    return await _handle(req, context)
-
-
-@app.route(route="api/sharepoint/list", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
-async def sharepoint_list_legacy(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)

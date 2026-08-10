@@ -700,8 +700,40 @@ class LightRAGService:
         try:
             logger.info("Deleting document from LightRAG", doc_id=doc_id)
 
-            # LightRAG deletion logic here
-            # Note: Actual implementation depends on LightRAG API
+            deleted = False
+            # Primary path for current LightRAG versions.
+            if hasattr(self._rag, "adelete_by_doc_id"):
+                try:
+                    await self._rag.adelete_by_doc_id(doc_id)
+                    deleted = True
+                except TypeError:
+                    # Some versions may expect a named parameter.
+                    await self._rag.adelete_by_doc_id(doc_id=doc_id)
+                    deleted = True
+            # Compatibility path for older variants that expose `adelete_by_doc_ids`.
+            elif hasattr(self._rag, "adelete_by_doc_ids"):
+                try:
+                    await self._rag.adelete_by_doc_ids([doc_id])
+                    deleted = True
+                except TypeError:
+                    await self._rag.adelete_by_doc_ids(doc_ids=[doc_id])
+                    deleted = True
+            else:
+                raise LightRAGException(
+                    message="LightRAG delete API not available on current runtime",
+                    operation="delete",
+                )
+
+            # Best-effort cache cleanup after successful delete invocation.
+            if deleted and hasattr(self._rag, "aclear_cache"):
+                try:
+                    await self._rag.aclear_cache()
+                except Exception as cache_error:
+                    logger.warning(
+                        "LightRAG cache clear failed after delete",
+                        doc_id=doc_id,
+                        error=str(cache_error),
+                    )
 
             logger.info("Document deleted successfully", doc_id=doc_id)
             return {"status": "success", "message": f"Document {doc_id} deleted"}

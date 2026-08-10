@@ -2,7 +2,7 @@
 from typing import List, Optional, Union
 from urllib.parse import quote_plus
 
-from pydantic import Field, validator
+from pydantic import AliasChoices, Field, validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,9 +37,20 @@ class DatabaseSettings(BaseSettings):
     REDIS_DB: int = Field(default=0, env="REDIS_DB")
 
     # Neo4j settings
-    NEO4J_URI: Optional[str] = Field(default=None, env="NEO4J_DATABASE_NEO4J_BOLT_URI")
-    NEO4J_USER: str = Field(default="neo4j", env="NEO4J_DATABASE_NEO4J_USER")
-    NEO4J_PASSWORD: Optional[str] = Field(default=None, env="NEO4J_DATABASE_NEO4J_PASSWORD")
+    # Prefer validation_alias for pydantic-settings v2 compatibility.
+    # Keep fallback aliases for legacy/local deployments.
+    NEO4J_URI: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("NEO4J_DATABASE_NEO4J_BOLT_URI", "NEO4J_URI"),
+    )
+    NEO4J_USER: str = Field(
+        default="neo4j",
+        validation_alias=AliasChoices("NEO4J_DATABASE_NEO4J_USER", "NEO4J_USER", "NEO4J_USERNAME"),
+    )
+    NEO4J_PASSWORD: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("NEO4J_DATABASE_NEO4J_PASSWORD", "NEO4J_PASSWORD"),
+    )
 
     # Deployment mode
     SERVERLESS: bool = Field(default=False, env="SERVERLESS")
