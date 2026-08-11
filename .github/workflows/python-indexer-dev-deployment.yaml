@@ -8,6 +8,7 @@ on:
     paths:    
       - 'indexer-service/**'
       - 'indexer-service/Dockerfile'
+      - 'shared/**'
       - '.github/workflows/python-indexer-dev-deployment.yaml'
    
 env:
