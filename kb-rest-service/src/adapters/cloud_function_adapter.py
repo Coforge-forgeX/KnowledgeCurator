@@ -160,18 +160,23 @@ def _parse_cookie_header(cookie_header: Optional[str]) -> Dict[str, str]:
     return cookies
 
 
-def _build_health_response(correlation_id: str) -> AbstractResponse:
+async def _build_health_response(correlation_id: str) -> AbstractResponse:
+    from src.core.health import run_health_checks
+
+    checks, overall_status = await run_health_checks()
+
     body = {
-        "status": "healthy",
+        "status": overall_status,
         "service": "kb-rest-api",
         "version": settings.VERSION,
         "cloud_provider": settings.CLOUD_PROVIDER,
         "storage_provider": settings.STORAGE_PROVIDER or settings.CLOUD_PROVIDER,
         "queue_provider": settings.QUEUE_PROVIDER or settings.CLOUD_PROVIDER,
+        "checks": checks,
     }
     return AbstractResponse(
         body=body,
-        status_code=200,
+        status_code=200 if overall_status == "healthy" else 503,
         headers={"X-Correlation-ID": correlation_id},
         mimetype="application/json",
     )
@@ -183,7 +188,7 @@ async def dispatch_request(req: AbstractRequest, ctx: AbstractContext) -> Abstra
     path = _normalize_path(req.path)
 
     if method == "GET" and path == "/health":
-        return _build_health_response(ctx.correlation_id)
+        return await _build_health_response(ctx.correlation_id)
 
     if method == "OPTIONS":
         return AbstractResponse(

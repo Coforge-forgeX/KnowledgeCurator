@@ -18,7 +18,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 # Put the app root on the import path so `src.*` resolves when the process is
 # started from another working directory. The `shared` package is resolved
@@ -138,16 +138,29 @@ app = FastAPI(
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint for monitoring"""
+async def health_check(response: Response):
+    """Health check endpoint for monitoring. Probes Postgres and Neo4j."""
+    from src.core.health import run_health_checks
+
+    checks, overall_status = await run_health_checks()
+    worker_running = worker_task is not None and not worker_task.done()
+    if not worker_running:
+        overall_status = "unhealthy"
+        checks["worker"] = {"status": "unhealthy", "error": "background worker not running"}
+    else:
+        checks["worker"] = {"status": "healthy"}
+
+    response.status_code = 200 if overall_status == "healthy" else 503
+
     return {
-        "status": "healthy",
+        "status": overall_status,
         "service": "indexer-service",
         "version": "2.0.0",
         "cloud_provider": settings.CLOUD_PROVIDER,
         "storage_provider": settings.active_storage_provider,
         "queue_provider": settings.active_queue_provider,
-        "worker_running": worker_task is not None and not worker_task.done(),
+        "worker_running": worker_running,
+        "checks": checks,
     }
 
 

@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict
 
-from fastapi import Depends, FastAPI, APIRouter, Request, status, HTTPException
+from fastapi import Depends, FastAPI, APIRouter, Request, Response, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
@@ -340,20 +340,25 @@ app.add_middleware(RequestSizeMiddleware)
 
 
 @app.get("/health", tags=["System"])
-async def health_check() -> Dict[str, Any]:
+async def health_check(response: Response) -> Dict[str, Any]:
     """
     Health check endpoint for load balancers and monitoring.
 
-    Returns:
-        Status information including service name and version
+    Probes Postgres, Neo4j, and Redis and reports overall status.
     """
+    from src.core.health import run_health_checks
+
+    checks, overall_status = await run_health_checks()
+    response.status_code = 200 if overall_status == "healthy" else 503
+
     return {
-        "status": "healthy",
+        "status": overall_status,
         "service": "kb-rest-api",
         "version": "2.0.0",
         "cloud_provider": settings.CLOUD_PROVIDER,
         "storage_provider": settings.STORAGE_PROVIDER or settings.CLOUD_PROVIDER,
         "queue_provider": settings.QUEUE_PROVIDER or settings.CLOUD_PROVIDER,
+        "checks": checks,
     }
 
 
