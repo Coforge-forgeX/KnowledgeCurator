@@ -89,3 +89,28 @@ async def query_kb_v2(req: func.HttpRequest, context: func.Context) -> func.Http
 @app.route(route="api/v2/files/{file_id}/download", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
 async def query_sources_download_url(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
+
+
+@app.route(route="api/v2/chat/start", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def chat_start_conversation(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/chat/history", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
+async def chat_get_conversation_history(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/chat/load", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
+async def chat_load_conversation(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/chat/session/rename", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def chat_rename_conversation(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/chat/session/delete", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def chat_delete_conversation(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)

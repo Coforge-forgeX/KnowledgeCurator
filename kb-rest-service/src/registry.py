@@ -60,6 +60,13 @@ HANDLER_MODULE_PATHS: Dict[str, str] = {
     "get_knowledge_graph": "src.functions.api.get_knowledge_graph",
     "fetch_graph": "src.functions.api.fetch_graph",
     "mutate_knowledge_graph": "src.functions.api.mutate_knowledge_graph",
+
+    # Chat / Conversation session management
+    "chat_start_conversation": "src.functions.api.start_conversation",
+    "chat_get_conversation_history": "src.functions.api.get_conversation_history",
+    "chat_load_conversation": "src.functions.api.load_conversation",
+    "chat_rename_conversation": "src.functions.api.rename_conversation",
+    "chat_delete_conversation": "src.functions.api.delete_conversation_history",
 }
 
 # Cache for loaded handlers (lazy loading + memoization)
