@@ -7,16 +7,13 @@ similar to user-mgmnt-service.
 import os
 import sys
 
-# Ensure monorepo import paths resolve in Azure Functions worker.
-# We need:
-# - repo root for `shared.*`
-# - kb-rest-service for `src.*`
-# - repo root before kb-rest-service so `shared.*` doesn't accidentally resolve to a different sibling.
-service_dir = os.path.dirname(os.path.abspath(__file__))
-repo_root = os.path.dirname(service_dir)
-sys.path = [p for p in sys.path if p not in {repo_root, service_dir}]
-sys.path.insert(0, repo_root)
-sys.path.insert(0, service_dir)
+# Match main.py: app root on the path so `src.*` resolves.
+# MUST be done before any local imports.
+# WARNING: Do not update this path
+# Use pip install -e .. [To include the shared package in the current repo]
+main_dir = os.path.dirname(os.path.abspath(__file__))
+if main_dir not in sys.path:
+    sys.path.insert(0, main_dir)
 
 import azure.functions as func
 
