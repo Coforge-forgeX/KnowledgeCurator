@@ -1,2 +1,9 @@
 __pycache__/
 *.pyc
+
+*.egg-info
+
+# `shared/` is vendored into each service at deploy time by the CI pipeline.
+# A committed copy would silently shadow the real package at services/shared.
+kb-rest-service/shared/
+indexer-service/shared/

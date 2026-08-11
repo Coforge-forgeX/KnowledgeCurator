@@ -12,50 +12,27 @@ It's a long-running worker (not serverless) that:
 Multi-cloud deployment support: Azure, AWS, GCP, Docker
 """
 import asyncio
-import importlib.util
-import json
 import os
 import signal
 import sys
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
 
 from fastapi import FastAPI
 
-# Ensure imports resolve shared modules from services/shared before src/shared.
-_service_dir = os.path.dirname(__file__)
-_services_root = os.path.dirname(_service_dir)
-_src_dir = os.path.join(_service_dir, "src")
-
-if _services_root not in sys.path:
-    sys.path.insert(0, _services_root)
-if _src_dir not in sys.path:
-    sys.path.insert(1, _src_dir)
-
-
-def _ensure_shared_package_resolution() -> None:
-    """Ensure `shared` resolves to services/shared, not indexer-service/src/shared."""
-    src_shared_init = os.path.join(_src_dir, "shared", "__init__.py")
-    loaded_shared = sys.modules.get("shared")
-
-    # If shadowed by src/shared, evict and re-import from services/shared.
-    if loaded_shared and getattr(loaded_shared, "__file__", None) == src_shared_init:
-        sys.modules.pop("shared", None)
-
-    if _services_root not in sys.path:
-        sys.path.insert(0, _services_root)
-
-    if importlib.util.find_spec("shared.adapters") is None:
-        raise ModuleNotFoundError(
-            "Unable to resolve shared.adapters; ensure services/shared is importable"
-        )
+# Put the app root on the import path so `src.*` resolves when the process is
+# started from another working directory. The `shared` package is resolved
+# normally: installed (pip install -e ..) for local dev, vendored at the app
+# root by the deploy pipeline in production.
+_service_dir = os.path.dirname(os.path.abspath(__file__))
+if _service_dir not in sys.path:
+    sys.path.insert(0, _service_dir)
 
 # Configure Windows console for UTF-8 encoding (prevents Unicode crashes)
 from shared.windows_encoding import configure_windows_console_encoding
 configure_windows_console_encoding()
 
-from core.logging import get_logger, setup_logging
+from src.core.logging import get_logger, setup_logging
 from src.core.config import settings
 
 # Setup logging
@@ -185,8 +162,6 @@ async def indexing_worker():
     4. Updates database task status
     5. Deletes processed messages from queue
     """
-    _ensure_shared_package_resolution()
-
     # Lazy imports to avoid loading heavy dependencies at startup.
     from src.queue_adapters import get_queue_adapter
     from src.workers.indexing_job_handler import process_indexing_job

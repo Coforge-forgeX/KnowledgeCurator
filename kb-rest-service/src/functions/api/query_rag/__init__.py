@@ -20,7 +20,6 @@ from src.core.exceptions import AuthorizationException, ValidationException
 from src.core.logging import get_logger
 from src.core.redis import get_query_cache, set_query_cache, redis_manager
 from src.functions.api.query_rag.payloads import (
-    ErrorResponse,
     KBChunkModel,
     KBResultModel,
     GraphDataModel,
@@ -33,7 +32,7 @@ from src.helpers.graph_parser import format_chunk_with_graph_data
 from src.helpers.file_token import create_signed_file_id
 from src.services.rag_query_service import get_rag_query_service
 from src.services.workspace_service import get_workspace_service
-from src.shared import create_error_response, create_success_response, parse_request
+from src.common import create_error_response, create_success_response, parse_request
 
 logger = get_logger(__name__)
 

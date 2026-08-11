@@ -14,7 +14,7 @@ from shared.adapters.storage import (
 
 def get_storage_adapter():
     """Get storage adapter configured with indexer-service settings"""
-    from core.config import settings
+    from src.core.config import settings
 
     connection_string = (
         settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING

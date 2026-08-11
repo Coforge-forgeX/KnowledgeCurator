@@ -21,7 +21,7 @@ from src.core.exceptions import AuthorizationException
 from src.core.logging import get_logger
 from src.core.redis import redis_manager
 from src.helpers.file_token import create_signed_file_id
-from src.shared import ErrorMessages, create_error_response, create_success_response, parse_request
+from src.common import ErrorMessages, create_error_response, create_success_response, parse_request
 
 from .payloads import WorkspaceDocumentsGroupedRequest
 

@@ -5,9 +5,9 @@ import base64
 
 import pytest
 
-from services.text_extraction.decoders import DOCX_SIGNATURE, normalize_file_bytes
-from services.text_extraction.extractor import DocExtractor, DocxExtractor
-from services.text_extraction.models import TextExtractionError
+from src.services.text_extraction.decoders import DOCX_SIGNATURE, normalize_file_bytes
+from src.services.text_extraction.extractor import DocExtractor, DocxExtractor
+from src.services.text_extraction.models import TextExtractionError
 
 
 def test_docx_extractor_rejects_non_docx_payload() -> None:

@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from core.logging import Logger
+from src.core.logging import Logger
 
 from .models import ProgressEvent
 

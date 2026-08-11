@@ -3,7 +3,7 @@ from typing import List, Optional
 
 from pydantic import Field, model_validator
 
-from src.shared.payloads import BasePayload
+from src.common.payloads import BasePayload
 
 
 class FileTasksStatusRequest(BasePayload):

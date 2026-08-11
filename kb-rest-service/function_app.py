@@ -7,14 +7,11 @@ similar to user-mgmnt-service.
 import os
 import sys
 
-# Match main.py import precedence so shared.adapters resolves correctly.
-# MUST be done before any local imports that depend on shared.
+# Match main.py: app root on the path so `src.*` resolves.
+# MUST be done before any local imports.
 main_dir = os.path.dirname(os.path.abspath(__file__))
-services_path = os.path.dirname(main_dir)  # .../Kb/services
-src_path = os.path.join(main_dir, "src")
-sys.path = [p for p in sys.path if p not in {services_path, src_path}]
-sys.path.insert(0, src_path)
-sys.path.insert(0, services_path)
+if main_dir not in sys.path:
+    sys.path.insert(0, main_dir)
 
 import azure.functions as func
 

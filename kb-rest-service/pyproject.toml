@@ -138,7 +138,7 @@ force_grid_wrap = 0
 use_parentheses = true
 ensure_newline_before_comments = true
 src_paths = ["src", "tests"]
-known_first_party = ["core", "shared", "functions", "services", "helpers", "models"]
+known_first_party = ["core", "common", "shared", "functions", "services", "helpers", "models"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -165,7 +165,10 @@ module = "tests.*"
 disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
-minversion = "6.0"
+# 7.0+ required for the `pythonpath` option below.
+minversion = "7.0"
+# Service root on the path so `src.*` imports resolve the same way they do at runtime.
+pythonpath = ["."]
 addopts = "-ra -q --strict-markers --strict-config"
 testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]

@@ -24,7 +24,6 @@ dependencies = [
     "pydantic==2.0.0",
     "pydantic-settings==2.0.0",
     "structlog==24.1.0",
-    "PyMuPDF==1.28.0",
     "python-docx==1.2.0",
     "numpy==2.3.5",
     "requests==2.34.2",
@@ -98,6 +97,8 @@ module = [
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
+# Service root on the path so `src.*` imports resolve the same way they do at runtime.
+pythonpath = ["."]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

@@ -11,7 +11,7 @@ from src.core.exceptions import AuthorizationException, ValidationException
 from src.core.logging import get_logger
 from src.core.neo4j_driver import get_neo4j_driver
 from src.helpers.workspace_permissions import require_workspace_admin_curator
-from src.shared import create_error_response, create_success_response, parse_request
+from src.common import create_error_response, create_success_response, parse_request
 
 from .payloads import (
     MutateKnowledgeGraphRequest,

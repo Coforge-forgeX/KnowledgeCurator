@@ -15,7 +15,7 @@ from src.helpers.file_validation import validate_file_extension
 from src.helpers.workspace_helpers import get_workspace_storage_paths
 from src.helpers.workspace_kb_helpers import get_kb_id_for_upload
 from src.helpers.workspace_permissions import require_workspace_admin_curator
-from src.shared import create_error_response, create_success_response, parse_request
+from src.common import create_error_response, create_success_response, parse_request
 from src.functions.api.upload_and_index.__init__ import enqueue_indexing_job
 
 from .payloads import (

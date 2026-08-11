@@ -4,7 +4,7 @@ from src.core.auth import get_user_id, get_workspace_ids, require_auth
 from src.core.exceptions import AuthorizationException
 from src.core.logging import get_logger
 from src.services.kb_service import get_kb_service
-from src.shared import ErrorMessages, create_error_response, create_success_response, parse_request
+from src.common import ErrorMessages, create_error_response, create_success_response, parse_request
 
 from .payloads import GetKnowledgeGraphRequest
 

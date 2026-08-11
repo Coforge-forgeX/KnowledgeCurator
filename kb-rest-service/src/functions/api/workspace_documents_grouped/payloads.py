@@ -1,7 +1,7 @@
 """Payload models for grouped workspace documents API."""
 from pydantic import Field
 
-from src.shared.payloads import BasePayload
+from src.common.payloads import BasePayload
 
 
 class WorkspaceDocumentsGroupedRequest(BasePayload):
