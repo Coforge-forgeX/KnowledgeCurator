@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
+from bson import ObjectId
 from pymongo.errors import PyMongoError
 
 from src.core.config import settings
@@ -16,6 +17,19 @@ from src.core.exceptions import DatabaseException
 from src.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert MongoDB-returned values into JSON-serializable primitives."""
+    if isinstance(value, ObjectId):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 class MongoDBService:
@@ -279,7 +293,7 @@ class MongoDBService:
                 count=len(sessions),
             )
 
-            return sessions
+            return [_json_safe(s) for s in sessions]
 
         except PyMongoError as e:
             logger.error("Failed to list sessions", error=e)
@@ -408,7 +422,7 @@ class MongoDBService:
                 message_count=len(messages),
             )
 
-            return messages
+            return [_json_safe(m) for m in messages]
 
         except PyMongoError as e:
             logger.error("Failed to get conversation history", error=e)
