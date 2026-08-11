@@ -1,7 +1,7 @@
 """Test configuration management"""
 import pytest
 
-from core.config import DatabaseSettings, AzureSettings, LLMSettings, Settings
+from src.core.config import DatabaseSettings, AzureSettings, LLMSettings, Settings
 
 
 def test_database_settings_defaults():

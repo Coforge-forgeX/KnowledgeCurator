@@ -1,7 +1,7 @@
 """Test Pydantic models"""
 import pytest
 
-from shared.models import (
+from src.common.models import (
     DocumentMetadata,
     IndexingJob,
     JobResult,

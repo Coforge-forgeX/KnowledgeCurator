@@ -4,12 +4,11 @@ State Manager
 Persists and retrieves indexing job state for retry/resume functionality.
 """
 import json
-import os
 from pathlib import Path
 from typing import Optional
 
-from core.logging import get_logger
-from shared.indexing_state import IndexingJobState, IndexingState
+from src.core.logging import get_logger
+from src.common.indexing_state import IndexingJobState, IndexingState
 
 logger = get_logger(__name__)
 
@@ -30,7 +29,7 @@ class StateManager:
         Args:
             state_dir: Directory for local state cache (from settings)
         """
-        from core.config import settings
+        from src.core.config import settings
 
         self.state_dir = Path(state_dir or settings.processing.INDEXER_STATE_DIR)
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -114,7 +113,7 @@ class StateManager:
 
     async def _save_to_database(self, job_state: IndexingJobState) -> None:
         """Save state to PostgreSQL database using SQLAlchemy ORM"""
-        from core.database import get_async_session, IndexingJob
+        from src.core.database import get_async_session, IndexingJob
         from sqlalchemy import select
         from sqlalchemy.dialects.postgresql import insert
 
@@ -157,7 +156,7 @@ class StateManager:
 
     async def _load_from_database(self, job_id: str) -> Optional[IndexingJobState]:
         """Load state from PostgreSQL database using SQLAlchemy ORM"""
-        from core.database import get_async_session, IndexingJob
+        from src.core.database import get_async_session, IndexingJob
         from sqlalchemy import select
 
         try:
@@ -190,7 +189,7 @@ class StateManager:
 
     async def _delete_from_database(self, job_id: str) -> None:
         """Delete state from database using SQLAlchemy ORM"""
-        from core.database import get_async_session, IndexingJob
+        from src.core.database import get_async_session, IndexingJob
         from sqlalchemy import delete
 
         try:

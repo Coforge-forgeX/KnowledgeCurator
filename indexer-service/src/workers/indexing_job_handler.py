@@ -19,10 +19,10 @@ from shared.lightrag import (
     build_azure_openai_embedding_func,
     RateLimitError,
 )
-from services.text_extraction import TextExtractionError, get_text_extraction_service
+from src.services.text_extraction import TextExtractionError, get_text_extraction_service
 
-from core.config import settings
-from core.logging import get_logger
+from src.core.config import settings
+from src.core.logging import get_logger
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 

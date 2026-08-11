@@ -7,7 +7,7 @@ import logging
 from enum import Enum
 from typing import Optional
 
-from core.config import settings
+from src.core.config import settings
 
 from .detectors.hybrid import HybridIntentDetector
 from .detectors.llm_based import LLMIntentDetector, SimpleLLMProvider

@@ -15,7 +15,7 @@ from src.core.redis import redis_manager
 from src.helpers.file_token import decode_signed_file_id
 from src.helpers.workspace_permissions import require_workspace_admin_curator
 from src.helpers.workspace_helpers import get_workspace_storage_paths
-from src.shared import create_error_response, create_success_response, parse_request
+from src.common import create_error_response, create_success_response, parse_request
 from shared.adapters.storage import get_storage_adapter
 
 from .payloads import DeleteFilesByIdRequest

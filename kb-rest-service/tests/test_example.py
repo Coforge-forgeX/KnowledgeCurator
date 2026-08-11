@@ -1,8 +1,8 @@
 """Example test file for KB REST service"""
 import pytest
 
-from shared.models import APIResponse, KBQueryRequest
-from shared.payloads import BasePayload, NonEmptyStr, parse_request
+from src.common.models import APIResponse, KBQueryRequest
+from src.common.payloads import BasePayload, NonEmptyStr, parse_request
 
 
 def test_api_response_creation():

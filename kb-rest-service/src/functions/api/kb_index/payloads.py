@@ -1,7 +1,7 @@
 """Request payload model for POST /api/kb/index."""
 from typing import Optional
 
-from src.shared.payloads import BasePayload, NonEmptyStr
+from src.common.payloads import BasePayload, NonEmptyStr
 
 
 class KBIndexRequest(BasePayload):

@@ -3,7 +3,7 @@ from typing import List, Optional, Union
 
 from pydantic import Field, field_validator, model_validator
 
-from src.shared.payloads import BasePayload
+from src.common.payloads import BasePayload
 
 
 class DeleteFilesByIdRequest(BasePayload):

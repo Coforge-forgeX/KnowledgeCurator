@@ -9,7 +9,7 @@ from src.core.logging import get_logger
 from src.core.redis import redis_manager
 from src.helpers.file_token import decode_signed_file_id
 from src.services.workspace_service import get_workspace_service
-from src.shared import create_error_response, create_success_response
+from src.common import create_error_response, create_success_response
 from shared.adapters.storage import get_storage_adapter
 
 logger = get_logger(__name__)

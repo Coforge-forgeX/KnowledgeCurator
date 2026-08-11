@@ -37,7 +37,7 @@ def get_queue_adapter(
     global _queue_adapter
 
     if _queue_adapter is None or force_recreate:
-        from core.config import settings
+        from src.core.config import settings
 
         # Select appropriate connection string based on provider
         provider = settings.active_queue_provider

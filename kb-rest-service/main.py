@@ -24,33 +24,19 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict
 
-from fastapi import FastAPI, APIRouter, Request, status, HTTPException
+from fastapi import Depends, FastAPI, APIRouter, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-# Add services/ and src/ to import path with deterministic precedence.
-# Keep services/ before src/ so `shared.*` resolves to services/shared, not src/shared.
+# Put the app root on the import path so `src.*` resolves when the process is
+# started from another working directory. The `shared` package is resolved
+# normally: installed (pip install -e ..) for local dev, vendored at the app
+# root by the deploy pipeline in production.
 main_dir = os.path.dirname(os.path.abspath(__file__))
-services_path = os.path.dirname(main_dir)  # Parent of kb-rest-service
-src_path = os.path.join(main_dir, "src")
-
-# Remove any existing entries first so we can reinsert in the correct order.
-sys.path = [p for p in sys.path if p not in {services_path, src_path}]
-
-sys.path.insert(0, src_path)
-sys.path.insert(0, services_path)
-print(f"[STARTUP] Added to sys.path (priority): {services_path}, {src_path}")
-
-print(f"[STARTUP] sys.path[0:3] = {sys.path[0:3]}")
-
-# Verify shared.adapters is importable
-try:
-    import shared.adapters
-    print("[STARTUP] ✓ shared.adapters is importable")
-except ImportError as e:
-    print(f"[STARTUP] ✗ Failed to import shared.adapters: {e}")
+if main_dir not in sys.path:
+    sys.path.insert(0, main_dir)
 
 # Configure Windows console for UTF-8 encoding (prevents Unicode crashes)
 from shared.windows_encoding import configure_windows_console_encoding
@@ -65,22 +51,13 @@ from src.core.exceptions import (
 )
 from src.core.logging import get_logger, setup_logging
 from src.registry import get_handler
-from src.models.api_models import (
-    KBIndexRequest,
-    KBIndexResponse,
-    UploadAndIndexRequest,
-    UploadAndIndexResponse,
-    IndexingStatusRequest,
-    IndexingStatusResponse,
-    DeleteDocumentsRequest,
-    DeleteDocumentsResponse,
-    KnowledgeGraphRequest,
-    KnowledgeGraphResponse,
-    LLMRouteRequest,
-    LLMRouteResponse,
-    StatusResponse,
-)
 from src.functions.api.index_workspace_files.payloads import IndexWorkspaceFilesRequest
+from src.functions.api.upload_and_index.payloads import UploadAndIndexRequest, UploadAndIndexResponse
+from src.functions.api.kb_index.payloads import KBIndexRequest
+from src.functions.api.workspace_documents_grouped.payloads import WorkspaceDocumentsGroupedRequest
+from src.functions.api.delete_files_by_id.payloads import DeleteFilesByIdRequest
+from src.functions.api.fetch_graph.payloads import FetchGraphRequest, FetchGraphResponse
+from src.functions.api.mutate_knowledge_graph.payloads import MutateKnowledgeGraphRequest
 
 # Setup logging BEFORE creating app (important for cold start tracking)
 setup_logging()
@@ -562,8 +539,9 @@ async def query_source_download_url(file_id: str, request: Request):
     summary="Index Document",
     description="Add a document to the knowledge base for indexing"
 )
-async def kb_index(request: Request):
+async def kb_index(request: Request, payload: KBIndexRequest):
     """Index a document in the knowledge base"""
+    request.state.parsed_payload = payload
     return await invoke_handler(request, "kb_index")
 
 
@@ -647,7 +625,13 @@ async def index_workspace_files(request: Request, payload: IndexWorkspaceFilesRe
     description="Get status by file task IDs or by workspace ID via query params"
 )
 async def indexing_status_get(request: Request):
-    """Get file task indexing status with file_tasks_id-first behavior via GET query params."""
+    """Get file task indexing status with file_tasks_id-first behavior via GET query params.
+
+    Not bound to a typed FastAPI payload: the handler accepts `task_ids`/`task_id`
+    aliases and comma-separated or JSON-list values for `file_tasks_id`
+    (see FileTasksStatusRequest normalization in the handler), which a strict
+    FastAPI query-dependency binding would reject before the handler ever runs.
+    """
     return await invoke_handler(request, "file_tasks_status")
 
 
@@ -657,8 +641,9 @@ async def indexing_status_get(request: Request):
     summary="List Workspace Documents",
     description="Return workspace documents, including linked KB documents, grouped in response by workspace/KB"
 )
-async def workspace_documents(request: Request):
+async def workspace_documents(request: Request, payload: WorkspaceDocumentsGroupedRequest = Depends()):
     """Get workspace documents with grouping in response payload."""
+    request.state.parsed_payload = payload
     return await invoke_handler(request, "workspace_documents")
 
 
@@ -668,8 +653,9 @@ async def workspace_documents(request: Request):
     summary="Delete Files By File ID",
     description="Delete indexed files by file_id token(s) with workspace ownership and curate permission checks"
 )
-async def delete_files_by_id(request: Request):
+async def delete_files_by_id(request: Request, payload: DeleteFilesByIdRequest):
     """Delete indexed files by opaque file_id tokens."""
+    request.state.parsed_payload = payload
     return await invoke_handler(request, "delete_files_by_id")
 
 
@@ -677,10 +663,12 @@ async def delete_files_by_id(request: Request):
     "/kb/graph",
     tags=["Knowledge Base"],
     summary="Fetch Filtered Graph Data",
-    description="Fetch graph data filtered by LLM to show only nodes relevant to the provided answer"
+    description="Fetch graph data filtered by LLM to show only nodes relevant to the provided answer",
+    response_model=FetchGraphResponse,
 )
-async def knowledge_graph(request: Request):
+async def knowledge_graph(request: Request, payload: FetchGraphRequest):
     """Fetch filtered graph data for a workspace query and answer."""
+    request.state.parsed_payload = payload
     return await invoke_handler(request, "fetch_graph")
 
 
@@ -690,8 +678,9 @@ async def knowledge_graph(request: Request):
     summary="Mutate Knowledge Graph",
     description="Create, update, or delete graph nodes/relationships scoped to indexed workspace data"
 )
-async def mutate_knowledge_graph(request: Request):
+async def mutate_knowledge_graph(request: Request, payload: MutateKnowledgeGraphRequest):
     """Mutate Neo4j graph and sync LightRAG VDB tables for a workspace-scoped file."""
+    request.state.parsed_payload = payload
     return await invoke_handler(request, "mutate_knowledge_graph")
 
 
@@ -699,9 +688,10 @@ async def mutate_knowledge_graph(request: Request):
     "/kb/graph-data",
     tags=["Knowledge Base"],
     summary="Fetch Filtered Graph Data",
-    description="Fetch graph data filtered by LLM to show only nodes relevant to the answer"
+    description="Fetch graph data filtered by LLM to show only nodes relevant to the answer",
+    response_model=FetchGraphResponse,
 )
-async def fetch_graph_data(request: Request):
+async def fetch_graph_data(request: Request, payload: FetchGraphRequest):
     """
     Fetch filtered graph data for a query and answer.
 
@@ -712,6 +702,7 @@ async def fetch_graph_data(request: Request):
     4. Caches the result for future requests
     5. Returns filtered graph data
     """
+    request.state.parsed_payload = payload
     return await invoke_handler(request, "fetch_graph")
 
 

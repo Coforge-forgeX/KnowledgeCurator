@@ -1,12 +1,9 @@
 """Pytest configuration and fixtures for Indexer Service tests"""
-import os
-import sys
 from datetime import datetime
 
 import pytest
 
-# Add src to path so we can import modules
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# Import paths come from `pythonpath` in pyproject.toml [tool.pytest.ini_options].
 
 
 @pytest.fixture

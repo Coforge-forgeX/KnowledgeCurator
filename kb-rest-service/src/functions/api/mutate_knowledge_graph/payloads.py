@@ -3,7 +3,7 @@ from typing import Any, Dict, Literal, Optional
 
 from pydantic import Field, field_validator, model_validator
 
-from src.shared.payloads import BasePayload
+from src.common.payloads import BasePayload
 
 
 class GraphMutationScope(BasePayload):

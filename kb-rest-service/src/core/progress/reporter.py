@@ -4,7 +4,7 @@ import asyncio
 import uuid
 from typing import Any, Dict
 
-from core.logging import Logger
+from src.core.logging import Logger
 
 from .models import ProgressEvent
 from .ports import ProgressPublisher

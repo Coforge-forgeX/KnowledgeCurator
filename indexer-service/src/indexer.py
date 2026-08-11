@@ -1,9 +1,6 @@
 """Document indexing with LightRAG"""
-import os
-import tempfile
-from pathlib import Path
 from typing import Dict, Any
-from core.logging import get_logger
+from src.core.logging import get_logger
 
 logger = get_logger(__name__)
 

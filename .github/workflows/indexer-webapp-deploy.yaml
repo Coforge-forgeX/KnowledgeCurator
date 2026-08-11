@@ -1,0 +1,47 @@
+name: Deploy Indexer Service WebApp (DEV)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - V2_dev
+    paths:
+      - 'indexer-service/**'
+      - 'shared/**'
+      - '.github/workflows/indexer-webapp-deploy.yaml'
+
+env:
+  WEBAPP_NAME: kb-indexer-dev
+  SERVICE_DIR: indexer-service
+  PYTHON_VERSION: '3.11'
+  rg_name: ${{ secrets.DEV_RG_NAME }}
+
+jobs:
+  deploy-webapp:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Same as the function pipeline: no parent dir exists in the deployed
+      # package, so `shared` is vendored at the app root.
+      - name: Vendor shared package
+        run: |
+          rm -rf "${SERVICE_DIR}/shared"
+          cp -r shared "${SERVICE_DIR}/shared"
+          find "${SERVICE_DIR}" -name '__pycache__' -type d -prune -exec rm -rf {} +
+          rm -rf "${SERVICE_DIR}/tests" "${SERVICE_DIR}/lightrag_data"
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Oryx builds requirements.txt on the App Service side.
+      # Requires app setting SCM_DO_BUILD_DURING_DEPLOYMENT=true.
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.WEBAPP_NAME }}
+          package: ${{ env.SERVICE_DIR }}
