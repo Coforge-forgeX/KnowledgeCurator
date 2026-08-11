@@ -11,7 +11,7 @@ on:
       - '.github/workflows/kb-rest-function-deploy.yaml'
 
 env:
-  FUNCTION_APP_NAME: kb-rest-dev
+  FUNCTION_APP_NAME: forgeX-dev-fun-kb
   SERVICE_DIR: kb-rest-service
   PYTHON_VERSION: '3.11'
   rg_name: ${{ secrets.DEV_RG_NAME }}
