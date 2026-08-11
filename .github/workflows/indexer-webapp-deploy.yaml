@@ -2,13 +2,13 @@ name: Deploy Indexer Service WebApp (DEV)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - V2_dev
-    paths:
-      - 'indexer-service/**'
-      - 'shared/**'
-      - '.github/workflows/indexer-webapp-deploy.yaml'
+  # push:
+  #   branches:
+  #     - V2_dev
+  #   paths:
+  #     - 'indexer-service/**'
+  #     - 'shared/**'
+  #     - '.github/workflows/indexer-webapp-deploy.yaml'
 
 env:
   WEBAPP_NAME: kb-indexer-dev
