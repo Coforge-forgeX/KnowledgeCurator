@@ -377,20 +377,6 @@ class LightRAGSettings(BaseSettings):
     )
     EMBEDDING_BATCH_NUM: int = Field(default=4, validation_alias="LIGHTRAG_EMBEDDING_BATCH_NUM")
 
-    # Ollama embedding settings
-    OLLAMA_MODEL_BASE_URL: Optional[str] = Field(
-        default=None, env="OLLAMA_MODEL_BASE_URL"
-    )
-    OLLAMA_MODEL_EMBEDDING_MODEL: Optional[str] = Field(
-        default=None, env="OLLAMA_MODEL_EMBEDDING_MODEL"
-    )
-    OLLAMA_MODEL_EMBEDDING_MODEL_DIMS: int = Field(
-        default=3072, env="OLLAMA_MODEL_EMBEDDING_MODEL_DIMS"
-    )
-    OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS: int = Field(
-        default=8192, env="OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS"
-    )
-
     # Azure OpenAI LLM settings
     AZURE_OPENAI_LLM_MODEL_API_KEY: Optional[str] = Field(
         default=None, env="AZURE_OPENAI_LLM_MODEL_API_KEY"

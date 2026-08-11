@@ -188,8 +188,6 @@ AZURE_QUEUE_STORAGE_CONNECTION_STRING=<your-connection-string>
 
 #### LightRAG Configuration
 ```bash
-OLLAMA_MODEL_BASE_URL=http://localhost:11434
-OLLAMA_MODEL_EMBEDDING_MODEL=nomic-embed-text
 AZURE_OPENAI_LLM_MODEL_API_KEY=<your-api-key>
 AZURE_OPENAI_LLM_MODEL_API_BASE=https://your-resource.openai.azure.com/
 ```

@@ -142,12 +142,6 @@ class LLMSettings(BaseSettings):
     AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION: str = Field(default="2024-02-15-preview")
     AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL: str = Field(default="text-embedding-3-large")
 
-    # Ollama (for embeddings)
-    OLLAMA_MODEL_BASE_URL: str = Field(default="http://localhost:11434")
-    OLLAMA_MODEL_EMBEDDING_MODEL: str = Field(default="mxbai-embed-large")
-    OLLAMA_MODEL_EMBEDDING_MODEL_DIMS: int = Field(default=1024)
-    OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS: int = Field(default=8192)
-
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -203,12 +197,6 @@ class LightRAGSettings(BaseSettings):
     AZURE_OPENAI_EMBEDDING_API_BASE: Optional[str] = Field(default=None, validation_alias="AZURE_OPENAI_EMBEDDING_MODEL_API_BASE")
     AZURE_OPENAI_EMBEDDING_API_VERSION: str = Field(default="2024-02-01", validation_alias="AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION")
     AZURE_OPENAI_EMBEDDING_DEPLOYMENT: Optional[str] = Field(default=None, validation_alias="AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL")
-
-    # Ollama settings
-    OLLAMA_BASE_URL: str = Field(default="http://localhost:11434", validation_alias="OLLAMA_MODEL_BASE_URL")
-    OLLAMA_EMBEDDING_MODEL: str = Field(default="mxbai-embed-large", validation_alias="OLLAMA_MODEL_EMBEDDING_MODEL")
-    OLLAMA_EMBEDDING_DIMS: int = Field(default=1024, validation_alias="OLLAMA_MODEL_EMBEDDING_MODEL_DIMS")
-    OLLAMA_MAX_TOKENS: int = Field(default=8192, validation_alias="OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS")
 
     model_config = SettingsConfigDict(
         env_file=".env",

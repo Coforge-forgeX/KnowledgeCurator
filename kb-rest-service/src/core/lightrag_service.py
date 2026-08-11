@@ -242,35 +242,6 @@ class LightRAGService:
                 ),
             )
 
-        # Fallback to Ollama for local/dev use cases.
-        base_url = settings.lightrag.OLLAMA_MODEL_BASE_URL
-        embedding_model = settings.lightrag.OLLAMA_MODEL_EMBEDDING_MODEL
-        embedding_dim = settings.lightrag.OLLAMA_MODEL_EMBEDDING_MODEL_DIMS
-        max_token_size = settings.lightrag.OLLAMA_MODEL_EMBEDDING_MODEL_MAX_TOKENS
-
-        if not all([base_url, embedding_model]):
-            raise ConfigurationException(
-                message=(
-                    "Embedding configuration is incomplete. Provide Azure OpenAI embedding "
-                    "settings or Ollama settings."
-                ),
-                config_key="AZURE_OPENAI_EMBEDDING_MODEL_* or OLLAMA_MODEL_*",
-            )
-
-        logger.warning(
-            "Azure embedding settings not found; falling back to Ollama embeddings",
-            ollama_host=base_url,
-            ollama_model=embedding_model,
-        )
-        return EmbeddingFunc(
-            embedding_dim=embedding_dim,
-            max_token_size=max_token_size,
-            func=build_ollama_embedding_func(
-                host=base_url,
-                embed_model=embedding_model,
-            ),
-        )
-
 
     async def initialize(self) -> None:
         """
