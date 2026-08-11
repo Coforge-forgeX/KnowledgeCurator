@@ -6,7 +6,6 @@ from typing import Any, Callable, List, Optional
 
 import aiohttp
 import numpy as np
-from lightrag.llm.ollama import ollama_embed
 
 
 class RateLimitError(Exception):
@@ -148,14 +147,5 @@ def build_azure_openai_embedding_func(
         result = await _post_json(endpoint=endpoint, headers=headers, payload=payload)
         embeddings = [item["embedding"] for item in result["data"]]
         return np.array(embeddings)
-
-    return embedding_func
-
-
-def build_ollama_embedding_func(*, host: str, embed_model: str) -> Callable[[list[str]], Any]:
-    """Build Ollama embedding function compatible with LightRAG."""
-
-    async def embedding_func(texts: list[str]):
-        return await ollama_embed(texts, embed_model=embed_model, host=host)
 
     return embedding_func

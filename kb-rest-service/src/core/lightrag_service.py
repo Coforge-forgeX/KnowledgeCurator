@@ -8,7 +8,6 @@ from lightrag.utils import EmbeddingFunc
 from shared.lightrag import (
     build_azure_openai_chat_completion_func,
     build_azure_openai_embedding_func,
-    build_ollama_embedding_func,
 )
 
 try:
