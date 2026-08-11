@@ -1,21 +1,20 @@
 # Core framework
-fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+starlette==0.40.0
 gunicorn==26.0.0
 
 # Data validation and configuration
 pydantic>=2.10.0
 pydantic-settings>=2.6.0
 python-dotenv==1.2.2
-typing-extensions
+typing-extensions>=4.0.0
 
 # Database
 sqlalchemy==2.0.51
 asyncpg==0.30.0
 psycopg2-binary==2.9.12
-# motor 3.3.0 is not compatible with pymongo 4.17.x.
-# motor 3.6.x requires pymongo <4.10.
-pymongo==4.9.2
+pymongo==4.17.0
 motor==3.6.0
 greenlet==3.1.1
 
