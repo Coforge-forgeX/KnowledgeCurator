@@ -75,20 +75,31 @@ class ChatService:
                 session_id=session_id,
             )
 
-            # Create session metadata in PostgreSQL
-            async with get_async_session() as session:
-                conv_session = ConversationSession(
+            # Create session metadata in PostgreSQL.
+            # If the table/migrations are not applied yet, don't block chat creation;
+            # MongoDB is the source of truth for sessions/messages.
+            try:
+                async with get_async_session() as session:
+                    conv_session = ConversationSession(
+                        session_id=session_id,
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                        title="New Conversation",
+                        message_count=0,
+                        is_active=True,
+                        created_at=datetime.now(timezone.utc),
+                        updated_at=datetime.now(timezone.utc),
+                    )
+                    session.add(conv_session)
+                    await session.commit()
+            except Exception as e:
+                logger.warning(
+                    "PostgreSQL conversation_sessions insert failed; continuing with MongoDB session only",
+                    error=e,
                     session_id=session_id,
                     workspace_id=workspace_id,
                     user_id=user_id,
-                    title="New Conversation",
-                    message_count=0,
-                    is_active=True,
-                    created_at=datetime.now(timezone.utc),
-                    updated_at=datetime.now(timezone.utc),
                 )
-                session.add(conv_session)
-                await session.commit()
 
             logger.info(
                 "Conversation started",
@@ -140,10 +151,14 @@ class ChatService:
                 limit=limit or 50,
             )
 
-            # Enhance with PostgreSQL metadata if needed
-            for session in sessions:
-                session_id = session.get("session_id")
-                if session_id:
+            # Enhance with PostgreSQL metadata if available.
+            # If migrations are not applied (table missing), return MongoDB sessions only.
+            try:
+                for session in sessions:
+                    session_id = session.get("session_id")
+                    if not session_id:
+                        continue
+
                     async with get_async_session() as pg_session:
                         stmt = select(ConversationSession).where(
                             and_(
@@ -161,6 +176,13 @@ class ChatService:
                                 "message_count": conv.message_count,
                                 "is_active": conv.is_active,
                             }
+            except Exception as e:
+                logger.warning(
+                    "PostgreSQL conversation_sessions read failed; returning MongoDB sessions only",
+                    error=e,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
 
             logger.info(
                 "Retrieved conversation history",
@@ -284,21 +306,31 @@ class ChatService:
                 )
 
             # Update in PostgreSQL
-            async with get_async_session() as session:
-                stmt = select(ConversationSession).where(
-                    and_(
-                        ConversationSession.session_id == session_id,
-                        ConversationSession.workspace_id == workspace_id,
-                        ConversationSession.user_id == user_id,
+            # PostgreSQL is optional in local/dev; don't fail rename if table/migrations aren't present.
+            try:
+                async with get_async_session() as session:
+                    stmt = select(ConversationSession).where(
+                        and_(
+                            ConversationSession.session_id == session_id,
+                            ConversationSession.workspace_id == workspace_id,
+                            ConversationSession.user_id == user_id,
+                        )
                     )
-                )
-                result = await session.execute(stmt)
-                conv = result.scalar_one_or_none()
+                    result = await session.execute(stmt)
+                    conv = result.scalar_one_or_none()
 
-                if conv:
-                    conv.title = title.strip()
-                    conv.updated_at = datetime.now(timezone.utc)
-                    await session.commit()
+                    if conv:
+                        conv.title = title.strip()
+                        conv.updated_at = datetime.now(timezone.utc)
+                        await session.commit()
+            except Exception as e:
+                logger.warning(
+                    "PostgreSQL conversation_sessions update failed; continuing with MongoDB rename only",
+                    error=e,
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
 
             logger.info(
                 "Conversation renamed",
@@ -349,20 +381,30 @@ class ChatService:
             )
 
             # Delete from PostgreSQL
-            async with get_async_session() as session:
-                stmt = select(ConversationSession).where(
-                    and_(
-                        ConversationSession.session_id == session_id,
-                        ConversationSession.workspace_id == workspace_id,
-                        ConversationSession.user_id == user_id,
+            # PostgreSQL is optional in local/dev; don't fail delete if table/migrations aren't present.
+            try:
+                async with get_async_session() as session:
+                    stmt = select(ConversationSession).where(
+                        and_(
+                            ConversationSession.session_id == session_id,
+                            ConversationSession.workspace_id == workspace_id,
+                            ConversationSession.user_id == user_id,
+                        )
                     )
-                )
-                result = await session.execute(stmt)
-                conv = result.scalar_one_or_none()
+                    result = await session.execute(stmt)
+                    conv = result.scalar_one_or_none()
 
-                if conv:
-                    await session.delete(conv)
-                    await session.commit()
+                    if conv:
+                        await session.delete(conv)
+                        await session.commit()
+            except Exception as e:
+                logger.warning(
+                    "PostgreSQL conversation_sessions delete failed; continuing with MongoDB delete only",
+                    error=e,
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
 
             if not mongo_success:
                 logger.warning(
@@ -543,9 +585,13 @@ class ChatService:
                 user_id=user_id,
             )
 
-            if session_meta and session_meta.get("message_count", 0) <= 2:
-                # Generate title from first user message
-                title = user_message[:50] + "..." if len(user_message) > 50 else user_message
+            # Default title behavior:
+            # - If user hasn't explicitly set a title, keep title in sync with the last user message.
+            # - If a title already exists, treat it as user-defined and don't overwrite it.
+            if session_meta is not None and not (session_meta.get("title") or "").strip():
+                title = user_message.strip()
+                if len(title) > 50:
+                    title = title[:50] + "..."
                 await self.mongo_service.update_session_title(
                     session_id=session_id,
                     workspace_id=workspace_id,

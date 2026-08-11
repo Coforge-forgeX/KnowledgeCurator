@@ -65,7 +65,8 @@ def create_success_response(
         headers["X-Correlation-ID"] = correlation_id
 
     return AbstractResponse(
-        body=json.dumps(response_body),
+        # Ensure non-JSON-native objects (e.g., bson.ObjectId) don't crash success responses.
+        body=json.dumps(response_body, default=str),
         status_code=status_code,
         mimetype="application/json",
         headers=headers,
@@ -112,7 +113,7 @@ def create_error_response(
         headers["X-Correlation-ID"] = correlation_id
 
     return AbstractResponse(
-        body=json.dumps(response_body),
+        body=json.dumps(response_body, default=str),
         status_code=status_code,
         mimetype="application/json",
         headers=headers,
@@ -168,7 +169,7 @@ def create_paginated_response(
         headers["X-Correlation-ID"] = correlation_id
 
     return AbstractResponse(
-        body=json.dumps(response_body),
+        body=json.dumps(response_body, default=str),
         status_code=status_code,
         mimetype="application/json",
         headers=headers,
@@ -220,7 +221,7 @@ def create_query_response(
         headers["X-Correlation-ID"] = correlation_id
 
     return AbstractResponse(
-        body=json.dumps(response_body),
+        body=json.dumps(response_body, default=str),
         status_code=status_code,
         mimetype="application/json",
         headers=headers,
@@ -274,7 +275,7 @@ def create_batch_response(
         headers["X-Correlation-ID"] = correlation_id
 
     return AbstractResponse(
-        body=json.dumps(response_body),
+        body=json.dumps(response_body, default=str),
         status_code=status_code,
         mimetype="application/json",
         headers=headers,
