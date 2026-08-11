@@ -38,7 +38,7 @@ dependencies = [
     "asyncpg==0.30.0",
     "psycopg2-binary==2.9.12",
     "pymongo==4.17.0",
-    "motor==3.3.0",
+    "motor==3.7.0",
     "greenlet==3.1.1",
 
     # Graph database
