@@ -15,7 +15,7 @@ from src.core.redis import redis_manager
 from src.helpers.file_token import decode_signed_file_id
 from src.helpers.workspace_permissions import require_workspace_admin_curator
 from src.helpers.workspace_helpers import get_workspace_storage_paths
-from src.common import create_error_response, create_success_response, parse_request
+from src.common import create_error_response, create_internal_error_response, create_success_response, parse_request
 from shared.adapters.storage import get_storage_adapter
 
 from .payloads import DeleteFilesByIdRequest
@@ -614,10 +614,9 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         )
     except Exception as e:
         logger.error("Delete by file_id failed", error=e, workspace_id=workspace_id)
-        return create_error_response(
+        return create_internal_error_response(
             message="Failed to delete files",
+            error=e,
             error_code="DELETE_FILES_BY_ID_FAILED",
-            details={"error": str(e)},
-            status_code=500,
             correlation_id=correlation_id,
         )

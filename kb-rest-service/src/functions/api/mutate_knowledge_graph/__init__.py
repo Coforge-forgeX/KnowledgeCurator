@@ -11,7 +11,7 @@ from src.core.exceptions import AuthorizationException, ValidationException
 from src.core.logging import get_logger
 from src.core.neo4j_driver import get_neo4j_driver
 from src.helpers.workspace_permissions import require_workspace_admin_curator
-from src.common import create_error_response, create_success_response, parse_request
+from src.common import create_error_response, create_internal_error_response, create_success_response, parse_request
 
 from .payloads import (
     MutateKnowledgeGraphRequest,
@@ -668,10 +668,9 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             user_id=user_id,
             exc_info=True,
         )
-        return create_error_response(
+        return create_internal_error_response(
             message="Failed to mutate knowledge graph",
+            error=exc,
             error_code="MUTATE_KNOWLEDGE_GRAPH_FAILED",
-            details={"error": str(exc)},
-            status_code=500,
             correlation_id=correlation_id,
         )

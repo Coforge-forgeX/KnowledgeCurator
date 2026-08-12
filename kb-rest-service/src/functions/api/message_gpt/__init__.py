@@ -19,7 +19,7 @@ from src.core.exceptions import AuthorizationException, ValidationException
 from src.core.logging import get_logger
 from src.models.chat_models import ChatRequest
 from src.services.chat import get_chat_orchestrator
-from src.common import create_error_response, create_success_response, parse_request
+from src.common import create_error_response, create_internal_error_response, create_success_response, parse_request
 
 logger = get_logger(__name__)
 
@@ -97,10 +97,9 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
 
     except Exception as e:
         logger.error("message_gpt failed", error=e, correlation_id=correlation_id)
-        return create_error_response(
+        return create_internal_error_response(
             message="An error occurred while processing your message",
+            error=e,
             error_code="INTERNAL_ERROR",
-            details={"error": str(e)},
-            status_code=500,
             correlation_id=correlation_id,
         )

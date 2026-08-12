@@ -45,6 +45,43 @@ def _as_data_object(data: Optional[Any]) -> Dict[str, Any]:
     return {"value": data}
 
 
+def _sanitize_error_message(error: Exception) -> str:
+    """
+    Sanitize error message to prevent leaking sensitive information.
+
+    Strips out common patterns that leak internal details:
+    - Database connection strings
+    - File paths
+    - Stack traces
+    - Configuration details
+
+    Returns a safe, generic error type instead.
+    """
+    error_str = str(error)
+    error_type = type(error).__name__
+
+    # List of sensitive patterns to check
+    sensitive_patterns = [
+        "connection", "password", "secret", "key", "token", "auth",
+        "postgresql://", "mongodb://", "redis://", "jdbc:",
+        "C:\\", "D:\\", "/home/", "/var/", "/usr/", "/opt/",
+        "Traceback", "File \"", "line ",
+        ".env", "config", "settings"
+    ]
+
+    # Check if error message contains sensitive information
+    error_lower = error_str.lower()
+    for pattern in sensitive_patterns:
+        if pattern.lower() in error_lower:
+            # Return only the error type, not the message
+            return f"{error_type} occurred"
+
+    # If safe, return the error type with a truncated message
+    # (max 100 chars to avoid verbose internal errors)
+    safe_message = error_str[:100] if len(error_str) <= 100 else f"{error_str[:97]}..."
+    return f"{error_type}: {safe_message}"
+
+
 def _should_include_error_details(status_code: int, explicit: Optional[bool] = None) -> bool:
     """Determine whether error details should be returned to API callers.
 
@@ -205,6 +242,45 @@ def create_error_response(
     )
 
 
+def create_internal_error_response(
+    message: str,
+    error: Exception,
+    error_code: str = "INTERNAL_ERROR",
+    correlation_id: Optional[str] = None,
+) -> AbstractResponse:
+    """
+    Create a safe error response for internal/unexpected exceptions.
+
+    This should be used in generic `except Exception as e:` handlers.
+    It sanitizes the error to prevent leaking sensitive information like:
+    - Database connection strings
+    - File paths
+    - Stack traces
+    - Configuration details
+
+    The full error is logged but never sent to the client.
+
+    Args:
+        message: User-friendly error message (what went wrong)
+        error: The caught exception (will be sanitized before including in response)
+        error_code: Error code identifier
+        correlation_id: Optional correlation ID for tracking
+
+    Returns:
+        AbstractResponse: Safe error response
+    """
+    # Sanitize the error before including it in response
+    sanitized_error = _sanitize_error_message(error)
+
+    return create_error_response(
+        message=message,
+        error_code=error_code,
+        details={"error": sanitized_error},
+        status_code=500,
+        correlation_id=correlation_id,
+    )
+
+
 def create_exception_response(
     exc: Exception,
     fallback_message: str,
@@ -231,11 +307,11 @@ def create_exception_response(
             correlation_id=correlation_id,
         )
 
-    return create_error_response(
+    # Use sanitized error response for non-API exceptions
+    return create_internal_error_response(
         message=fallback_message,
+        error=exc,
         error_code=fallback_error_code,
-        details={"error": str(exc)},
-        status_code=500,
         correlation_id=correlation_id,
     )
 

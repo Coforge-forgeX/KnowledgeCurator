@@ -27,7 +27,7 @@ from src.helpers.graph_parser import parse_graph_context
 from src.helpers.workspace_helpers import get_workspace_storage_paths
 from src.helpers.workspace_resolver import WorkspaceResolver
 from src.services.workspace_service import get_workspace_service
-from src.common import create_error_response, create_success_response, parse_request
+from src.common import create_error_response, create_internal_error_response, create_success_response, parse_request
 from shared.lightrag import build_azure_openai_chat_completion_func
 
 try:
@@ -1261,10 +1261,9 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             correlation_id=correlation_id,
             exc_info=True
         )
-        return create_error_response(
+        return create_internal_error_response(
             message="An error occurred while fetching graph data",
+            error=e,
             error_code="INTERNAL_ERROR",
-            details={"error": str(e)},
-            status_code=500,
             correlation_id=correlation_id
         )

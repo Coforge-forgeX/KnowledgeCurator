@@ -169,11 +169,13 @@ async def indexing_worker():
     Background worker that processes indexing jobs from queue.
 
     This function:
-    1. Polls message queue for new indexing jobs
-    2. Downloads documents from storage
-    3. Processes with LightRAG indexer
-    4. Updates database task status
-    5. Deletes processed messages from queue
+    1. Continuously polls message queue for new indexing jobs
+    2. Spawns concurrent tasks (up to MAX_CONCURRENT_JOBS)
+    3. Each task: downloads, processes with LightRAG, updates status
+    4. Deletes processed messages from queue
+
+    Uses producer-consumer pattern to pick up new jobs immediately
+    without waiting for current jobs to complete.
     """
     # Lazy imports to avoid loading heavy dependencies at startup.
     from src.queue_adapters import get_queue_adapter
@@ -182,7 +184,9 @@ async def indexing_worker():
     queue = get_queue_adapter()
     storage_provider_name = settings.active_storage_provider
     max_concurrent_jobs = max(1, int(settings.MAX_CONCURRENT_JOBS))
-    in_flight_jobs = 0
+
+    # Track active job tasks (not count - actual task objects)
+    active_tasks: set = set()
 
     # Avoid probing storage adapter on every poll cycle; job handler manages per-job adapter creation.
     storage = None
@@ -194,136 +198,143 @@ async def indexing_worker():
         max_concurrent_jobs=max_concurrent_jobs,
     )
 
+    async def _process_single_message(message):
+        """Process a single message and handle cleanup."""
+        try:
+            job_data = message.content
+            task_id = job_data.get("task_id")
+            job_id = job_data.get("job_id", str(task_id))
+            file_path = job_data.get("file_path")
+            workspace_id = job_data.get("workspace_id")
+
+            # Get retry count from message (dequeue_count - 1 because first dequeue is not a retry)
+            retry_count = max(0, getattr(message, 'dequeue_count', 1) - 1)
+
+            # Check if max retries exceeded
+            if retry_count >= settings.MAX_RETRIES:
+                error_msg = f"Max retries ({settings.MAX_RETRIES}) exceeded"
+                logger.error(
+                    "Moving message to dead letter queue",
+                    job_id=job_id,
+                    task_id=task_id,
+                    file_path=file_path,
+                    retry_count=retry_count,
+                    max_retries=settings.MAX_RETRIES,
+                    error_msg=error_msg,
+                )
+                # Move to dead letter queue
+                await queue.move_to_dead_letter(
+                    message,
+                    reason="MaxRetriesExceeded",
+                    error_description=f"Job failed after {retry_count} retries: {file_path}"
+                )
+                # Update task status to failed
+                if task_id:
+                    from src.workers.indexing_job_handler import update_file_task_status
+                    await update_file_task_status(task_id, "failed", error_msg)
+                return  # Skip processing this message
+
+            logger.info(
+                "Processing indexing job",
+                job_id=job_id,
+                task_id=task_id,
+                file_path=file_path,
+                workspace_id=workspace_id,
+                retry_count=retry_count,
+                max_retries=settings.MAX_RETRIES,
+            )
+
+            # Process the indexing job with retry count
+            result = await process_indexing_job(job_data, retry_count=retry_count)
+            success = result.get("success", False)
+
+            if success:
+                # Delete message from queue - job completed successfully
+                await queue.delete_message(message)
+                logger.info(
+                    "Successfully processed and removed from queue",
+                    job_id=job_id,
+                    task_id=task_id,
+                    retry_count=retry_count
+                )
+            else:
+                error_msg = result.get("error", "Unknown error")
+                if result.get("non_retryable", False):
+                    await queue.delete_message(message)
+                    logger.warning(
+                        "Dropped non-retryable indexing message",
+                        job_id=job_id,
+                        task_id=task_id,
+                        retry_count=retry_count,
+                        error_msg=error_msg,
+                    )
+                else:
+                    logger.error(
+                        "Job failed - will retry after visibility timeout",
+                        job_id=job_id,
+                        task_id=task_id,
+                        retry_count=retry_count,
+                        error_msg=error_msg,
+                    )
+                    # Message will become visible again after visibility timeout for automatic retry
+
+        except Exception as e:
+            logger.error(
+                "Error processing indexing job",
+                message_id=message.message_id,
+                error_msg=str(e),
+                exc_info=True,
+            )
+            # Message will become visible again for retry
+
     try:
-        # Worker loop
+        # Producer-consumer loop: continuously poll and spawn tasks
         while not shutdown_event.is_set():
             try:
-                # Poll queue for messages (long polling with 20 second wait)
+                # Clean up completed tasks
+                done_tasks = {task for task in active_tasks if task.done()}
+                for task in done_tasks:
+                    try:
+                        # Retrieve exception if any (prevents "Task exception was never retrieved")
+                        task.result()
+                    except Exception as e:
+                        logger.error("Task failed with exception", error_msg=str(e), exc_info=True)
+                active_tasks -= done_tasks
+
+                # Calculate available slots
+                available_slots = max_concurrent_jobs - len(active_tasks)
+
+                if available_slots <= 0:
+                    # At capacity, wait briefly before checking again
+                    await asyncio.sleep(1)
+                    continue
+
+                # Poll queue for messages (short wait since we're continuously polling)
                 messages = await queue.receive_messages(
-                    max_messages=max_concurrent_jobs,
+                    max_messages=available_slots,
                     visibility_timeout=300,  # 5 minutes to process
-                    wait_time_seconds=20,     # Long polling
+                    wait_time_seconds=5,     # Shorter wait for responsive polling
                 )
 
                 if not messages:
-                    # No messages, continue polling (silent - no log spam)
+                    # No messages, continue polling
+                    await asyncio.sleep(1)
                     continue
 
-                # Only log when we actually receive jobs
-                batch_size = len(messages)
-                batch_start = time.perf_counter()
+                # Spawn tasks for new messages immediately (non-blocking)
                 logger.info(
                     "Received indexing jobs",
-                    count=batch_size,
-                    in_flight_jobs=in_flight_jobs,
+                    count=len(messages),
+                    in_flight_jobs=len(active_tasks),
                     max_concurrent_jobs=max_concurrent_jobs,
                 )
 
-                # Process messages concurrently, bounded by max_concurrent_jobs from config.
-                async def _process_single_message(message):
-                    nonlocal in_flight_jobs
-                    in_flight_jobs += 1
-                    try:
-                        job_data = message.content
-                        task_id = job_data.get("task_id")
-                        job_id = job_data.get("job_id", str(task_id))
-                        file_path = job_data.get("file_path")
-                        workspace_id = job_data.get("workspace_id")
+                for message in messages:
+                    task = asyncio.create_task(_process_single_message(message))
+                    active_tasks.add(task)
 
-                        # Get retry count from message (dequeue_count - 1 because first dequeue is not a retry)
-                        retry_count = max(0, getattr(message, 'dequeue_count', 1) - 1)
-
-                        # Check if max retries exceeded
-                        if retry_count >= settings.MAX_RETRIES:
-                            error_msg = f"Max retries ({settings.MAX_RETRIES}) exceeded"
-                            logger.error(
-                                "Moving message to dead letter queue",
-                                job_id=job_id,
-                                task_id=task_id,
-                                file_path=file_path,
-                                retry_count=retry_count,
-                                max_retries=settings.MAX_RETRIES,
-                                error_msg=error_msg,
-                            )
-                            # Move to dead letter queue
-                            await queue.move_to_dead_letter(
-                                message,
-                                reason="MaxRetriesExceeded",
-                                error_description=f"Job failed after {retry_count} retries: {file_path}"
-                            )
-                            # Update task status to failed
-                            if task_id:
-                                from src.workers.indexing_job_handler import update_file_task_status
-                                await update_file_task_status(task_id, "failed", error_msg)
-                            return  # Skip processing this message
-
-                        logger.info(
-                            "Processing indexing job",
-                            job_id=job_id,
-                            task_id=task_id,
-                            file_path=file_path,
-                            workspace_id=workspace_id,
-                            retry_count=retry_count,
-                            max_retries=settings.MAX_RETRIES,
-                        )
-
-                        # Process the indexing job with retry count
-                        result = await process_indexing_job(job_data, retry_count=retry_count)
-                        success = result.get("success", False)
-
-                        if success:
-                            # Delete message from queue - job completed successfully
-                            await queue.delete_message(message)  # Pass full message object
-                            logger.info(
-                                "Successfully processed and removed from queue",
-                                job_id=job_id,
-                                task_id=task_id,
-                                retry_count=retry_count
-                            )
-                        else:
-                            error_msg = result.get("error", "Unknown error")
-                            if result.get("non_retryable", False):
-                                await queue.delete_message(message)  # Pass full message object
-                                logger.warning(
-                                    "Dropped non-retryable indexing message",
-                                    job_id=job_id,
-                                    task_id=task_id,
-                                    retry_count=retry_count,
-                                    error_msg=error_msg,
-                                )
-                            else:
-                                logger.error(
-                                    "Job failed - will retry after visibility timeout",
-                                    job_id=job_id,
-                                    task_id=task_id,
-                                    retry_count=retry_count,
-                                    error_msg=error_msg,
-                                )
-                                # Message will become visible again after visibility timeout for automatic retry
-
-                    except Exception as e:
-                        logger.error(
-                            "Error processing indexing job",
-                            message_id=message.message_id,
-                            error_msg=str(e),
-                            exc_info=True,
-                        )
-                        # Message will become visible again for retry
-                    finally:
-                        in_flight_jobs = max(0, in_flight_jobs - 1)
-
-                await asyncio.gather(
-                    *(_process_single_message(message) for message in messages),
-                    return_exceptions=True,
-                )
-                batch_duration_seconds = round(time.perf_counter() - batch_start, 3)
-                logger.info(
-                    "Completed indexing batch",
-                    batch_size=batch_size,
-                    batch_duration_seconds=batch_duration_seconds,
-                    in_flight_jobs=in_flight_jobs,
-                    max_concurrent_jobs=max_concurrent_jobs,
-                )
+                # Continue polling immediately for more messages
+                # (don't wait for these tasks to complete)
 
             except asyncio.CancelledError:
                 logger.info("Worker canceled")
@@ -333,6 +344,15 @@ async def indexing_worker():
                 # Sleep before retrying
                 await asyncio.sleep(5)
     finally:
+        # Wait for active tasks to complete during shutdown
+        if active_tasks:
+            logger.info(
+                "Waiting for active jobs to complete",
+                active_jobs=len(active_tasks),
+            )
+            await asyncio.gather(*active_tasks, return_exceptions=True)
+            logger.info("All active jobs completed")
+
         close_tasks = []
         queue_close = getattr(queue, "close", None)
         if callable(queue_close):

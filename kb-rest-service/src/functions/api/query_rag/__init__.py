@@ -21,7 +21,7 @@ from src.helpers.workspace_helpers import get_workspace_storage_paths
 from src.models.query_rag_models import QueryRAGRequest
 from src.services.query_rag_executor import execute_query_rag
 from src.services.workspace_service import get_workspace_service
-from src.common import create_error_response, create_success_response, parse_request
+from src.common import create_error_response, create_internal_error_response, create_success_response, parse_request
 
 logger = get_logger(__name__)
 
@@ -185,10 +185,9 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             error=e,
             correlation_id=correlation_id
         )
-        return create_error_response(
+        return create_internal_error_response(
             message="An error occurred while processing your query",
+            error=e,
             error_code="INTERNAL_ERROR",
-            details={"error": str(e)},
-            status_code=500,
             correlation_id=correlation_id
         )

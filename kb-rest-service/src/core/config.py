@@ -129,8 +129,7 @@ class CacheSettings(BaseSettings):
 
     # Cache TTL settings (in seconds)
     QUERY_CACHE_TTL: int = Field(default=3600, env="QUERY_CACHE_TTL")  # 1 hour
-    WORKSPACE_CONFIG_CACHE_TTL: int = Field(default=300, env="WORKSPACE_CONFIG_CACHE_TTL")  # 5 minutes
-    INDEXED_FILES_CACHE_TTL: int = Field(default=600, env="INDEXED_FILES_CACHE_TTL")  # 10 minutes
+    CONVERSATION_HISTORY_CACHE_TTL: int = Field(default=3600, env="CONVERSATION_HISTORY_CACHE_TTL")  # 1 hour
 
     # Rate limiting settings
     RATE_LIMIT_ENABLED: bool = Field(default=True, env="RATE_LIMIT_ENABLED")

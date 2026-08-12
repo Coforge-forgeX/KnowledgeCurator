@@ -308,6 +308,138 @@ class RedisClient:
             logger.error("Failed to cache workspace config", error=e)
             return False
 
+    # ========================================
+    # Conversation History Caching Methods
+    # ========================================
+
+    def _make_chat_history_key(self, session_id: str, workspace_id: int, user_id: int) -> str:
+        """Generate cache key for conversation history"""
+        return f"chat:history:{workspace_id}:{user_id}:{session_id}"
+
+    def get_conversation_history(
+        self, session_id: str, workspace_id: int, user_id: int
+    ) -> Optional[list]:
+        """
+        Get cached conversation history.
+
+        Returns:
+            List of messages or None if not found/unavailable
+        """
+        key = self._make_chat_history_key(session_id, workspace_id, user_id)
+        cached = self.get(key)
+        if cached:
+            try:
+                history = json.loads(cached)
+                logger.debug(
+                    "Cache HIT - Conversation history",
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    message_count=len(history),
+                )
+                return history
+            except json.JSONDecodeError:
+                logger.error("Invalid JSON in chat history cache", key=key)
+                self.delete(key)
+        return None
+
+    def set_conversation_history(
+        self,
+        session_id: str,
+        workspace_id: int,
+        user_id: int,
+        history: list,
+        ttl: Optional[int] = None,
+    ) -> bool:
+        """
+        Cache conversation history.
+
+        Args:
+            session_id: Session identifier
+            workspace_id: Workspace ID
+            user_id: User ID
+            history: List of message dicts
+            ttl: Time-to-live in seconds (uses CONVERSATION_HISTORY_CACHE_TTL if not specified)
+
+        Returns:
+            True if cached successfully
+        """
+        if ttl is None:
+            from .config import settings
+            ttl = settings.CONVERSATION_HISTORY_CACHE_TTL
+
+        key = self._make_chat_history_key(session_id, workspace_id, user_id)
+        try:
+            serialized = json.dumps(history)
+            success = self.setex(key, ttl, serialized)
+            if success:
+                logger.debug(
+                    "Cache SET - Conversation history",
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    message_count=len(history),
+                    size_kb=round(len(serialized) / 1024, 2),
+                )
+            return success
+        except Exception as e:
+            logger.error(
+                "Failed to cache conversation history",
+                error=e,
+                session_id=session_id,
+            )
+            return False
+
+    def append_to_conversation_history(
+        self,
+        session_id: str,
+        workspace_id: int,
+        user_id: int,
+        message: Dict[str, Any],
+        ttl: Optional[int] = None,
+    ) -> bool:
+        """
+        Append a message to cached conversation history.
+
+        Args:
+            session_id: Session identifier
+            workspace_id: Workspace ID
+            user_id: User ID
+            message: Message dict to append
+            ttl: Time-to-live in seconds (uses CONVERSATION_HISTORY_CACHE_TTL if not specified)
+
+        Returns:
+            True if updated successfully
+        """
+        if ttl is None:
+            from .config import settings
+            ttl = settings.CONVERSATION_HISTORY_CACHE_TTL
+
+        history = self.get_conversation_history(session_id, workspace_id, user_id)
+        if history is None:
+            # Cache miss - don't create cache here, let the orchestrator handle it
+            return False
+
+        history.append(message)
+        return self.set_conversation_history(session_id, workspace_id, user_id, history, ttl)
+
+    def invalidate_conversation_history(
+        self, session_id: str, workspace_id: int, user_id: int
+    ) -> int:
+        """
+        Invalidate cached conversation history for a session.
+
+        Returns:
+            Number of keys deleted (0 or 1)
+        """
+        key = self._make_chat_history_key(session_id, workspace_id, user_id)
+        deleted = self.delete(key)
+        if deleted:
+            logger.debug(
+                "Cache invalidated - Conversation history",
+                session_id=session_id,
+                workspace_id=workspace_id,
+            )
+        return deleted
+
 
 # Global Redis instance
 redis_manager = RedisClient()
@@ -340,3 +472,32 @@ def set_query_cache(
 def invalidate_workspace(workspace_id: int) -> int:
     """Invalidate workspace cache (convenience wrapper)"""
     return redis_manager.invalidate_workspace_cache(workspace_id)
+
+
+# Conversation history caching convenience functions
+def get_cached_conversation_history(
+    session_id: str, workspace_id: int, user_id: int
+) -> Optional[list]:
+    """Get cached conversation history (convenience wrapper)"""
+    return redis_manager.get_conversation_history(session_id, workspace_id, user_id)
+
+
+def cache_conversation_history(
+    session_id: str, workspace_id: int, user_id: int, history: list, ttl: Optional[int] = None
+) -> bool:
+    """Cache conversation history (convenience wrapper)"""
+    return redis_manager.set_conversation_history(session_id, workspace_id, user_id, history, ttl)
+
+
+def append_cached_message(
+    session_id: str, workspace_id: int, user_id: int, message: Dict[str, Any], ttl: Optional[int] = None
+) -> bool:
+    """Append message to cached conversation history (convenience wrapper)"""
+    return redis_manager.append_to_conversation_history(
+        session_id, workspace_id, user_id, message, ttl
+    )
+
+
+def invalidate_conversation_cache(session_id: str, workspace_id: int, user_id: int) -> int:
+    """Invalidate conversation history cache (convenience wrapper)"""
+    return redis_manager.invalidate_conversation_history(session_id, workspace_id, user_id)

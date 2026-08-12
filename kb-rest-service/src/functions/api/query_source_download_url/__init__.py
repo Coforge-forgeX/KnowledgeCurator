@@ -9,7 +9,7 @@ from src.core.logging import get_logger
 from src.core.redis import redis_manager
 from src.helpers.file_token import decode_signed_file_id
 from src.services.workspace_service import get_workspace_service
-from src.common import create_error_response, create_success_response
+from src.common import create_error_response, create_internal_error_response, create_success_response
 from shared.adapters.storage import get_storage_adapter
 
 logger = get_logger(__name__)
@@ -122,10 +122,9 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
 
     except Exception as e:
         logger.error("Failed to generate source download url", error=e, correlation_id=correlation_id)
-        return create_error_response(
+        return create_internal_error_response(
             message="Failed to generate source download URL",
+            error=e,
             error_code="INTERNAL_ERROR",
-            details={"error": str(e)},
-            status_code=500,
             correlation_id=correlation_id,
         )

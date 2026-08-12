@@ -6,7 +6,7 @@ from src.core.auth import get_user_id, require_auth
 from src.core.exceptions import ValidationException
 from src.core.logging import get_logger
 from src.services.kb_service import get_kb_service
-from src.common import ErrorMessages, create_error_response, create_success_response, parse_request
+from src.common import ErrorMessages, create_error_response, create_internal_error_response, create_success_response, parse_request
 
 from .payloads import CheckIndexingStatusRequest
 
@@ -81,10 +81,9 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
 
     except Exception as e:
         logger.error("Check status failed", error=e, user_id=user_id)
-        return create_error_response(
+        return create_internal_error_response(
             message=ErrorMessages.QUERY_EXECUTION_ERROR,
+            error=e,
             error_code="CHECK_STATUS_FAILED",
-            details={"error": str(e)},
-            status_code=500,
             correlation_id=context.correlation_id,
         )

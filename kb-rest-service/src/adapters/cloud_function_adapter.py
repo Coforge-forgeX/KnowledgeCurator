@@ -31,8 +31,6 @@ ROUTE_TO_HANDLER = {
     ("POST", "/api/v2/kb/graph/mutate"): "mutate_knowledge_graph",
     ("POST", "/api/v2/query-kb"): "query_rag",  # Using optimized query_rag handler
     ("GET", "/api/v2/files/{file_id}/download"): "query_source_download_url",
-    ("GET", "/api/sharepoint/list"): "sharepoint_list",
-    ("GET", "/api/v2/sharepoint/list"): "sharepoint_list",
 
     # Chat / Conversation session management
     ("POST", "/api/v2/chat/start"): "chat_start_conversation",

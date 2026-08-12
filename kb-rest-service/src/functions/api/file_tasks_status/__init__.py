@@ -9,7 +9,7 @@ from src.core.auth import get_user_id, get_workspace_ids, require_auth
 from src.core.database import FileTask, UserMap, get_async_session
 from src.core.exceptions import AuthorizationException, ValidationException
 from src.core.logging import get_logger
-from src.common import ErrorMessages, create_error_response, create_success_response, parse_request
+from src.common import ErrorMessages, create_error_response, create_internal_error_response, create_success_response, parse_request
 
 from .payloads import FileTasksStatusRequest
 
@@ -155,10 +155,9 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         )
     except Exception as e:
         logger.error("Failed to fetch file task statuses", error=e, user_id=user_id)
-        return create_error_response(
+        return create_internal_error_response(
             message=ErrorMessages.QUERY_EXECUTION_ERROR,
+            error=e,
             error_code="FILE_TASK_STATUS_FAILED",
-            details={"error": str(e)},
-            status_code=500,
             correlation_id=context.correlation_id,
         )

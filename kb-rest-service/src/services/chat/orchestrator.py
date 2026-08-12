@@ -30,6 +30,11 @@ from common_adapters.cancel_convesation import (
 from src.core.config import settings
 from src.core.exceptions import ValidationException
 from src.core.logging import get_logger
+from src.core.redis import (
+    append_cached_message,
+    cache_conversation_history,
+    get_cached_conversation_history,
+)
 from src.models.chat_models import ChatRequest, ChatResponse
 from src.services.mongodb_service import MongoDBService, get_mongodb_service
 
@@ -81,15 +86,43 @@ class ChatOrchestrator:
         # Read history BEFORE persisting the current turn: the message being
         # handled is passed to the LLM as the query, so including it in the
         # history too would duplicate it in the prompt.
-        history = self._as_llm_history(
-            await self._mongo.get_conversation_history(
+        #
+        # Try Redis cache first, fall back to MongoDB on cache miss
+        cached_messages = get_cached_conversation_history(
+            session_id=payload.session_id,
+            workspace_id=access.workspace_id,
+            user_id=access.user_id,
+        )
+
+        if cached_messages is not None:
+            logger.debug(
+                "Using cached conversation history",
+                session_id=payload.session_id,
+                message_count=len(cached_messages),
+            )
+            messages = cached_messages
+        else:
+            logger.debug(
+                "Cache miss - fetching conversation history from MongoDB",
+                session_id=payload.session_id,
+            )
+            messages = await self._mongo.get_conversation_history(
                 session_id=payload.session_id,
                 workspace_id=access.workspace_id,
                 user_id=access.user_id,
                 limit=settings.CHAT_HISTORY_TURNS_FOR_CONTEXT,
             )
-        )
+            # Cache the result for subsequent messages
+            cache_conversation_history(
+                session_id=payload.session_id,
+                workspace_id=access.workspace_id,
+                user_id=access.user_id,
+                history=messages,
+                            )
 
+        history = self._as_llm_history(messages)
+
+        # Persist user message to MongoDB
         await self._mongo.append_message(
             session_id=payload.session_id,
             workspace_id=access.workspace_id,
@@ -97,6 +130,15 @@ class ChatOrchestrator:
             role="user",
             content=payload.user_message,
         )
+
+        # Update cache with the new user message
+        append_cached_message(
+            session_id=payload.session_id,
+            workspace_id=access.workspace_id,
+            user_id=access.user_id,
+            message={"role": "user", "content": payload.user_message},
+                    )
+
         await self._track_title(payload, access.workspace_id, access.user_id)
 
         handler = self._update_handler if payload.mode.upper() in _UPDATE_MODES else self._search_handler
@@ -112,6 +154,13 @@ class ChatOrchestrator:
                 role="assistant",
                 content=response_text,
             )
+            # Update cache with cancelled response
+            append_cached_message(
+                session_id=payload.session_id,
+                workspace_id=access.workspace_id,
+                user_id=access.user_id,
+                message={"role": "assistant", "content": response_text},
+                            )
             return ChatResponse(response=response_text, session_id=payload.session_id)
         except ValidationException:
             raise
@@ -125,8 +174,16 @@ class ChatOrchestrator:
                 role="assistant",
                 content=response_text,
             )
+            # Update cache with error response
+            append_cached_message(
+                session_id=payload.session_id,
+                workspace_id=access.workspace_id,
+                user_id=access.user_id,
+                message={"role": "assistant", "content": response_text},
+                            )
             return ChatResponse(response=response_text, session_id=payload.session_id)
 
+        # Persist assistant message to MongoDB
         await self._mongo.append_message(
             session_id=payload.session_id,
             workspace_id=access.workspace_id,
@@ -136,6 +193,19 @@ class ChatOrchestrator:
             sources=result.sources,
             task_ids=result.task_ids,
         )
+
+        # Update cache with the assistant response
+        append_cached_message(
+            session_id=payload.session_id,
+            workspace_id=access.workspace_id,
+            user_id=access.user_id,
+            message={
+                "role": "assistant",
+                "content": result.response,
+                "sources": result.sources,
+                "task_ids": result.task_ids,
+            },
+                    )
 
         return ChatResponse(
             response=result.response,

@@ -190,8 +190,15 @@ class CancelChatRequest(BaseModel):
     """
 
     workspace_id: int = Field(..., gt=0)
-    session_id: str
+    session_id: str = Field(..., min_length=1)
     reason: str = Field(default="user_requested")
+
+    @validator("session_id")
+    def strip_session_id(cls, v):
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("session_id cannot be empty")
+        return v
 
 
 class CancelChatResponse(BaseModel):

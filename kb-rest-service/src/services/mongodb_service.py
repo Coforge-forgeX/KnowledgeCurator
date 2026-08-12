@@ -16,6 +16,7 @@ from pymongo.errors import PyMongoError
 from src.core.config import settings
 from src.core.exceptions import DatabaseException
 from src.core.logging import get_logger
+from src.core.redis import invalidate_conversation_cache
 
 logger = get_logger(__name__)
 
@@ -424,6 +425,8 @@ class MongoDBService:
             # messages still counts as deleting the conversation.
             success = result.deleted_count > 0 or deleted_messages.deleted_count > 0
             if success:
+                # Invalidate cache for this session
+                invalidate_conversation_cache(session_id, workspace_id, user_id)
                 logger.info("Deleted session", session_id=session_id)
             else:
                 logger.warning("Session not found for deletion", session_id=session_id)
