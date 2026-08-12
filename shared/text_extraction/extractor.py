@@ -1,7 +1,18 @@
-"""Dedicated service for robust text extraction by file type."""
+"""
+Dedicated service for robust text extraction by file type.
+
+Shared between indexer-service (indexing pipeline) and kb-rest-service
+(chat file-context extraction) so both use one implementation instead of
+maintaining duplicate extraction logic. This module is intentionally
+decoupled from any single service's settings/logging framework: Azure
+Document Intelligence credentials are injected by the caller as a
+`DocIntelligenceConfig`, so each service keeps ownership of its own config
+loading (see `config.py` for the environment fallback).
+"""
 
 import asyncio
 import io
+import logging
 import os
 import zipfile
 from typing import Optional
@@ -13,13 +24,11 @@ from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 from azure.core.credentials import AzureKeyCredential
 from docx import Document
 
-from src.core.config import settings
-from src.core.logging import get_logger
-
+from .config import DocIntelligenceConfig
 from .decoders import normalize_file_bytes
 from .models import TextExtractionError, TextExtractionResult
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class BaseExtractor:
@@ -58,6 +67,9 @@ class PlainTextExtractor(BaseExtractor):
 class PdfExtractor(BaseExtractor):
     supported_extensions = (".pdf",)
 
+    def __init__(self, doc_intelligence: Optional[DocIntelligenceConfig] = None) -> None:
+        self._doc_intelligence = doc_intelligence or DocIntelligenceConfig()
+
     async def _extract_pdfplumber(self, file_bytes: bytes) -> str:
         def _read() -> str:
             chunks = []
@@ -79,19 +91,12 @@ class PdfExtractor(BaseExtractor):
         return await asyncio.to_thread(_read)
 
     async def _extract_azure_doc_intelligence(self, file_bytes: bytes) -> str:
-        endpoint = (
-            getattr(settings.azure, "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", None)
-            or getattr(settings.azure, "AZURE_DOC_INTELLIGENCE_ENDPOINT", None)
-        )
-        api_key = (
-            getattr(settings.azure, "AZURE_DOCUMENT_INTELLIGENCE_KEY", None)
-            or getattr(settings.azure, "AZURE_DOC_INTELLIGENCE_KEY", None)
-        )
+        config = self._doc_intelligence
 
-        if not endpoint or not api_key:
+        if not config.is_configured:
             raise TextExtractionError("Document Intelligence not configured")
 
-        client = DocumentIntelligenceClient(endpoint, AzureKeyCredential(api_key))
+        client = DocumentIntelligenceClient(config.endpoint, AzureKeyCredential(config.api_key))
         poller = await asyncio.to_thread(
             client.begin_analyze_document,
             "prebuilt-read",
@@ -179,6 +184,9 @@ class DocxExtractor(BaseExtractor):
 class DocExtractor(BaseExtractor):
     supported_extensions = (".doc",)
 
+    def __init__(self, doc_intelligence: Optional[DocIntelligenceConfig] = None) -> None:
+        self._doc_intelligence = doc_intelligence or DocIntelligenceConfig()
+
     async def extract(self, file_bytes: bytes, file_path: str) -> TextExtractionResult:
         # Legacy Word binary files should start with OLE signature bytes.
         # If they do not, fail fast instead of sending invalid bytes to OCR.
@@ -199,17 +207,10 @@ class DocExtractor(BaseExtractor):
                 file_path=file_path,
             )
 
-        endpoint = (
-            getattr(settings.azure, "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", None)
-            or getattr(settings.azure, "AZURE_DOC_INTELLIGENCE_ENDPOINT", None)
-        )
-        api_key = (
-            getattr(settings.azure, "AZURE_DOCUMENT_INTELLIGENCE_KEY", None)
-            or getattr(settings.azure, "AZURE_DOC_INTELLIGENCE_KEY", None)
-        )
+        config = self._doc_intelligence
 
-        if endpoint and api_key:
-            client = DocumentIntelligenceClient(endpoint, AzureKeyCredential(api_key))
+        if config.is_configured:
+            client = DocumentIntelligenceClient(config.endpoint, AzureKeyCredential(config.api_key))
             try:
                 poller = await asyncio.to_thread(
                     client.begin_analyze_document,
@@ -223,9 +224,9 @@ class DocExtractor(BaseExtractor):
                     return TextExtractionResult(text=content, extractor="azure_document_intelligence")
             except Exception as exc:
                 logger.warning(
-                    "Legacy .doc OCR extraction failed",
-                    file_path=file_path,
-                    error_msg=str(exc),
+                    "Legacy .doc OCR extraction failed for %s: %s",
+                    file_path,
+                    exc,
                 )
 
         raise TextExtractionError(
@@ -235,14 +236,25 @@ class DocExtractor(BaseExtractor):
 
 
 class TextExtractionService:
-    """Facade that routes extraction through dedicated extractor classes."""
+    """Facade that routes extraction through dedicated extractor classes.
 
-    def __init__(self) -> None:
+    Args:
+        doc_intelligence: Azure Document Intelligence credentials used by the
+            PDF and legacy .doc OCR fallbacks. Services should pass their own
+            settings; when omitted the credentials are read from the process
+            environment, which only works where they are exported as real
+            environment variables (pydantic-settings' `env_file` does not
+            populate `os.environ`).
+    """
+
+    def __init__(self, doc_intelligence: Optional[DocIntelligenceConfig] = None) -> None:
+        config = doc_intelligence if doc_intelligence is not None else DocIntelligenceConfig.from_env()
+        self._doc_intelligence = config
         self._extractors = (
             PlainTextExtractor(),
-            PdfExtractor(),
+            PdfExtractor(config),
             DocxExtractor(),
-            DocExtractor(),
+            DocExtractor(config),
         )
 
     async def extract_text(self, file_bytes: bytes, file_path: str) -> TextExtractionResult:
@@ -254,13 +266,3 @@ class TextExtractionService:
                 return await extractor.extract(normalized_bytes, file_path)
 
         raise TextExtractionError(f"Unsupported file type: {extension}", file_path=file_path)
-
-
-_service_instance: Optional[TextExtractionService] = None
-
-
-def get_text_extraction_service() -> TextExtractionService:
-    global _service_instance
-    if _service_instance is None:
-        _service_instance = TextExtractionService()
-    return _service_instance

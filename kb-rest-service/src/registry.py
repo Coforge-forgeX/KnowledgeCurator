@@ -67,6 +67,10 @@ HANDLER_MODULE_PATHS: Dict[str, str] = {
     "chat_load_conversation": "src.functions.api.load_conversation",
     "chat_rename_conversation": "src.functions.api.rename_conversation",
     "chat_delete_conversation": "src.functions.api.delete_conversation_history",
+
+    # Chat / Messaging
+    "message_gpt": "src.functions.api.message_gpt",
+    "cancel_chat_message": "src.functions.api.cancel_chat_message",
 }
 
 # Cache for loaded handlers (lazy loading + memoization)

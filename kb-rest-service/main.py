@@ -22,12 +22,14 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import Depends, FastAPI, APIRouter, Request, Response, status, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # Put the app root on the import path so `src.*` resolves when the process is
@@ -50,6 +52,7 @@ from src.core.exceptions import (
     ValidationException,
 )
 from src.core.logging import get_logger, setup_logging
+from src.common.response_utils import build_error_body, build_success_body
 from src.registry import get_handler
 from src.functions.api.index_workspace_files.payloads import IndexWorkspaceFilesRequest
 from src.functions.api.upload_and_index.payloads import UploadAndIndexRequest, UploadAndIndexResponse
@@ -58,6 +61,15 @@ from src.functions.api.workspace_documents_grouped.payloads import WorkspaceDocu
 from src.functions.api.delete_files_by_id.payloads import DeleteFilesByIdRequest
 from src.functions.api.fetch_graph.payloads import FetchGraphRequest, FetchGraphResponse
 from src.functions.api.mutate_knowledge_graph.payloads import MutateKnowledgeGraphRequest
+from src.models.chat_models import (
+    CancelChatRequest,
+    CancelChatResponse,
+    ChatRequest,
+    ChatResponse,
+    SessionDeleteRequest,
+    SessionRenameRequest,
+    StartConversationRequest,
+)
 
 # Setup logging BEFORE creating app (important for cold start tracking)
 setup_logging()
@@ -214,31 +226,48 @@ class RequestSizeMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+# Every handler below builds its body with `build_error_body` so the framework
+# layer emits byte-for-byte the same error envelope as the handlers do, including
+# the "hide 5xx internals" policy.
+def _error_json_response(
+    request: Request,
+    message: str,
+    error_code: str,
+    status_code: int,
+    details: Optional[Dict[str, Any]] = None,
+) -> JSONResponse:
+    correlation_id = getattr(request.state, "correlation_id", str(uuid.uuid4()))
+    return JSONResponse(
+        content=build_error_body(
+            message=message,
+            error_code=error_code,
+            details=details,
+            status_code=status_code,
+            correlation_id=correlation_id,
+        ),
+        status_code=status_code,
+        headers={"X-Correlation-ID": correlation_id},
+    )
+
+
 # Global exception handler for APIException
 @app.exception_handler(APIException)
 async def api_exception_handler(request: Request, exc: APIException):
     """Handle APIException globally (validation, auth, database errors)"""
-    correlation_id = getattr(request.state, "correlation_id", str(uuid.uuid4()))
-
     logger.warning(
         "API exception",
-        correlation_id=correlation_id,
+        correlation_id=getattr(request.state, "correlation_id", None),
         error_code=exc.error_code,
         error_message=exc.message,
         status_code=exc.status_code,
     )
 
-    return JSONResponse(
-        content={
-            "success": False,
-            "error": exc.error_code,
-            "message": exc.message,
-            "details": exc.details,
-            "correlation_id": correlation_id,
-            "timestamp": datetime.utcnow().isoformat(),
-        },
+    return _error_json_response(
+        request,
+        message=exc.message,
+        error_code=exc.error_code,
         status_code=exc.status_code,
-        headers={"X-Correlation-ID": correlation_id},
+        details=exc.details,
     )
 
 
@@ -246,26 +275,19 @@ async def api_exception_handler(request: Request, exc: APIException):
 @app.exception_handler(ValidationException)
 async def validation_exception_handler(request: Request, exc: ValidationException):
     """Handle ValidationException globally"""
-    correlation_id = getattr(request.state, "correlation_id", str(uuid.uuid4()))
-
     logger.warning(
         "Validation exception",
-        correlation_id=correlation_id,
+        correlation_id=getattr(request.state, "correlation_id", None),
         error_message=exc.message,
         details=exc.details,
     )
 
-    return JSONResponse(
-        content={
-            "success": False,
-            "error": "VALIDATION_ERROR",
-            "message": exc.message,
-            "details": exc.details,
-            "correlation_id": correlation_id,
-            "timestamp": datetime.utcnow().isoformat(),
-        },
+    return _error_json_response(
+        request,
+        message=exc.message,
+        error_code="VALIDATION_ERROR",
         status_code=status.HTTP_400_BAD_REQUEST,
-        headers={"X-Correlation-ID": correlation_id},
+        details=exc.details,
     )
 
 
@@ -273,24 +295,69 @@ async def validation_exception_handler(request: Request, exc: ValidationExceptio
 @app.exception_handler(AuthorizationException)
 async def authorization_exception_handler(request: Request, exc: AuthorizationException):
     """Handle AuthorizationException globally"""
-    correlation_id = getattr(request.state, "correlation_id", str(uuid.uuid4()))
-
     logger.warning(
         "Authorization exception",
-        correlation_id=correlation_id,
+        correlation_id=getattr(request.state, "correlation_id", None),
         error=exc.message,
     )
 
-    return JSONResponse(
-        content={
-            "success": False,
-            "error": "AUTHORIZATION_ERROR",
-            "message": exc.message,
-            "correlation_id": correlation_id,
-            "timestamp": datetime.utcnow().isoformat(),
-        },
+    return _error_json_response(
+        request,
+        message=exc.message,
+        error_code="AUTHORIZATION_ERROR",
         status_code=status.HTTP_403_FORBIDDEN,
-        headers={"X-Correlation-ID": correlation_id},
+    )
+
+
+# FastAPI's own request validation (path/query/body params declared on the route)
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Translate FastAPI's `{"detail": [...]}` 422 into the service envelope.
+
+    Without this, a bad query param on a FastAPI-declared route answers in a
+    shape no other endpoint uses — and with a 422 where `parse_request` returns
+    400 for the very same mistake.
+    """
+    errors = [
+        {
+            "field": ".".join(str(p) for p in err.get("loc", ()) if p != "query"),
+            "message": err.get("msg", ""),
+            "type": err.get("type", ""),
+        }
+        for err in exc.errors()
+    ]
+    first = errors[0] if errors else {"field": "", "message": "Invalid request"}
+    field = first["field"] or "payload"
+
+    logger.warning(
+        "Request validation error",
+        correlation_id=getattr(request.state, "correlation_id", None),
+        errors=errors,
+    )
+
+    return _error_json_response(
+        request,
+        message=f"Invalid request: {field} - {first['message']}",
+        error_code="VALIDATION_ERROR",
+        status_code=status.HTTP_400_BAD_REQUEST,
+        details={"validation_errors": errors},
+    )
+
+
+# Starlette/FastAPI HTTPException (unknown route 404, 405, raised HTTPExceptions)
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Translate `{"detail": ...}` HTTP errors into the service envelope."""
+    detail = exc.detail if isinstance(exc.detail, str) else "Request failed"
+    error_codes = {404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED", 401: "AUTHENTICATION_ERROR"}
+
+    return _error_json_response(
+        request,
+        message=detail,
+        error_code=error_codes.get(exc.status_code, "HTTP_ERROR"),
+        status_code=exc.status_code,
+        details=None if isinstance(exc.detail, str) else {"detail": exc.detail},
     )
 
 
@@ -298,26 +365,19 @@ async def authorization_exception_handler(request: Request, exc: AuthorizationEx
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Handle all unhandled exceptions"""
-    correlation_id = getattr(request.state, "correlation_id", str(uuid.uuid4()))
-
     logger.error(
         "Unhandled exception",
-        correlation_id=correlation_id,
+        correlation_id=getattr(request.state, "correlation_id", None),
         error=str(exc),
         error_type=type(exc).__name__,
         exc_info=True,
     )
 
-    return JSONResponse(
-        content={
-            "success": False,
-            "error": "INTERNAL_SERVER_ERROR",
-            "message": "An internal server error occurred. Please contact support with the correlation ID.",
-            "correlation_id": correlation_id,
-            "timestamp": datetime.utcnow().isoformat(),
-        },
+    return _error_json_response(
+        request,
+        message="An internal server error occurred. Please contact support with the correlation ID.",
+        error_code="INTERNAL_SERVER_ERROR",
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        headers={"X-Correlation-ID": correlation_id},
     )
 
 
@@ -344,22 +404,31 @@ async def health_check(response: Response) -> Dict[str, Any]:
     """
     Health check endpoint for load balancers and monitoring.
 
-    Probes Postgres, Neo4j, and Redis and reports overall status.
+    Probes Postgres, Neo4j, Redis and MongoDB and reports overall status.
+
+    Uses the same envelope as every other endpoint, with the report under `data`.
+    An unhealthy service still answers in the success envelope and signals the
+    problem through the 503 status and `data.status`, rather than switching to
+    the error shape — one endpoint should not return two different body shapes
+    for callers to branch on.
     """
     from src.core.health import run_health_checks
 
     checks, overall_status = await run_health_checks()
     response.status_code = 200 if overall_status == "healthy" else 503
 
-    return {
-        "status": overall_status,
-        "service": "kb-rest-api",
-        "version": "2.0.0",
-        "cloud_provider": settings.CLOUD_PROVIDER,
-        "storage_provider": settings.STORAGE_PROVIDER or settings.CLOUD_PROVIDER,
-        "queue_provider": settings.QUEUE_PROVIDER or settings.CLOUD_PROVIDER,
-        "checks": checks,
-    }
+    return build_success_body(
+        message=overall_status,
+        data={
+            "status": overall_status,
+            "service": "kb-rest-api",
+            "version": "2.0.0",
+            "cloud_provider": settings.CLOUD_PROVIDER,
+            "storage_provider": settings.STORAGE_PROVIDER or settings.CLOUD_PROVIDER,
+            "queue_provider": settings.QUEUE_PROVIDER or settings.CLOUD_PROVIDER,
+            "checks": checks,
+        },
+    )
 
 
 # ============================================================================
@@ -709,6 +778,125 @@ async def fetch_graph_data(request: Request, payload: FetchGraphRequest):
     """
     request.state.parsed_payload = payload
     return await invoke_handler(request, "fetch_graph")
+
+
+@api_router.post(
+    "/chat/start",
+    tags=["Chat"],
+    summary="Start Conversation",
+    description="Create a new conversation session in a workspace for the authenticated user",
+    status_code=201,
+)
+async def chat_start_conversation(request: Request, payload: StartConversationRequest):
+    """Start a conversation session. `user_id` is taken from the Bearer token."""
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "chat_start_conversation")
+
+
+@api_router.get(
+    "/chat/history",
+    tags=["Chat"],
+    summary="List Conversation Sessions",
+    description=(
+        "List the authenticated user's conversation sessions in a workspace. "
+        "Paginated: returns page/page_size/total_count/total_pages/has_next/has_previous."
+    ),
+)
+async def chat_get_conversation_history(
+    request: Request,
+    workspace_id: int,
+    page: int = 1,
+    page_size: int = 20,
+    limit: Optional[int] = None,
+):
+    """List conversation sessions. Params are read from the query string by the handler."""
+    return await invoke_handler(request, "chat_get_conversation_history")
+
+
+@api_router.get(
+    "/chat/load",
+    tags=["Chat"],
+    summary="Load Conversation",
+    description=(
+        "Load a single conversation session with one page of its messages. "
+        "order=desc (default) puts the newest messages on page 1 and pages "
+        "backwards in time; order=asc starts from the oldest. Messages within a "
+        "page are always oldest-first."
+    ),
+)
+async def chat_load_conversation(
+    request: Request,
+    session_id: str,
+    workspace_id: int,
+    page: int = 1,
+    page_size: int = 50,
+    order: str = "desc",
+):
+    """Load one conversation and a page of its messages."""
+    return await invoke_handler(request, "chat_load_conversation")
+
+
+@api_router.post(
+    "/chat/session/rename",
+    tags=["Chat"],
+    summary="Rename Conversation",
+    description="Rename a conversation session",
+)
+async def chat_rename_conversation(request: Request, payload: SessionRenameRequest):
+    """Rename a conversation session."""
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "chat_rename_conversation")
+
+
+@api_router.delete(
+    "/chat/session/delete",
+    tags=["Chat"],
+    summary="Delete Conversation",
+    description=(
+        "Delete a conversation session and its messages. Returns 404 when the "
+        "conversation does not exist for the authenticated user."
+    ),
+)
+async def chat_delete_conversation(request: Request, payload: SessionDeleteRequest):
+    """Delete a conversation session."""
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "chat_delete_conversation")
+
+
+@api_router.post(
+    "/chat/message",
+    tags=["Chat"],
+    summary="Send Chat Message",
+    description="Process a chatbot message (SEARCH or UPDATE mode) against the workspace knowledge base",
+    response_model=ChatResponse,
+)
+async def message_gpt(request: Request, payload: ChatRequest):
+    """
+    Send a message to the chatbot.
+
+    `user_id`, workspace membership, curate permission and the workspace's
+    domain/kb_name are resolved server-side from the Bearer token and DB —
+    they are never taken from the body.
+
+    Modes:
+    - **SEARCH**: answer from the knowledge base
+    - **UPDATE**: ingest the attached files into the knowledge base
+    """
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "message_gpt")
+
+
+@api_router.post(
+    "/chat/message/cancel",
+    tags=["Chat"],
+    summary="Cancel Chat Message",
+    description="Cancel an in-flight chat message for a session (stop button)",
+    response_model=CancelChatResponse,
+)
+async def cancel_chat_message(request: Request, payload: CancelChatRequest):
+    """Cancel the running message_gpt task for a session."""
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "cancel_chat_message")
 
 
 # ============================================================================

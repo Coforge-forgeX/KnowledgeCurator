@@ -51,6 +51,48 @@ import os
 import sys
 
 
+class _SafeEncodingStream:
+    """
+    Proxy around a text stream that can't be reconfigured to UTF-8.
+
+    Some hosts (e.g. the Azure Functions Python worker) replace sys.stdout /
+    sys.stderr with their own wrapper objects that have no ``reconfigure()``
+    and still encode with the legacy console codepage (cp1252). Writing a
+    spinner glyph to such a stream raises UnicodeEncodeError - and when the
+    write happens on a library's background render thread (ascii_colors /
+    rich Live), that kills the thread with a traceback in the logs.
+
+    This proxy retries the write with unsupported characters replaced instead
+    of letting the exception escape.
+    """
+
+    __slots__ = ("_stream",)
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+
+    def write(self, text):
+        try:
+            return self._stream.write(text)
+        except UnicodeEncodeError:
+            encoding = getattr(self._stream, "encoding", None) or "ascii"
+            safe = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+            return self._stream.write(safe)
+
+    def writelines(self, lines) -> None:
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name):
+        # Delegate everything else (flush, isatty, fileno, encoding, buffer, ...)
+        return getattr(self._stream, name)
+
+
+def _needs_wrapping(stream) -> bool:
+    encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+    return encoding not in ("utf8", "utf8sig")
+
+
 def configure_windows_console_encoding() -> None:
     """
     Configure Windows console for UTF-8 encoding to prevent Unicode crashes.
@@ -67,7 +109,7 @@ def configure_windows_console_encoding() -> None:
     # Reconfigure stdout and stderr for UTF-8 encoding
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
-        if stream is None:
+        if stream is None or isinstance(stream, _SafeEncodingStream):
             continue
 
         reconfigure = getattr(stream, "reconfigure", None)
@@ -77,4 +119,13 @@ def configure_windows_console_encoding() -> None:
             except Exception:
                 # Keep startup resilient if reconfiguration fails
                 # (e.g., redirected streams, older Python versions)
+                pass
+
+        # Streams that don't support reconfigure() (or where it silently had no
+        # effect) still encode with the legacy codepage - wrap them so a stray
+        # Unicode glyph degrades to '?' instead of raising.
+        if _needs_wrapping(stream):
+            try:
+                setattr(sys, stream_name, _SafeEncodingStream(stream))
+            except Exception:
                 pass

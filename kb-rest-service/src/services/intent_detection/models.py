@@ -10,11 +10,7 @@ class Intent(str, Enum):
 
     SEARCH_KB = "search_kb"
     UPLOAD_FILE = "upload_file"
-    ADD_ENTITY = "add_entity"
-    DELETE_ENTITY = "delete_entity"
     INDEX_URL = "index_url"
-    UPDATE_ENTITY = "update_entity"
-    DELETE_FILE = "delete_file"
     GREETING = "greeting"
     HELP = "help"
     UNKNOWN = "unknown"

@@ -1,11 +1,12 @@
 """Text extraction service package."""
 
-from .extractor import TextExtractionService, get_text_extraction_service
+from .config import DocIntelligenceConfig
+from .extractor import TextExtractionService
 from .models import TextExtractionError, TextExtractionResult
 
 __all__ = [
+    "DocIntelligenceConfig",
     "TextExtractionService",
     "TextExtractionError",
     "TextExtractionResult",
-    "get_text_extraction_service",
 ]

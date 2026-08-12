@@ -10,6 +10,7 @@ import hashlib
 import inspect
 import os
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Optional, Tuple
 
 from lightrag import LightRAG
@@ -19,7 +20,11 @@ from shared.lightrag import (
     build_azure_openai_embedding_func,
     RateLimitError,
 )
-from src.services.text_extraction import TextExtractionError, get_text_extraction_service
+from shared.text_extraction import (
+    DocIntelligenceConfig,
+    TextExtractionError,
+    TextExtractionService,
+)
 
 from src.core.config import settings
 from src.core.logging import get_logger
@@ -27,6 +32,22 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 logger = get_logger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _get_text_extraction_service() -> TextExtractionService:
+    """Build the extraction service from this service's own settings.
+
+    Credentials come from `settings` rather than the process environment so the
+    OCR fallbacks work identically whether values arrive via .env (local) or
+    Azure app settings (deployed).
+    """
+    return TextExtractionService(
+        doc_intelligence=DocIntelligenceConfig(
+            endpoint=settings.azure.AZURE_DOC_INTELLIGENCE_ENDPOINT,
+            api_key=settings.azure.AZURE_DOC_INTELLIGENCE_KEY,
+        )
+    )
 
 
 async def initialize_lightrag(domain: str, kb_name: str) -> LightRAG:
@@ -147,7 +168,7 @@ async def extract_text_from_file(
         (success, text_content, error_message)
     """
     try:
-        extraction_service = get_text_extraction_service()
+        extraction_service = _get_text_extraction_service()
         extraction_result = await extraction_service.extract_text(
             file_bytes=file_bytes,
             file_path=file_path,

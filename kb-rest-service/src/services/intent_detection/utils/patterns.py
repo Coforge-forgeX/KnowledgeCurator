@@ -48,49 +48,6 @@ INTENT_PATTERNS: List[IntentPattern] = [
         priority=80,
     ),
 
-    # Delete file patterns
-    IntentPattern(
-        intent=Intent.DELETE_FILE,
-        keywords=["delete file", "remove file", "erase file", "discard file"],
-        phrases=[
-            "delete the file",
-            "remove the file",
-            "delete a file",
-            "remove a file",
-        ],
-        priority=85,
-    ),
-
-    # Entity management - Delete (higher priority than add/update)
-    IntentPattern(
-        intent=Intent.DELETE_ENTITY,
-        keywords=["delete entity", "remove entity", "erase entity", "discard entity"],
-        phrases=[
-            "delete the entity",
-            "remove the entity",
-        ],
-        priority=75,
-    ),
-
-    # Entity management - Add
-    IntentPattern(
-        intent=Intent.ADD_ENTITY,
-        keywords=["add entity", "create entity", "new entity", "define entity"],
-        phrases=["add new entity"],
-        priority=70,
-    ),
-
-    # Entity management - Update
-    IntentPattern(
-        intent=Intent.UPDATE_ENTITY,
-        keywords=["update entity", "modify entity", "change entity", "edit entity"],
-        phrases=[
-            "update the entity",
-            "modify the entity",
-        ],
-        priority=70,
-    ),
-
     # URL indexing patterns
     IntentPattern(
         intent=Intent.INDEX_URL,

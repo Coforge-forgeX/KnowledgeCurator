@@ -27,8 +27,8 @@ class DatabaseSettings(BaseSettings):
     # MongoDB settings
     MONGODB_URI: str = Field(default="", env="MONGODB_URI")
     MONGODB_DATABASE_URI: str = Field(default="", env="MONGODB_DATABASE_URI")  # Alias
-    MONGODB_DATABASE: str = Field(default="kb_sessions", env="MONGODB_DATABASE")
-    MONGODB_DATABASE_NAME: str = Field(default="kb_conversations", env="MONGODB_DATABASE_NAME")  # Alias
+    MONGODB_DATABASE: str = Field(default="chatbot_db", env="MONGODB_DATABASE")
+    MONGODB_DATABASE_NAME: str = Field(default="chatbot_db", env="MONGODB_DATABASE_NAME")  # Alias
 
     # Redis settings
     REDIS_HOST: Optional[str] = Field(default=None, env="REDIS_HOST")
@@ -231,11 +231,22 @@ class AzureSettings(BaseSettings):
         default=None, env="SERVICE_BUS_SUBSCRIPTION_NAME"
     )
 
+    # Azure Document Intelligence (OCR fallback for chat file-context extraction)
+    AZURE_DOC_INTELLIGENCE_ENDPOINT: Optional[str] = Field(
+        default=None,
+        validation_alias="AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT",
+    )
+    AZURE_DOC_INTELLIGENCE_KEY: Optional[str] = Field(
+        default=None,
+        validation_alias="AZURE_DOCUMENT_INTELLIGENCE_KEY",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
 
@@ -440,6 +451,11 @@ class Settings(BaseSettings):
     INTENT_CONFIDENCE_THRESHOLD: float = Field(default=0.8, env="INTENT_CONFIDENCE_THRESHOLD")
     INTENT_CACHE_ENABLED: bool = Field(default=True, env="INTENT_CACHE_ENABLED")
     INTENT_CACHE_TTL: int = Field(default=600, env="INTENT_CACHE_TTL")
+
+    CHAT_HISTORY_TURNS_FOR_CONTEXT: int = Field(default=5, env="CHAT_HISTORY_TURNS_FOR_CONTEXT")
+    # Context is summarized (via common_adapters.context_compaction) once the
+    # conversation exceeds this many estimated tokens (~chars/4).
+    CHAT_CONTEXT_TOKEN_THRESHOLD: int = Field(default=200_000, env="CHAT_CONTEXT_TOKEN_THRESHOLD")
 
     # Storage settings
     BLOB_URL_EXPIRY_MINUTES: int = Field(default=60, env="BLOB_URL_EXPIRY_MINUTES")

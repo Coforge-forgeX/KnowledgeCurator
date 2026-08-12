@@ -55,12 +55,29 @@ async def _check_redis() -> Dict[str, Any]:
         return {"status": "unhealthy", "error": str(e)}
 
 
+async def _check_mongodb() -> Dict[str, Any]:
+    uri = settings.database.MONGODB_DATABASE_URI or settings.database.MONGODB_URI
+    if not uri:
+        return {"status": "not_configured"}
+    try:
+        from src.services.mongodb_service import get_mongodb_service
+
+        service = get_mongodb_service()
+        await service.initialize()
+        await service.db.client.admin.command("ping")
+        return {"status": "healthy"}
+    except Exception as e:
+        logger.error("MongoDB health check failed", error=e)
+        return {"status": "unhealthy", "error": str(e)}
+
+
 async def run_health_checks() -> Tuple[Dict[str, Any], str]:
     """Run all dependency checks and return (checks, overall_status)."""
     checks = {
         "postgres": await _check_postgres(),
         "neo4j": await _check_neo4j(),
         "redis": await _check_redis(),
+        "mongodb": await _check_mongodb(),
     }
 
     required_unhealthy = any(

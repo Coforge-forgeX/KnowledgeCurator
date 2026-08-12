@@ -1,5 +1,4 @@
 """Shared request-payload validation primitives"""
-import json
 from typing import List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, validator
@@ -40,7 +39,15 @@ def _extract_data(req: AbstractRequest) -> dict:
 
 
 def _validation_error_response(exc: ValidationError) -> AbstractResponse:
-    """Build 400 response describing pydantic validation failures."""
+    """
+    Build 400 response describing pydantic validation failures.
+
+    Goes through `create_error_response` so the per-field breakdown lands in
+    `details`, where every other error puts its specifics, instead of adding a
+    top-level `validation_errors` key only this one path would have.
+    """
+    from .response_utils import create_error_response
+
     errors = [
         {
             "field": ".".join(str(p) for p in err.get("loc", ())),
@@ -51,16 +58,12 @@ def _validation_error_response(exc: ValidationError) -> AbstractResponse:
     ]
     first = errors[0] if errors else {"field": "", "message": "Invalid payload"}
     field = first["field"] or "payload"
-    error_response = {
-        "success": False,
-        "message": f"Invalid request: {field} - {first['message']}",
-        "error": "VALIDATION_ERROR",
-        "validation_errors": errors,
-    }
-    return AbstractResponse(
-        body=json.dumps(error_response, default=str),
+
+    return create_error_response(
+        message=f"Invalid request: {field} - {first['message']}",
+        error_code="VALIDATION_ERROR",
+        details={"validation_errors": errors},
         status_code=400,
-        mimetype="application/json",
     )
 
 

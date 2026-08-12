@@ -17,6 +17,11 @@ if main_dir not in sys.path:
 
 import azure.functions as func
 
+# Configure Windows console for UTF-8 encoding (prevents Unicode crashes in the
+# Functions worker, whose stdout/stderr wrappers default to cp1252).
+from shared.windows_encoding import configure_windows_console_encoding
+configure_windows_console_encoding()
+
 from src.adapters.cloud_function_adapter import (
     abstract_response_to_http_tuple,
     dispatch_request,
@@ -110,6 +115,16 @@ async def chat_rename_conversation(req: func.HttpRequest, context: func.Context)
     return await _handle(req, context)
 
 
-@app.route(route="api/v2/chat/session/delete", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+@app.route(route="api/v2/chat/session/delete", auth_level=func.AuthLevel.ANONYMOUS, methods=["DELETE"])
 async def chat_delete_conversation(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/chat/message", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def message_gpt(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/chat/message/cancel", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def cancel_chat_message(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)

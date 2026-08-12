@@ -2,7 +2,6 @@
 import base64
 import binascii
 import inspect
-import json
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -320,27 +319,19 @@ def require_auth(
     """
 
     def _decorator(fn: Callable) -> Callable:
-        def _authenticate(args, kwargs) -> Optional[Dict[str, Any]]:
-            """Returns None on success, or error response dict on failure"""
+        def _authenticate(args, kwargs) -> Optional[Tuple[str, str, int]]:
+            """Returns None on success, or (error_code, message, status) on failure"""
             req = kwargs.get("req") if "req" in kwargs else (args[0] if args else None)
             if not isinstance(req, AbstractRequest):
-                return {
-                    "success": False,
-                    "error": "AUTHENTICATION_ERROR",
-                    "message": "Authentication failed",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "status_code": 401
-                }
+                return ("AUTHENTICATION_ERROR", "Authentication failed", 401)
 
             token = extract_bearer_token(req)
             if not token:
-                return {
-                    "success": False,
-                    "error": "AUTHENTICATION_ERROR",
-                    "message": "Missing or malformed Authorization header",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "status_code": 401
-                }
+                return (
+                    "AUTHENTICATION_ERROR",
+                    "Missing or malformed Authorization header",
+                    401,
+                )
 
             try:
                 claims = decode_and_verify_token(token)
@@ -348,31 +339,24 @@ def require_auth(
 
                 # Authorization (403) runs only after authentication (401) succeeds
                 if authorize is not None and not authorize(claims):
-                    return {
-                        "success": False,
-                        "error": "AUTHORIZATION_ERROR",
-                        "message": "Access forbidden",
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "status_code": 403
-                    }
+                    return ("AUTHORIZATION_ERROR", "Access forbidden", 403)
             except AuthenticationException as e:
-                return {
-                    "success": False,
-                    "error": "AUTHENTICATION_ERROR",
-                    "message": e.message,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "status_code": 401
-                }
+                return ("AUTHENTICATION_ERROR", e.message, 401)
             except AuthorizationException as e:
-                return {
-                    "success": False,
-                    "error": "AUTHORIZATION_ERROR",
-                    "message": e.message,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "status_code": 403
-                }
+                return ("AUTHORIZATION_ERROR", e.message, 403)
 
             return None  # Success
+
+        def _error_response(error: Tuple[str, str, int]) -> AbstractResponse:
+            """Emit the auth failure through the shared error envelope."""
+            from src.common.response_utils import create_error_response
+
+            error_code, message, status_code = error
+            return create_error_response(
+                message=message,
+                error_code=error_code,
+                status_code=status_code,
+            )
 
         if inspect.iscoroutinefunction(fn):
 
@@ -380,13 +364,7 @@ def require_auth(
             async def _async_wrapped(*args, **kwargs):
                 error = _authenticate(args, kwargs)
                 if error:
-                    # Return error response in AbstractResponse format
-                    status_code = error.pop("status_code", 401)
-                    return AbstractResponse(
-                        status_code=status_code,
-                        body=json.dumps(error),
-                        headers={"Content-Type": "application/json"}
-                    )
+                    return _error_response(error)
                 return await fn(*args, **kwargs)
 
             return _async_wrapped
@@ -395,13 +373,7 @@ def require_auth(
         def _wrapped(*args, **kwargs):
             error = _authenticate(args, kwargs)
             if error:
-                # Return error response in AbstractResponse format
-                status_code = error.pop("status_code", 401)
-                return AbstractResponse(
-                    status_code=status_code,
-                    body=json.dumps(error),
-                    headers={"Content-Type": "application/json"}
-                )
+                return _error_response(error)
             return fn(*args, **kwargs)
 
         return _wrapped

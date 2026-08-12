@@ -9,7 +9,8 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 from src.core.config import settings
-from src.core.lightrag_service import LightRAGService, get_lightrag_service
+from src.core.lightrag_pool import get_pooled_lightrag_service, invalidate_pooled_service
+from src.core.lightrag_service import LightRAGService
 from src.core.logging import get_logger
 from src.core.prompt_builder import get_prompt_builder
 from src.core.reference_parser import clean_response, parse_references
@@ -37,7 +38,11 @@ class QueryStrategy(ABC):
     """
 
     def __init__(self):
-        self.lightrag = get_lightrag_service()
+        # No LightRAG instance is held on the strategy: services are resolved
+        # per (KB, workspace, agent) from `lightrag_pool`. The previous global
+        # singleton had to be re-pointed at a different working_dir/workspace
+        # on every call, which invalidated its runtime signature and forced a
+        # full re-initialization each time.
         self.prompt_builder = get_prompt_builder("rag")
 
     @abstractmethod
@@ -57,6 +62,41 @@ class QueryStrategy(ABC):
             RAGQueryResult with answer, sources, and chunks
         """
         pass
+
+    async def _resolve_service(
+        self,
+        kb: KnowledgeBase,
+        context: QueryContext
+    ) -> LightRAGService:
+        """
+        Get the pooled, initialized LightRAG service for this KB.
+
+        Strategies hold no LightRAG instance of their own: the previous global
+        singleton had to be re-pointed at a different working_dir/workspace on
+        every call, which changed its runtime signature and forced a full
+        re-initialization each time.
+        """
+        return await get_pooled_lightrag_service(
+            working_dir=self._get_working_dir(kb),
+            workspace_label=WorkspaceResolver.build_workspace_name(kb.domain, kb.name),
+            workspace_id=context.workspace_id,
+            agent_id=context.agent_id,
+        )
+
+    def _invalidate_service(self, kb: KnowledgeBase, context: QueryContext) -> None:
+        """Retire a pooled service after a query failure so it gets rebuilt.
+
+        A failure may mean the instance is holding a database connection the
+        server has since closed (common when a serverless worker is frozen
+        between invocations). Without this, that broken instance would be
+        handed to every subsequent request for the same KB.
+        """
+        invalidate_pooled_service(
+            working_dir=self._get_working_dir(kb),
+            workspace_label=WorkspaceResolver.build_workspace_name(kb.domain, kb.name),
+            workspace_id=context.workspace_id,
+            agent_id=context.agent_id,
+        )
 
     async def _query_lightrag(
         self,
@@ -79,25 +119,14 @@ class QueryStrategy(ABC):
             Exception: If query fails
         """
         try:
-            # Set working directory for this KB
-            working_dir = self._get_working_dir(kb)
-            self.lightrag.working_dir = working_dir
-            # Keep LightRAG workspace in sync with the KB-specific label namespace.
-            self.lightrag.workspace = WorkspaceResolver.build_workspace_name(
-                kb.domain,
-                kb.name,
-            )
-            self.lightrag.set_runtime_context(
-                workspace_id=context.workspace_id,
-                agent_id=context.agent_id,
-            )
+            service = await self._resolve_service(kb, context)
 
             requested_mode = context.mode.value
             if requested_mode == QueryMode.HYBRID.value:
                 requested_mode = QueryMode.MIX.value
 
             # Execute one unified query for answer + structured retrieval data.
-            unified = await self.lightrag.query_llm(
+            unified = await service.query_llm(
                 query=prompt,
                 mode=requested_mode,
                 conversation_history=context.history,
@@ -144,6 +173,10 @@ class QueryStrategy(ABC):
             return normalized_response
 
         except Exception as e:
+            # The pooled instance may be holding a dead connection; retire it so
+            # the retry below (and any later request) gets a fresh one.
+            self._invalidate_service(kb, context)
+
             if context.mode != QueryMode.HYBRID:
                 logger.warning(
                     "Query failed, retrying in hybrid mode",
@@ -151,7 +184,8 @@ class QueryStrategy(ABC):
                     error=str(e),
                     requested_mode=context.mode.value,
                 )
-                fallback_response = await self.lightrag.query(
+                fallback_service = await self._resolve_service(kb, context)
+                fallback_response = await fallback_service.query(
                     query=prompt,
                     mode=QueryMode.HYBRID.value,
                     conversation_history=context.history,
@@ -196,18 +230,8 @@ class QueryStrategy(ABC):
             Dict containing serialized chunks and raw graph data
         """
         try:
-            working_dir = self._get_working_dir(kb)
-            self.lightrag.working_dir = working_dir
-            self.lightrag.workspace = WorkspaceResolver.build_workspace_name(
-                kb.domain,
-                kb.name,
-            )
-            self.lightrag.set_runtime_context(
-                workspace_id=context.workspace_id,
-                agent_id=context.agent_id,
-            )
-
-            # In unified mode, evidence is already included in _query_lightrag response.
+            # In unified mode, evidence is already included in _query_lightrag
+            # response, which resolves its own pooled service for this KB.
             response_payload = await self._query_lightrag(kb, context, prompt)
             chunks = self._parse_chunks(response_payload, kb)
             graph_payload = response_payload.get("_raw_context", []) if isinstance(response_payload, dict) else []
@@ -234,7 +258,8 @@ class QueryStrategy(ABC):
                     requested_mode=context.mode.value,
                 )
                 try:
-                    data_response = await self.lightrag.query_llm(
+                    fallback_service = await self._resolve_service(kb, context)
+                    data_response = await fallback_service.query_llm(
                         query=prompt,
                         mode=QueryMode.HYBRID.value,
                         conversation_history=context.history,
@@ -568,7 +593,8 @@ class MultiKBStrategy(QueryStrategy):
             # Aggregate results using LLM
             aggregated_answer = await self._aggregate_results(
                 context,
-                kb_results
+                kb_results,
+                knowledge_bases
             )
 
             # Clean aggregated answer
@@ -644,38 +670,21 @@ class MultiKBStrategy(QueryStrategy):
     ) -> Dict[str, Any]:
         """Query all KBs using isolated per-KB services.
 
-        Initialization is sequential to avoid global env races (Neo4j/Postgres env wiring),
-        while query execution remains parallel for performance.
+        Service resolution stays sequential to avoid global env races
+        (Neo4j/Postgres env wiring happens inside `initialize()`), while query
+        execution remains parallel for performance. Services come from
+        `lightrag_pool`, so this loop is a no-op after the first request for a
+        given (KB, workspace, agent) — the ~8s-per-KB initialization it used to
+        pay on every request is now paid once per worker.
         """
 
         kb_results: Dict[str, Any] = {}
         kb_services: Dict[str, LightRAGService] = {}
 
-        # Prepare each KB service sequentially to avoid env races during initialize().
         for kb in knowledge_bases:
             try:
-                working_dir = self._get_working_dir(kb)
-                workspace_label = WorkspaceResolver.build_workspace_name(
-                    kb.domain,
-                    kb.name,
-                )
-                service = LightRAGService(
-                    working_dir=working_dir,
-                    workspace=workspace_label,
-                )
-                service.set_runtime_context(
-                    workspace_id=context.workspace_id,
-                    agent_id=context.agent_id,
-                )
-                await service.initialize()
-                kb_services[kb.full_name] = service
-
-                logger.debug(
-                    "Prepared KB LightRAG service",
-                    kb=kb.full_name,
-                    working_dir=working_dir,
-                    workspace_label=workspace_label,
-                )
+                kb_services[kb.full_name] = await self._resolve_service(kb, context)
+                logger.debug("Prepared KB LightRAG service", kb=kb.full_name)
             except Exception as e:
                 logger.warning("KB initialization failed", kb=kb.full_name, error=e)
                 kb_results[kb.full_name] = {"error": str(e)}
@@ -746,6 +755,10 @@ class MultiKBStrategy(QueryStrategy):
                 ]
                 return (kb.full_name, response, None)
             except Exception as e:
+                # A failure here may mean this pooled instance is holding a dead
+                # connection; retire it so the retry and later requests rebuild.
+                self._invalidate_service(kb, context)
+
                 if context.mode != QueryMode.HYBRID:
                     logger.warning(
                         "Query failed, retrying in hybrid mode",
@@ -754,7 +767,7 @@ class MultiKBStrategy(QueryStrategy):
                         requested_mode=context.mode.value,
                     )
                     try:
-                        service = kb_services[kb.full_name]
+                        service = await self._resolve_service(kb, context)
                         fallback_unified = await service.query_llm(
                             query=prompt,
                             mode=QueryMode.HYBRID.value,
@@ -815,25 +828,27 @@ class MultiKBStrategy(QueryStrategy):
             else:
                 kb_results[kb_name] = response
 
-        # Best-effort close of isolated services.
-        for service in kb_services.values():
-            try:
-                await service.close()
-            except Exception:
-                pass
+        # Services are pooled and shared — deliberately NOT closed here.
+        # Closing would reset `_initialized`/`_rag` and force the next request
+        # to pay full initialization again.
 
         return kb_results
 
     async def _aggregate_results(
         self,
         context: QueryContext,
-        kb_results: Dict[str, Any]
+        kb_results: Dict[str, Any],
+        knowledge_bases: List[KnowledgeBase]
     ) -> str:
         """
         Aggregate KB results intelligently.
 
         Uses LLM to synthesize multiple answers into one coherent response,
         or returns single result directly if only one KB succeeded.
+
+        `knowledge_bases` is needed only to borrow an initialized service for
+        the bypass-mode LLM call below — aggregation runs no retrieval, so any
+        KB's service will do.
         """
         # Collect successful results
         successful_results = []
@@ -892,7 +907,8 @@ Please synthesize these answers into a single, coherent response following these
 
         try:
             # Call LLM for aggregation in bypass mode so it does not run retrieval again.
-            aggregated = await self.lightrag.query(
+            aggregation_service = await self._resolve_service(knowledge_bases[0], context)
+            aggregated = await aggregation_service.query(
                 query=aggregation_prompt,
                 mode="bypass",
                 stream=False

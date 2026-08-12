@@ -4,12 +4,18 @@ Chat Service - Conversation & Chatbot Management
 Handles chatbot conversations, message processing, and session management.
 Integrates with RAG service for knowledge-based responses.
 """
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import uuid
 
 from src.core.database import ConversationSession, get_async_session
-from src.core.exceptions import DatabaseException, ValidationException
+from src.core.exceptions import (
+    APIException,
+    DatabaseException,
+    NotFoundException,
+    ValidationException,
+)
 from src.core.logging import get_logger
 from src.helpers.workspace_helpers import get_workspace_storage_paths
 from src.services.mongodb_service import get_mongodb_service
@@ -112,6 +118,8 @@ class ChatService:
                 "message": f"Session started with id: {session_id}",
             }
 
+        except APIException:
+            raise
         except Exception as e:
             logger.error("Failed to start conversation", error=e)
             raise DatabaseException(
@@ -123,74 +131,66 @@ class ChatService:
         self,
         workspace_id: int,
         user_id: int,
-        limit: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Dict[str, Any]:
         """
-        Get recent conversation sessions for a user.
+        Get one page of a user's conversation sessions.
 
         Args:
             workspace_id: Workspace identifier
             user_id: User identifier
-            limit: Optional limit on number of sessions
+            page: 1-indexed page number
+            page_size: Sessions per page
 
         Returns:
-            List of conversation session summaries
+            Dict with `items` (session summaries for this page), `page`,
+            `page_size` and `total_count` — enough for the caller to build the
+            has_next/has_previous envelope.
         """
         try:
+            page = max(int(page), 1)
+            page_size = max(int(page_size), 1)
+            skip = (page - 1) * page_size
+
             logger.info(
                 "Fetching conversation history",
                 workspace_id=workspace_id,
                 user_id=user_id,
-                limit=limit,
+                page=page,
+                page_size=page_size,
             )
 
-            # Get sessions from MongoDB
-            sessions = await self.mongo_service.list_sessions(
-                workspace_id=workspace_id,
-                user_id=user_id,
-                limit=limit or 50,
-            )
-
-            # Enhance with PostgreSQL metadata if available.
-            # If migrations are not applied (table missing), return MongoDB sessions only.
-            try:
-                for session in sessions:
-                    session_id = session.get("session_id")
-                    if not session_id:
-                        continue
-
-                    async with get_async_session() as pg_session:
-                        stmt = select(ConversationSession).where(
-                            and_(
-                                ConversationSession.session_id == session_id,
-                                ConversationSession.workspace_id == workspace_id,
-                                ConversationSession.user_id == user_id,
-                            )
-                        )
-                        result = await pg_session.execute(stmt)
-                        conv = result.scalar_one_or_none()
-
-                        if conv:
-                            session["pg_metadata"] = {
-                                "title": conv.title,
-                                "message_count": conv.message_count,
-                                "is_active": conv.is_active,
-                            }
-            except Exception as e:
-                logger.warning(
-                    "PostgreSQL conversation_sessions read failed; returning MongoDB sessions only",
-                    error=e,
+            sessions, total_count = await asyncio.gather(
+                self.mongo_service.list_sessions(
                     workspace_id=workspace_id,
                     user_id=user_id,
-                )
+                    limit=page_size,
+                    skip=skip,
+                ),
+                self.mongo_service.count_sessions(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                ),
+            )
+
+            await self._attach_pg_metadata(sessions, workspace_id, user_id)
 
             logger.info(
                 "Retrieved conversation history",
                 session_count=len(sessions),
+                total_count=total_count,
             )
 
-            return sessions
+            return {
+                "items": sessions,
+                "page": page,
+                "page_size": page_size,
+                "total_count": total_count,
+            }
 
+        except APIException:
+            raise
         except Exception as e:
             logger.error("Failed to get conversation history", error=e)
             raise DatabaseException(
@@ -198,28 +198,83 @@ class ChatService:
                 operation="get_conversation_history"
             )
 
+    @staticmethod
+    async def _attach_pg_metadata(
+        sessions: List[Dict[str, Any]],
+        workspace_id: int,
+        user_id: int,
+    ) -> None:
+        """
+        Decorate session summaries with PostgreSQL metadata, in one query.
+
+        Best-effort: PostgreSQL is optional in local/dev, and MongoDB is the
+        source of truth for sessions, so a missing table must not fail the read.
+        """
+        session_ids = [s.get("session_id") for s in sessions if s.get("session_id")]
+        if not session_ids:
+            return
+
+        try:
+            async with get_async_session() as pg_session:
+                stmt = select(ConversationSession).where(
+                    and_(
+                        ConversationSession.session_id.in_(session_ids),
+                        ConversationSession.workspace_id == workspace_id,
+                        ConversationSession.user_id == user_id,
+                    )
+                )
+                rows = (await pg_session.execute(stmt)).scalars().all()
+
+            by_session_id = {row.session_id: row for row in rows}
+            for session in sessions:
+                conv = by_session_id.get(session.get("session_id"))
+                if conv:
+                    session["pg_metadata"] = {
+                        "title": conv.title,
+                        "message_count": conv.message_count,
+                        "is_active": conv.is_active,
+                    }
+        except Exception as e:
+            logger.warning(
+                "PostgreSQL conversation_sessions read failed; returning MongoDB sessions only",
+                error=e,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
+
     async def load_conversation(
         self,
         session_id: str,
         workspace_id: int,
         user_id: int,
+        page: int = 1,
+        page_size: int = 50,
+        newest_first: bool = True,
     ) -> Dict[str, Any]:
         """
-        Load a specific conversation with its messages.
+        Load a specific conversation with one page of its messages.
 
         Args:
             session_id: Session identifier
             workspace_id: Workspace identifier
             user_id: User identifier
+            page: 1-indexed page number
+            page_size: Messages per page
+            newest_first: page 1 is the newest slice of the transcript (see
+                `MongoDBService.get_messages_page`)
 
         Returns:
-            Dict with session metadata and messages
+            Dict with session metadata, this page of messages, and the paging
+            counters (`page`, `page_size`, `total_count`). `message_count` is the
+            size of this page; `total_count` is the whole conversation.
         """
         try:
             logger.info(
                 "Loading conversation",
                 session_id=session_id,
                 workspace_id=workspace_id,
+                page=page,
+                page_size=page_size,
             )
 
             # Get session metadata
@@ -230,21 +285,25 @@ class ChatService:
             )
 
             if not session_meta:
-                raise ValidationException(
-                    message=f"Session not found: {session_id}"
+                raise NotFoundException(
+                    message=f"Conversation not found: {session_id}",
+                    resource_type="conversation",
                 )
 
-            # Get messages
-            messages = await self.mongo_service.get_conversation_history(
+            messages, total_count = await self.mongo_service.get_messages_page(
                 session_id=session_id,
                 workspace_id=workspace_id,
                 user_id=user_id,
+                page=page,
+                page_size=page_size,
+                newest_first=newest_first,
             )
 
             logger.info(
                 "Loaded conversation",
                 session_id=session_id,
                 message_count=len(messages),
+                total_count=total_count,
             )
 
             return {
@@ -252,8 +311,16 @@ class ChatService:
                 "session_metadata": session_meta,
                 "messages": messages,
                 "message_count": len(messages),
+                "page": max(int(page), 1),
+                "page_size": max(int(page_size), 1),
+                "total_count": total_count,
+                "newest_first": newest_first,
             }
 
+        except APIException:
+            # Preserve 404/400 semantics — wrapping these in DatabaseException
+            # turned "no such conversation" into a 500.
+            raise
         except Exception as e:
             logger.error("Failed to load conversation", error=e)
             raise DatabaseException(
@@ -301,8 +368,12 @@ class ChatService:
             )
 
             if not success:
-                raise ValidationException(
-                    message=f"Session not found: {session_id}"
+                # `update_session_title` only reports success when a document
+                # actually matched, so this is a genuine "no such conversation
+                # for this user/workspace" — never a silent no-op.
+                raise NotFoundException(
+                    message=f"Conversation not found: {session_id}",
+                    resource_type="conversation",
                 )
 
             # Update in PostgreSQL
@@ -343,6 +414,8 @@ class ChatService:
                 "status": "updated",
             }
 
+        except APIException:
+            raise
         except Exception as e:
             logger.error("Failed to rename conversation", error=e)
             raise DatabaseException(
@@ -366,6 +439,11 @@ class ChatService:
 
         Returns:
             Dict with deletion status
+
+        Raises:
+            NotFoundException: if the conversation does not exist for this
+                user/workspace. Reporting "deleted" for a session that was never
+                there hid both typo'd ids and cross-tenant probes.
         """
         try:
             logger.info(
@@ -382,6 +460,7 @@ class ChatService:
 
             # Delete from PostgreSQL
             # PostgreSQL is optional in local/dev; don't fail delete if table/migrations aren't present.
+            pg_success = False
             try:
                 async with get_async_session() as session:
                     stmt = select(ConversationSession).where(
@@ -397,6 +476,7 @@ class ChatService:
                     if conv:
                         await session.delete(conv)
                         await session.commit()
+                        pg_success = True
             except Exception as e:
                 logger.warning(
                     "PostgreSQL conversation_sessions delete failed; continuing with MongoDB delete only",
@@ -406,10 +486,16 @@ class ChatService:
                     user_id=user_id,
                 )
 
-            if not mongo_success:
+            if not mongo_success and not pg_success:
                 logger.warning(
-                    "Session not found in MongoDB",
+                    "Conversation not found for deletion",
                     session_id=session_id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
+                raise NotFoundException(
+                    message=f"Conversation not found: {session_id}",
+                    resource_type="conversation",
                 )
 
             logger.info(
@@ -423,6 +509,8 @@ class ChatService:
                 "message": "Conversation deleted successfully",
             }
 
+        except APIException:
+            raise
         except Exception as e:
             logger.error("Failed to delete conversation", error=e)
             raise DatabaseException(
@@ -578,26 +666,20 @@ class ChatService:
                 sources=sources,
             )
 
-            # Update session title if it's the first message
-            session_meta = await self.mongo_service.get_session(
+            # Keep the title in sync with the latest user message. This is a
+            # no-op once the user has manually renamed the session (see
+            # `update_session_title`'s `is_manual=False` guard on
+            # `title_set_by_user`), so a rename always wins.
+            title = user_message.strip()
+            if len(title) > 50:
+                title = title[:50] + "..."
+            await self.mongo_service.update_session_title(
                 session_id=session_id,
                 workspace_id=workspace_id,
                 user_id=user_id,
+                title=title,
+                is_manual=False,
             )
-
-            # Default title behavior:
-            # - If user hasn't explicitly set a title, keep title in sync with the last user message.
-            # - If a title already exists, treat it as user-defined and don't overwrite it.
-            if session_meta is not None and not (session_meta.get("title") or "").strip():
-                title = user_message.strip()
-                if len(title) > 50:
-                    title = title[:50] + "..."
-                await self.mongo_service.update_session_title(
-                    session_id=session_id,
-                    workspace_id=workspace_id,
-                    user_id=user_id,
-                    title=title,
-                )
 
             logger.info(
                 "Message processed",

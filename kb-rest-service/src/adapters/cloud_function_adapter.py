@@ -39,7 +39,11 @@ ROUTE_TO_HANDLER = {
     ("GET", "/api/v2/chat/history"): "chat_get_conversation_history",
     ("GET", "/api/v2/chat/load"): "chat_load_conversation",
     ("POST", "/api/v2/chat/session/rename"): "chat_rename_conversation",
-    ("POST", "/api/v2/chat/session/delete"): "chat_delete_conversation",
+    ("DELETE", "/api/v2/chat/session/delete"): "chat_delete_conversation",
+
+    # Chat / Messaging
+    ("POST", "/api/v2/chat/message"): "message_gpt",
+    ("POST", "/api/v2/chat/message/cancel"): "cancel_chat_message",
 }
 
 
@@ -161,24 +165,31 @@ def _parse_cookie_header(cookie_header: Optional[str]) -> Dict[str, str]:
 
 
 async def _build_health_response(correlation_id: str) -> AbstractResponse:
+    """
+    Health payload in the standard envelope — see `src.common.response_utils`.
+
+    An unhealthy service still answers in the success envelope and signals the
+    problem through the 503 status and `data.status`, so this endpoint never
+    returns two different body shapes. Mirrors `main.py`'s /health.
+    """
+    from src.common import create_success_response
     from src.core.health import run_health_checks
 
     checks, overall_status = await run_health_checks()
 
-    body = {
-        "status": overall_status,
-        "service": "kb-rest-api",
-        "version": settings.VERSION,
-        "cloud_provider": settings.CLOUD_PROVIDER,
-        "storage_provider": settings.STORAGE_PROVIDER or settings.CLOUD_PROVIDER,
-        "queue_provider": settings.QUEUE_PROVIDER or settings.CLOUD_PROVIDER,
-        "checks": checks,
-    }
-    return AbstractResponse(
-        body=body,
+    return create_success_response(
+        message=overall_status,
+        data={
+            "status": overall_status,
+            "service": "kb-rest-api",
+            "version": settings.VERSION,
+            "cloud_provider": settings.CLOUD_PROVIDER,
+            "storage_provider": settings.STORAGE_PROVIDER or settings.CLOUD_PROVIDER,
+            "queue_provider": settings.QUEUE_PROVIDER or settings.CLOUD_PROVIDER,
+            "checks": checks,
+        },
         status_code=200 if overall_status == "healthy" else 503,
-        headers={"X-Correlation-ID": correlation_id},
-        mimetype="application/json",
+        correlation_id=correlation_id,
     )
 
 
@@ -200,16 +211,13 @@ async def dispatch_request(req: AbstractRequest, ctx: AbstractContext) -> Abstra
 
     handler_name = _route_to_handler(method, path)
     if not handler_name:
-        return AbstractResponse(
-            body={
-                "success": False,
-                "error": "NOT_FOUND",
-                "message": f"No route found for {method} {path}",
-                "correlation_id": ctx.correlation_id,
-            },
+        from src.common import create_error_response
+
+        return create_error_response(
+            message=f"No route found for {method} {path}",
+            error_code="NOT_FOUND",
             status_code=404,
-            headers={"X-Correlation-ID": ctx.correlation_id},
-            mimetype="application/json",
+            correlation_id=ctx.correlation_id,
         )
 
     handler_module = get_handler(handler_name)

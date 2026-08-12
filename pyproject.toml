@@ -11,6 +11,17 @@ dependencies = [
     "pydantic>=2.0",
 ]
 
+[project.optional-dependencies]
+# Needed by shared.text_extraction. Deployed services install these through
+# their own requirements.txt (shared/ is vendored, not pip-installed), so keep
+# the pins here in sync with indexer-service/ and kb-rest-service/.
+text-extraction = [
+    "PyPDF2==3.0.1",
+    "pdfplumber==0.11.0",
+    "python-docx==1.2.0",
+    "azure-ai-documentintelligence==1.0.2",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["shared*"]

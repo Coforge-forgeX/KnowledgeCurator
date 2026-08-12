@@ -8,9 +8,12 @@ from .chat_models import (
     ChatRequest,
     ChatResponse,
     ChatMessage,
+    ChatSource,
     ConversationHistoryRequest,
+    LoadConversationRequest,
     SessionRenameRequest,
     SessionDeleteRequest,
+    StartConversationRequest,
 )
 
 from .upload_models import (
@@ -29,9 +32,12 @@ __all__ = [
     "ChatRequest",
     "ChatResponse",
     "ChatMessage",
+    "ChatSource",
     "ConversationHistoryRequest",
+    "LoadConversationRequest",
     "SessionRenameRequest",
     "SessionDeleteRequest",
+    "StartConversationRequest",
     # Upload models
     "UploadRequest",
     "UploadResponse",
