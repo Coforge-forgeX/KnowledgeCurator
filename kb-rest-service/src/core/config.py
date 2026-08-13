@@ -282,6 +282,9 @@ class SecuritySettings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30)
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7)
 
+    # Backend service authentication
+    BACKEND_SERVICE_SECRET_KEY: Optional[str] = Field(default=None)
+
     # CORS settings
     CORS_ORIGINS: Union[List[str], str] = Field(default=["*"])
     CORS_ALLOW_CREDENTIALS: bool = Field(default=True)

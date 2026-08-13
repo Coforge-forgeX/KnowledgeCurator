@@ -59,6 +59,7 @@ from src.functions.api.upload_and_index.payloads import UploadAndIndexRequest, U
 from src.functions.api.kb_index.payloads import KBIndexRequest
 from src.functions.api.workspace_documents_grouped.payloads import WorkspaceDocumentsGroupedRequest
 from src.functions.api.delete_files_by_id.payloads import DeleteFilesByIdRequest
+from src.functions.api.delete_all_indexed_documents.payloads import DeleteAllIndexedDocumentsRequest
 from src.functions.api.fetch_graph.payloads import FetchGraphRequest, FetchGraphResponse
 from src.functions.api.mutate_knowledge_graph.payloads import MutateKnowledgeGraphRequest
 from src.models.chat_models import (
@@ -731,6 +732,38 @@ async def delete_files_by_id(request: Request, payload: DeleteFilesByIdRequest):
     """Delete indexed files by opaque file_id tokens."""
     request.state.parsed_payload = payload
     return await invoke_handler(request, "delete_files_by_id")
+
+
+@api_router.delete(
+    "/workspaces/documents/all",
+    tags=["Documents"],
+    summary="Delete All Indexed Documents in Workspace",
+    description="Backend service endpoint to delete all indexed documents in a workspace. Requires X-Backend-Secret header for authentication."
+)
+async def delete_all_indexed_documents(request: Request, payload: DeleteAllIndexedDocumentsRequest):
+    """
+    Delete all indexed documents in a workspace.
+
+    **Authentication:**
+    - Requires `X-Backend-Secret` header with the backend service secret key
+    - This endpoint is for backend service-to-service calls only
+
+    **Request Body:**
+    - `workspace_id`: Workspace ID (required, must be > 0)
+
+    **Response:**
+    - Returns summary of deleted documents and cleanup operations
+
+    **Example:**
+    ```bash
+    curl -X DELETE "http://localhost:8000/api/v2/workspaces/documents/all" \
+      -H "Content-Type: application/json" \
+      -H "X-Backend-Secret: $BACKEND_SERVICE_SECRET_KEY" \
+      -d '{"workspace_id": 123}'
+    ```
+    """
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "delete_all_indexed_documents")
 
 
 @api_router.post(

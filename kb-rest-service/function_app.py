@@ -75,6 +75,11 @@ async def delete_files_by_id(req: func.HttpRequest, context: func.Context) -> fu
     return await _handle(req, context)
 
 
+@app.route(route="api/v2/workspaces/documents/all", auth_level=func.AuthLevel.ANONYMOUS, methods=["DELETE"])
+async def delete_all_indexed_documents(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
 @app.route(route="api/v2/kb/graph", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 async def get_knowledge_graph(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)

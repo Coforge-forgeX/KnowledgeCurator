@@ -27,6 +27,7 @@ ROUTE_TO_HANDLER = {
     ("GET", "/api/v2/documents/status"): "file_tasks_status",
     ("GET", "/api/v2/workspaces/documents"): "workspace_documents",
     ("DELETE", "/api/v2/files"): "delete_files_by_id",
+    ("DELETE", "/api/v2/workspaces/documents/all"): "delete_all_indexed_documents",
     ("POST", "/api/v2/kb/graph"): "fetch_graph",
     ("POST", "/api/v2/kb/graph/mutate"): "mutate_knowledge_graph",
     ("POST", "/api/v2/query-kb"): "query_rag",  # Using optimized query_rag handler

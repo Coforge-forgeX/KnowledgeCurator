@@ -52,6 +52,7 @@ HANDLER_MODULE_PATHS: Dict[str, str] = {
     "file_tasks_status": "src.functions.api.file_tasks_status",
     "workspace_documents": "src.functions.api.workspace_documents_grouped",
     "delete_files_by_id": "src.functions.api.delete_files_by_id",
+    "delete_all_indexed_documents": "src.functions.api.delete_all_indexed_documents",
     # Knowledge Base Query
     "query_rag": "src.functions.api.query_rag",  # Optimized RAG query handler
     "query_source_download_url": "src.functions.api.query_source_download_url",

@@ -1,7 +1,7 @@
 """Redis client manager for caching and token revocation"""
 import hashlib
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .config import settings
 from .logging import get_logger
@@ -168,6 +168,16 @@ class RedisClient:
         except Exception as e:
             logger.error("Redis DELETE operation failed", error=e, keys=list(keys))
             return 0
+
+    def scan_keys(self, pattern: str) -> List[str]:
+        """Return all keys matching a glob pattern. Uses SCAN, never KEYS."""
+        if not self.is_available or self._client is None:
+            return []
+        try:
+            return list(self._client.scan_iter(match=pattern, count=100))
+        except Exception as e:
+            logger.error("Redis SCAN operation failed", error=e, pattern=pattern)
+            return []
 
     def ttl(self, key: str) -> int:
         """Get time-to-live for a key in seconds. Returns -1 if key has no expiry, -2 if key doesn't exist."""
