@@ -197,6 +197,43 @@ class AzureBlobStorageAdapter(StorageAdapter):
             logger.error(f"Failed to generate SAS URL: {filename}, error: {e}")
             raise
 
+    async def list_files(self, prefix: Optional[str] = None) -> list[str]:
+        """List all blobs in container with optional prefix"""
+        try:
+            blob_paths: list[str] = []
+
+            # List blobs with optional prefix
+            if prefix:
+                blob_iter = self.container_client.list_blobs(name_starts_with=prefix)
+            else:
+                blob_iter = self.container_client.list_blobs()
+
+            # Convert to list (run in thread to avoid blocking)
+            def _list_blobs():
+                paths = []
+                for blob in blob_iter:
+                    blob_name = str(getattr(blob, "name", "") or "")
+                    # Skip directory markers (blobs ending with /)
+                    if blob_name and not blob_name.endswith("/"):
+                        paths.append(blob_name)
+                return paths
+
+            blob_paths = await asyncio.to_thread(_list_blobs)
+
+            logger.info(
+                f"Listed {len(blob_paths)} files from Azure Blob Storage",
+                prefix=prefix or "(all)",
+            )
+
+            return blob_paths
+
+        except Exception as e:
+            logger.error(
+                f"Failed to list files from Azure Blob Storage, error: {e}",
+                exc_info=True
+            )
+            raise
+
     @property
     def provider_name(self) -> str:
         return "azure"

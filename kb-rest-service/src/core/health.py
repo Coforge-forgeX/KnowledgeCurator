@@ -56,7 +56,7 @@ async def _check_redis() -> Dict[str, Any]:
 
 
 async def _check_mongodb() -> Dict[str, Any]:
-    uri = settings.database.MONGODB_DATABASE_URI or settings.database.MONGODB_URI
+    uri = settings.database.MONGODB_URI
     if not uri:
         return {"status": "not_configured"}
     try:

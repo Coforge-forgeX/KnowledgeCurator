@@ -52,21 +52,46 @@ def get_queue_adapter(
 
         # Service Bus specific
         if queue_provider == "azure_service_bus":
-            topic_name = getattr(settings.azure, "SERVICE_BUS_TOPIC_NAME", None)
+            topic_name = settings.queue.SERVICE_BUS_TOPIC_NAME
             if topic_name:
+                # Topic mode: use topic_name, NOT queue_name
                 kwargs["topic_name"] = topic_name
+                # Don't pass queue_name for topic mode - it would override topic mode
+                _queue_adapter = _get_shared_adapter(
+                    provider=queue_provider,
+                    connection_string=settings.active_queue_connection,
+                    queue_name=None,  # Explicitly None for topic mode
+                    **kwargs
+                )
+            else:
+                # Queue mode: use queue_name
+                _queue_adapter = _get_shared_adapter(
+                    provider=queue_provider,
+                    connection_string=settings.active_queue_connection,
+                    queue_name=queue_name or settings.active_queue_name,
+                    **kwargs
+                )
 
         # AWS SQS specific
         elif queue_provider == "aws":
             kwargs["queue_url"] = settings.SQS_QUEUE_URL
             kwargs["region_name"] = settings.AWS_REGION
 
-        _queue_adapter = _get_shared_adapter(
-            provider=queue_provider,
-            connection_string=settings.active_queue_connection,
-            queue_name=queue_name or settings.active_queue_name,
-            **kwargs
-        )
+            _queue_adapter = _get_shared_adapter(
+                provider=queue_provider,
+                connection_string=settings.active_queue_connection,
+                queue_name=queue_name or settings.active_queue_name,
+                **kwargs
+            )
+
+        # Other providers
+        else:
+            _queue_adapter = _get_shared_adapter(
+                provider=queue_provider,
+                connection_string=settings.active_queue_connection,
+                queue_name=queue_name or settings.active_queue_name,
+                **kwargs
+            )
 
     return _queue_adapter
 

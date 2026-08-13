@@ -16,7 +16,7 @@ from src.helpers.file_token import decode_signed_file_id
 from src.helpers.workspace_permissions import require_workspace_admin_curator
 from src.helpers.workspace_helpers import get_workspace_storage_paths
 from src.common import create_error_response, create_internal_error_response, create_success_response, parse_request
-from shared.adapters.storage import get_storage_adapter
+from src.storage import get_storage_adapter
 
 from .payloads import DeleteFilesByIdRequest
 
@@ -393,11 +393,8 @@ async def _delete_blob(
     file_path: str,
 ) -> Dict[str, Any]:
     """Delete blob/object and convert not-found to warning."""
-    storage = get_storage_adapter(
-        provider=provider,
-        connection_string=settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING,
-        container_name=container_name,
-    )
+    # Use service's provider-agnostic storage adapter
+    storage = get_storage_adapter()
 
     try:
         await storage.delete(file_path)

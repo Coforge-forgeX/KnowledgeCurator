@@ -17,12 +17,16 @@ from shared.adapters.storage import (
 _storage_adapter: Optional[StorageAdapter] = None
 
 
-def get_storage_adapter(force_recreate: bool = False) -> StorageAdapter:
+def get_storage_adapter(
+    force_recreate: bool = False,
+    container_override: Optional[str] = None
+) -> StorageAdapter:
     """
     Get storage adapter configured with indexer-service settings.
 
     Args:
         force_recreate: If True, recreate the adapter even if one exists
+        container_override: Override the default container name (e.g., for workspace-specific uploads)
 
     Returns:
         StorageAdapter instance configured from settings
@@ -30,19 +34,51 @@ def get_storage_adapter(force_recreate: bool = False) -> StorageAdapter:
     Example:
         storage = get_storage_adapter()
         blob_info = await storage.upload("file.pdf", file_bytes)
+
+        # With container override:
+        storage = get_storage_adapter(container_override="workspace")
     """
     global _storage_adapter
 
-    if _storage_adapter is None or force_recreate:
-        from src.core.config import settings
+    # When using container override, create a new instance without caching
+    # to avoid singleton conflicts with different containers
+    use_cache = container_override is None
 
-        _storage_adapter = _get_shared_adapter(
-            provider=settings.storage.STORAGE_PROVIDER or "azure",
-            connection_string=settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING,
-            container_name=settings.storage.STORAGE_CONTAINER_NAME,
-        )
+    if use_cache and _storage_adapter is not None and not force_recreate:
+        return _storage_adapter
 
-    return _storage_adapter
+    from src.core.config import settings
+
+    # Determine provider from settings
+    provider = (settings.storage.STORAGE_PROVIDER or settings.CLOUD_PROVIDER or "azure").lower()
+
+    # Build kwargs based on provider
+    kwargs = {}
+    if provider == "azure":
+        kwargs["connection_string"] = settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING
+        kwargs["container_name"] = container_override or settings.storage.STORAGE_CONTAINER_NAME
+    elif provider == "aws":
+        kwargs["bucket_name"] = container_override or settings.storage.S3_BUCKET_NAME
+        kwargs["region_name"] = settings.storage.AWS_REGION
+        kwargs["access_key_id"] = settings.storage.AWS_ACCESS_KEY_ID
+        kwargs["secret_access_key"] = settings.storage.AWS_SECRET_ACCESS_KEY
+    elif provider == "gcp":
+        kwargs["bucket_name"] = container_override or settings.storage.GCS_BUCKET_NAME
+        kwargs["project_id"] = settings.storage.GCP_PROJECT_ID
+        kwargs["credentials_path"] = settings.storage.GCP_CREDENTIALS_PATH
+    elif provider == "local":
+        # Local storage uses settings directly, no kwargs needed
+        pass
+    else:
+        raise ValueError(f"Unsupported storage provider: {provider}")
+
+    adapter = _get_shared_adapter(provider=provider, **kwargs)
+
+    # Only cache if not using container override
+    if use_cache:
+        _storage_adapter = adapter
+
+    return adapter
 
 
 __all__ = [

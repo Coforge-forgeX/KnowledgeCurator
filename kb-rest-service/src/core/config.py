@@ -1,110 +1,97 @@
-"""Configuration management for KB REST API"""
+"""
+Clean Configuration Management for KB REST API
+
+Multi-cloud support with canonical environment variable names.
+Aligned with common_adapters package requirements.
+"""
 from typing import List, Optional, Union
 from urllib.parse import quote_plus
 
-from pydantic import AliasChoices, Field, validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
+# =============================================================================
+# Database Settings
+# =============================================================================
 
 class DatabaseSettings(BaseSettings):
     """Database configuration settings"""
 
-    # PostgreSQL settings
-    POSTGRESQL_DATABASE_HOST: str = Field(
-        default="localhost", env="POSTGRESQL_DATABASE_HOST"
-    )
-    POSTGRESQL_DATABASE_PORT: int = Field(default=5432, env="POSTGRESQL_DATABASE_PORT")
-    POSTGRESQL_DATABASE_USER: str = Field(
-        default="postgres", env="POSTGRESQL_DATABASE_USER"
-    )
-    POSTGRESQL_DATABASE_PASSWORD: str = Field(
-        default="", env="POSTGRESQL_DATABASE_PASSWORD"
-    )
-    POSTGRESQL_DATABASE_DATABASE: str = Field(
-        default="kbcurator", env="POSTGRESQL_DATABASE_DATABASE"
-    )
+    # -------------------------------------------------------------------------
+    # PostgreSQL (Main Application Database)
+    # -------------------------------------------------------------------------
+    POSTGRESQL_HOST: str = Field(default="localhost")
+    POSTGRESQL_PORT: int = Field(default=5432)
+    POSTGRESQL_USER: str = Field(default="postgres")
+    POSTGRESQL_PASSWORD: str = Field(default="")
+    POSTGRESQL_DATABASE: str = Field(default="kbcurator")
 
-    # MongoDB settings
-    MONGODB_URI: str = Field(default="", env="MONGODB_URI")
-    MONGODB_DATABASE_URI: str = Field(default="", env="MONGODB_DATABASE_URI")  # Alias
-    MONGODB_DATABASE: str = Field(default="chatbot_db", env="MONGODB_DATABASE")
-    MONGODB_DATABASE_NAME: str = Field(default="chatbot_db", env="MONGODB_DATABASE_NAME")  # Alias
+    # -------------------------------------------------------------------------
+    # MongoDB (for common_adapters llm_router_config_store)
+    # -------------------------------------------------------------------------
+    MONGODB_URI: str = Field(default="")
+    MONGODB_DATABASE: str = Field(default="chatbot_db")
 
-    # Redis settings
-    REDIS_HOST: Optional[str] = Field(default=None, env="REDIS_HOST")
-    REDIS_PORT: int = Field(default=6379, env="REDIS_PORT")
-    REDIS_PASSWORD: Optional[str] = Field(default=None, env="REDIS_PASSWORD")
-    REDIS_DB: int = Field(default=0, env="REDIS_DB")
+    # -------------------------------------------------------------------------
+    # Redis
+    # -------------------------------------------------------------------------
+    REDIS_HOST: Optional[str] = Field(default=None)
+    REDIS_PORT: int = Field(default=6379)
+    REDIS_PASSWORD: Optional[str] = Field(default=None)
+    REDIS_DB: int = Field(default=0)
 
-    # Neo4j settings
-    # Prefer validation_alias for pydantic-settings v2 compatibility.
-    # Keep fallback aliases for legacy/local deployments.
-    NEO4J_URI: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("NEO4J_DATABASE_NEO4J_BOLT_URI", "NEO4J_URI"),
-    )
-    NEO4J_USER: str = Field(
-        default="neo4j",
-        validation_alias=AliasChoices("NEO4J_DATABASE_NEO4J_USER", "NEO4J_USER", "NEO4J_USERNAME"),
-    )
-    NEO4J_PASSWORD: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("NEO4J_DATABASE_NEO4J_PASSWORD", "NEO4J_PASSWORD"),
-    )
+    # -------------------------------------------------------------------------
+    # Neo4j (for LightRAG Graph Storage)
+    # -------------------------------------------------------------------------
+    NEO4J_URI: Optional[str] = Field(default=None)
+    NEO4J_USER: str = Field(default="neo4j")
+    NEO4J_PASSWORD: Optional[str] = Field(default=None)
 
-    # Deployment mode
-    SERVERLESS: bool = Field(default=False, env="SERVERLESS")
+    # -------------------------------------------------------------------------
+    # Connection Pool Settings
+    # -------------------------------------------------------------------------
+    DB_POOL_SIZE: int = Field(default=5)
+    DB_MAX_OVERFLOW: int = Field(default=5)
+    DB_POOL_TIMEOUT: int = Field(default=30)
+    DB_POOL_RECYCLE: int = Field(default=3600)
+    DB_ECHO: bool = Field(default=False)
 
-    # Connection pool settings
-    # Note: For serverless deployment, set SERVERLESS=true to use optimized settings
-    DB_POOL_SIZE: int = Field(default=5, env="DB_POOL_SIZE")
-    DB_MAX_OVERFLOW: int = Field(default=5, env="DB_MAX_OVERFLOW")
-    DB_POOL_TIMEOUT: int = Field(default=30, env="DB_POOL_TIMEOUT")
-    DB_POOL_RECYCLE: int = Field(default=3600, env="DB_POOL_RECYCLE")
-    DB_ECHO: bool = Field(default=False, env="DB_ECHO")
+    # Deployment mode (serverless optimization)
+    SERVERLESS: bool = Field(default=True)
 
     @property
     def get_pool_size(self) -> int:
         """Get pool size optimized for deployment mode"""
-        if self.SERVERLESS:
-            return min(self.DB_POOL_SIZE, 2)  # Max 2 connections per instance in serverless
-        return self.DB_POOL_SIZE
+        return min(self.DB_POOL_SIZE, 5) if self.SERVERLESS else self.DB_POOL_SIZE
 
     @property
     def get_max_overflow(self) -> int:
         """Get max overflow optimized for deployment mode"""
-        if self.SERVERLESS:
-            return 0  # No overflow in serverless
-        return self.DB_MAX_OVERFLOW
+        return 0 if self.SERVERLESS else self.DB_MAX_OVERFLOW
 
     @property
     def get_pool_recycle(self) -> int:
         """Get pool recycle time optimized for deployment mode"""
-        if self.SERVERLESS:
-            return 300  # 5 minutes for serverless
-        return self.DB_POOL_RECYCLE
+        return 300 if self.SERVERLESS else self.DB_POOL_RECYCLE
 
     @property
     def postgresql_url(self) -> str:
-        """Build PostgreSQL async connection URL with properly encoded credentials"""
-        # URL-encode username and password to handle special characters like @
-        encoded_user = quote_plus(self.POSTGRESQL_DATABASE_USER)
-        encoded_password = quote_plus(self.POSTGRESQL_DATABASE_PASSWORD)
-
+        """Build PostgreSQL async connection URL"""
+        encoded_user = quote_plus(self.POSTGRESQL_USER)
+        encoded_password = quote_plus(self.POSTGRESQL_PASSWORD)
         return (
-            f"postgresql+asyncpg://{encoded_user}:"
-            f"{encoded_password}@{self.POSTGRESQL_DATABASE_HOST}:"
-            f"{self.POSTGRESQL_DATABASE_PORT}/{self.POSTGRESQL_DATABASE_DATABASE}"
-            f"?ssl=require"
+            f"postgresql+asyncpg://{encoded_user}:{encoded_password}"
+            f"@{self.POSTGRESQL_HOST}:{self.POSTGRESQL_PORT}"
+            f"/{self.POSTGRESQL_DATABASE}?ssl=require"
         )
 
     @property
     def redis_url(self) -> Optional[str]:
-        """Build Redis connection URL if Redis is configured"""
+        """Build Redis connection URL"""
         if not self.REDIS_HOST:
             return None
         if self.REDIS_PASSWORD:
-            # URL-encode password to handle special characters
             encoded_password = quote_plus(self.REDIS_PASSWORD)
             return f"redis://:{encoded_password}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
@@ -117,24 +104,20 @@ class DatabaseSettings(BaseSettings):
     )
 
 
+# =============================================================================
+# Cache Settings
+# =============================================================================
+
 class CacheSettings(BaseSettings):
     """Redis caching configuration settings"""
 
     # Redis connection
-    REDIS_URL: str = Field(
-        default="redis://localhost:6379/0",
-        env="REDIS_URL"
-    )
-    REDIS_ENABLED: bool = Field(default=True, env="REDIS_ENABLED")
+    REDIS_URL: str = Field(default="redis://localhost:6379/0")
+    REDIS_ENABLED: bool = Field(default=True)
 
     # Cache TTL settings (in seconds)
-    QUERY_CACHE_TTL: int = Field(default=3600, env="QUERY_CACHE_TTL")  # 1 hour
-    CONVERSATION_HISTORY_CACHE_TTL: int = Field(default=3600, env="CONVERSATION_HISTORY_CACHE_TTL")  # 1 hour
-
-    # Rate limiting settings
-    RATE_LIMIT_ENABLED: bool = Field(default=True, env="RATE_LIMIT_ENABLED")
-    RATE_LIMIT_USER_PER_MINUTE: int = Field(default=10, env="RATE_LIMIT_USER_PER_MINUTE")
-    RATE_LIMIT_WORKSPACE_PER_MINUTE: int = Field(default=100, env="RATE_LIMIT_WORKSPACE_PER_MINUTE")
+    QUERY_CACHE_TTL: int = Field(default=3600)  # 1 hour
+    CONVERSATION_HISTORY_CACHE_TTL: int = Field(default=3600)  # 1 hour
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -143,39 +126,51 @@ class CacheSettings(BaseSettings):
         extra="ignore",
     )
 
+
+# =============================================================================
+# Multi-Cloud Storage Settings
+# =============================================================================
 
 class StorageSettings(BaseSettings):
     """Storage configuration (multi-cloud support)"""
 
-    # Storage provider
-    STORAGE_PROVIDER: str = Field(default="azure", env="STORAGE_PROVIDER")
-    STORAGE_CONTAINER_NAME: str = Field(default="aksknowledgecurator", env="STORAGE_CONTAINER_NAME")
-    WORKSPACE_CONTAINER_NAME: str = Field(default="workspace", env="WORKSPACE_CONTAINER_NAME")
+    # Provider selection
+    STORAGE_PROVIDER: str = Field(default="azure")  # azure, aws, gcp, local
 
+    # Container/Bucket names
+    STORAGE_CONTAINER_NAME: str = Field(default="aksknowledgecurator")
+    WORKSPACE_CONTAINER_NAME: str = Field(default="workspace")
+
+    # -------------------------------------------------------------------------
     # Azure Blob Storage
-    AZURE_BLOB_STORAGE_CONNECTION_STRING: Optional[str] = Field(
-        default=None, env="AZURE_BLOB_STORAGE_CONNECTION_STRING"
-    )
+    # -------------------------------------------------------------------------
+    AZURE_STORAGE_CONNECTION_STRING: Optional[str] = Field(default=None)
 
+    # -------------------------------------------------------------------------
     # AWS S3
-    AWS_ACCESS_KEY_ID: Optional[str] = Field(default=None, env="AWS_ACCESS_KEY_ID")
-    AWS_SECRET_ACCESS_KEY: Optional[str] = Field(default=None, env="AWS_SECRET_ACCESS_KEY")
-    AWS_REGION: str = Field(default="us-east-1", env="AWS_REGION")
-    S3_BUCKET_NAME: Optional[str] = Field(default=None, env="S3_BUCKET_NAME")
-    S3_PATH_PREFIX: str = Field(default="", env="S3_PATH_PREFIX")
-    S3_URL_EXPIRY_MINUTES: int = Field(default=60, env="S3_URL_EXPIRY_MINUTES")
+    # -------------------------------------------------------------------------
+    AWS_ACCESS_KEY_ID: Optional[str] = Field(default=None)
+    AWS_SECRET_ACCESS_KEY: Optional[str] = Field(default=None)
+    AWS_REGION: str = Field(default="us-east-1")
+    S3_BUCKET_NAME: Optional[str] = Field(default=None)
+    S3_PATH_PREFIX: str = Field(default="")
+    S3_URL_EXPIRY_MINUTES: int = Field(default=60)
 
+    # -------------------------------------------------------------------------
     # GCP Cloud Storage
-    GCP_PROJECT_ID: Optional[str] = Field(default=None, env="GCP_PROJECT_ID")
-    GCP_CREDENTIALS_PATH: Optional[str] = Field(default=None, env="GCP_CREDENTIALS_PATH")
-    GCS_BUCKET_NAME: Optional[str] = Field(default=None, env="GCS_BUCKET_NAME")
-    GCS_PATH_PREFIX: str = Field(default="", env="GCS_PATH_PREFIX")
-    GCS_URL_EXPIRY_MINUTES: int = Field(default=60, env="GCS_URL_EXPIRY_MINUTES")
+    # -------------------------------------------------------------------------
+    GCP_PROJECT_ID: Optional[str] = Field(default=None)
+    GCP_CREDENTIALS_PATH: Optional[str] = Field(default=None)
+    GCS_BUCKET_NAME: Optional[str] = Field(default=None)
+    GCS_PATH_PREFIX: str = Field(default="")
+    GCS_URL_EXPIRY_MINUTES: int = Field(default=60)
 
+    # -------------------------------------------------------------------------
     # Local Storage (for development)
-    LOCAL_STORAGE_PATH: str = Field(default="./local_storage", env="LOCAL_STORAGE_PATH")
-    LOCAL_STORAGE_PATH_PREFIX: str = Field(default="", env="LOCAL_STORAGE_PATH_PREFIX")
-    LOCAL_STORAGE_BASE_URL: str = Field(default="", env="LOCAL_STORAGE_BASE_URL")
+    # -------------------------------------------------------------------------
+    LOCAL_STORAGE_PATH: str = Field(default="./local_storage")
+    LOCAL_STORAGE_PATH_PREFIX: str = Field(default="")
+    LOCAL_STORAGE_BASE_URL: str = Field(default="")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -185,13 +180,86 @@ class StorageSettings(BaseSettings):
     )
 
 
-class BlobSettings(BaseSettings):
-    """Azure Blob specific settings (for blob_client.py)"""
+# =============================================================================
+# Multi-Cloud Queue Settings
+# =============================================================================
 
-    AZURE_STORAGE_CONNECTION_STRING: str = Field(default="", env="AZURE_STORAGE_CONNECTION_STRING")
-    BLOB_CONTAINER_NAME: str = Field(default="documents", env="BLOB_CONTAINER_NAME")
-    BLOB_PATH_PREFIX: str = Field(default="", env="BLOB_PATH_PREFIX")
-    BLOB_URL_EXPIRY_MINUTES: int = Field(default=60, env="BLOB_URL_EXPIRY_MINUTES")
+class QueueSettings(BaseSettings):
+    """Queue configuration (multi-cloud support)"""
+
+    # Provider selection
+    QUEUE_PROVIDER: str = Field(default="azure")  # azure, aws, redis
+
+    # -------------------------------------------------------------------------
+    # Azure Queue/Service Bus
+    # -------------------------------------------------------------------------
+    AZURE_STORAGE_CONNECTION_STRING: Optional[str] = Field(default=None)
+    AZURE_INDEXING_QUEUE_NAME: str = Field(default="indexing-queue")
+
+    # Service Bus (recommended for production)
+    SERVICE_BUS_CONNECTION_STRING: Optional[str] = Field(default=None)
+    SERVICE_BUS_TOPIC_NAME: Optional[str] = Field(default=None)
+    SERVICE_BUS_SUBSCRIPTION_NAME: Optional[str] = Field(default=None)
+
+    # -------------------------------------------------------------------------
+    # AWS SQS
+    # -------------------------------------------------------------------------
+    SQS_QUEUE_URL: Optional[str] = Field(default=None)
+    SQS_QUEUE_NAME: str = Field(default="indexing-jobs")
+    AWS_REGION: str = Field(default="us-east-1")
+
+    # -------------------------------------------------------------------------
+    # Redis Queue
+    # -------------------------------------------------------------------------
+    REDIS_QUEUE_URL: Optional[str] = Field(default=None)
+    REDIS_QUEUE_NAME: str = Field(default="indexing-jobs")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+
+# =============================================================================
+# Multi-Cloud OCR Settings
+# =============================================================================
+
+class OCRSettings(BaseSettings):
+    """
+    OCR configuration (multi-cloud support)
+
+    Aligned with shared/text_extraction package:
+    - Uses AZURE_DOC_INTELLIGENCE_* (shorter form)
+    - shared/text_extraction/config.py supports both long and short forms
+    """
+
+    # Provider selection
+    OCR_PROVIDER: str = Field(default="azure")  # azure, aws, gcp, noop
+
+    # -------------------------------------------------------------------------
+    # Azure Document Intelligence
+    # Canonical keys: AZURE_DOC_INTELLIGENCE_* (shorter)
+    # shared/text_extraction also accepts: AZURE_DOCUMENT_INTELLIGENCE_* (longer)
+    # -------------------------------------------------------------------------
+    AZURE_DOC_INTELLIGENCE_ENDPOINT: Optional[str] = Field(default=None)
+    AZURE_DOC_INTELLIGENCE_KEY: Optional[str] = Field(default=None)
+
+    # -------------------------------------------------------------------------
+    # AWS Textract
+    # -------------------------------------------------------------------------
+    AWS_TEXTRACT_REGION: Optional[str] = Field(default=None)
+    AWS_TEXTRACT_ACCESS_KEY_ID: Optional[str] = Field(default=None)
+    AWS_TEXTRACT_SECRET_ACCESS_KEY: Optional[str] = Field(default=None)
+
+    # -------------------------------------------------------------------------
+    # GCP Document AI
+    # -------------------------------------------------------------------------
+    GCP_DOCUMENT_AI_PROJECT_ID: Optional[str] = Field(default=None)
+    GCP_DOCUMENT_AI_LOCATION: str = Field(default="us")
+    GCP_DOCUMENT_AI_PROCESSOR_ID: Optional[str] = Field(default=None)
+    GCP_DOCUMENT_AI_CREDENTIALS_PATH: Optional[str] = Field(default=None)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -201,100 +269,37 @@ class BlobSettings(BaseSettings):
     )
 
 
-class AzureSettings(BaseSettings):
-    """Azure-specific configuration settings"""
-
-    # Azure Functions settings
-    AZURE_STORAGE_CONNECTION_STRING: str = Field(default="", env="AzureWebJobsStorage")
-
-    # Azure Blob Storage (legacy)
-    BLOB_STORAGE_CONNECTION_STRING: str = Field(
-        default="", env="BLOB_STORAGE_CONNECTION_STRING"
-    )
-    BLOB_CONTAINER_NAME: str = Field(default="kb-documents", env="STORAGE_CONTAINER_NAME")
-
-    # Azure Queue Storage
-    QUEUE_STORAGE_CONNECTION_STRING: str = Field(
-        default="", env="AZURE_QUEUE_STORAGE_CONNECTION_STRING"
-    )
-    INDEXING_QUEUE_NAME: str = Field(default="kb-indexing-jobs", env="AZURE_INDEXING_QUEUE_NAME")
-
-    # Azure Service Bus (recommended for production)
-    SERVICE_BUS_CONNECTION_STRING: Optional[str] = Field(
-        default=None, env="SERVICE_BUS_CONNECTION_STRING"
-    )
-    SERVICE_BUS_TOPIC_NAME: Optional[str] = Field(
-        default=None, env="SERVICE_BUS_TOPIC_NAME"
-    )
-    SERVICE_BUS_SUBSCRIPTION_NAME: Optional[str] = Field(
-        default=None, env="SERVICE_BUS_SUBSCRIPTION_NAME"
-    )
-
-    # Azure Document Intelligence (OCR fallback for chat file-context extraction)
-    AZURE_DOC_INTELLIGENCE_ENDPOINT: Optional[str] = Field(
-        default=None,
-        validation_alias="AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT",
-    )
-    AZURE_DOC_INTELLIGENCE_KEY: Optional[str] = Field(
-        default=None,
-        validation_alias="AZURE_DOCUMENT_INTELLIGENCE_KEY",
-    )
-
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="ignore",
-        populate_by_name=True,
-    )
-
+# =============================================================================
+# Security Settings
+# =============================================================================
 
 class SecuritySettings(BaseSettings):
     """Security and authentication settings"""
 
     # JWT settings
-    JWT_SECRET_KEY: str = Field(
-        default="your-secret-key-change-in-production", env="JWT_SECRET_KEY"
-    )
-    JWT_ALGORITHM: str = Field(default="HS256", env="JWT_ALGORITHM")
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
-        default=30, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES"
-    )
-    JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = Field(
-        default=7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS"
-    )
+    JWT_SECRET_KEY: str = Field(default="your-secret-key-change-in-production")
+    JWT_ALGORITHM: str = Field(default="HS256")
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30)
+    JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7)
 
     # CORS settings
-    CORS_ORIGINS: Union[List[str], str] = Field(default=["*"], env="CORS_ORIGINS")
-    CORS_ALLOW_CREDENTIALS: bool = Field(default=True, env="CORS_ALLOW_CREDENTIALS")
-    CORS_ALLOW_METHODS: Union[List[str], str] = Field(default=["*"], env="CORS_ALLOW_METHODS")
-    CORS_ALLOW_HEADERS: Union[List[str], str] = Field(default=["*"], env="CORS_ALLOW_HEADERS")
+    CORS_ORIGINS: Union[List[str], str] = Field(default=["*"])
+    CORS_ALLOW_CREDENTIALS: bool = Field(default=True)
+    CORS_ALLOW_METHODS: Union[List[str], str] = Field(default=["*"])
+    CORS_ALLOW_HEADERS: Union[List[str], str] = Field(default=["*"])
 
-    @validator("CORS_ORIGINS", pre=True)
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
     def parse_cors_origins(cls, v):
         if isinstance(v, str):
-            # Handle empty string
             if not v or v.strip() == "":
                 return ["*"]
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
 
-    @validator("JWT_SECRET_KEY")
+    @field_validator("JWT_SECRET_KEY")
+    @classmethod
     def validate_jwt_secret(cls, v):
-        """Validate JWT secret key is not using default insecure value"""
-        if v in [
-            "your-secret-key",
-            "secret",
-            "changeme",
-            "your-secret-key-change-in-production",
-        ]:
-            import warnings
-
-            warnings.warn(
-                "JWT_SECRET_KEY is using a default insecure value. "
-                "Please change it in production!",
-                UserWarning,
-            )
         if len(v) < 32:
             raise ValueError("JWT_SECRET_KEY must be at least 32 characters long")
         return v
@@ -307,30 +312,90 @@ class SecuritySettings(BaseSettings):
     )
 
 
+# =============================================================================
+# LightRAG Settings
+# =============================================================================
+
+class LightRAGSettings(BaseSettings):
+    """
+    LightRAG configuration settings
+
+    Note: LightRAG PostgreSQL settings are SEPARATE from main database.
+    They can point to a different database instance.
+    """
+
+    # Working directory
+    LIGHTRAG_WORKING_DIR: str = Field(default="./lightrag_data")
+
+    # Storage backend types
+    VECTOR_STORAGE_TYPE: str = Field(default="PGVectorStorage")
+    GRAPH_STORAGE_TYPE: str = Field(default="Neo4JStorage")
+
+    # -------------------------------------------------------------------------
+    # PostgreSQL for PGVectorStorage (SEPARATE from main database)
+    # -------------------------------------------------------------------------
+    LIGHTRAG_POSTGRESQL_HOST: Optional[str] = Field(default=None)
+    LIGHTRAG_POSTGRESQL_USER: Optional[str] = Field(default=None)
+    LIGHTRAG_POSTGRESQL_PASSWORD: Optional[str] = Field(default=None)
+    LIGHTRAG_POSTGRESQL_DATABASE: Optional[str] = Field(default=None)
+
+    # Chunk settings
+    CHUNK_TOKEN_SIZE: int = Field(default=600)
+    CHUNK_OVERLAP_TOKEN_SIZE: int = Field(default=150)
+
+    # Embedding settings
+    EMBEDDING_DIM: int = Field(default=1024)
+    MAX_TOKEN_SIZE: int = Field(default=8192)
+    EMBEDDING_TIMEOUT_SECONDS: int = Field(default=120)
+    EMBEDDING_FUNC_MAX_ASYNC: int = Field(default=4)
+    EMBEDDING_BATCH_NUM: int = Field(default=4)
+
+    # -------------------------------------------------------------------------
+    # Azure OpenAI LLM Settings (for common_adapters compatibility)
+    # -------------------------------------------------------------------------
+    AZURE_OPENAI_LLM_MODEL_API_KEY: Optional[str] = Field(default=None)
+    AZURE_OPENAI_LLM_MODEL_API_BASE: Optional[str] = Field(default=None)
+    AZURE_OPENAI_LLM_MODEL_API_VERSION: str = Field(default="2024-02-15-preview")
+    AZURE_OPENAI_LLM_MODEL_LLM_MODEL: Optional[str] = Field(default=None)
+
+    # -------------------------------------------------------------------------
+    # Azure OpenAI Embedding Settings (for common_adapters compatibility)
+    # -------------------------------------------------------------------------
+    AZURE_OPENAI_EMBEDDING_MODEL_API_KEY: Optional[str] = Field(default=None)
+    AZURE_OPENAI_EMBEDDING_MODEL_API_BASE: Optional[str] = Field(default=None)
+    AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION: str = Field(default="2024-02-01")
+    AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL: Optional[str] = Field(default=None)
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+
+# =============================================================================
+# Progress/Event Bus Settings
+# =============================================================================
+
 class ProgressSettings(BaseSettings):
     """Progress and event bus configuration settings"""
 
     # Progress backend configuration
-    PROGRESS_BACKEND: str = Field(default="auto", env="PROGRESS_BACKEND")
-    EVENT_BUS_PROVIDER: Optional[str] = Field(default=None, env="EVENT_BUS_PROVIDER")
+    PROGRESS_BACKEND: str = Field(default="auto")
+    EVENT_BUS_PROVIDER: Optional[str] = Field(default=None)
 
     # Azure Service Bus settings
-    EVENT_BUS_CONNECTION_STRING: Optional[str] = Field(
-        default=None, env="EVENT_BUS_CONNECTION_STRING"
-    )
-    SERVICE_BUS_CONNECTION_STRING: Optional[str] = Field(
-        default=None, env="SERVICE_BUS_CONNECTION_STRING"
-    )
-    PROGRESS_QUEUE: Optional[str] = Field(default=None, env="PROGRESS_QUEUE")
-    PROGRESS_TOPIC: str = Field(default="agent-progress", env="PROGRESS_TOPIC")
+    EVENT_BUS_CONNECTION_STRING: Optional[str] = Field(default=None)
+    SERVICE_BUS_CONNECTION_STRING: Optional[str] = Field(default=None)
+    PROGRESS_QUEUE: Optional[str] = Field(default=None)
+    PROGRESS_TOPIC: str = Field(default="agent-progress")
 
     # AWS EventBridge settings
-    PROGRESS_EVENT_BUS: str = Field(default="default", env="PROGRESS_EVENT_BUS")
+    PROGRESS_EVENT_BUS: str = Field(default="default")
 
     # Local relay settings
-    PROGRESS_LOCAL_RELAY_URL: str = Field(
-        default="http://127.0.0.1:8090/publish", env="PROGRESS_LOCAL_RELAY_URL"
-    )
+    PROGRESS_LOCAL_RELAY_URL: str = Field(default="http://127.0.0.1:8090/publish")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -340,171 +405,99 @@ class ProgressSettings(BaseSettings):
     )
 
 
-class LightRAGSettings(BaseSettings):
-    """LightRAG configuration settings"""
-
-    # LightRAG working directory
-    LIGHTRAG_WORKING_DIR: str = Field(
-        default="./lightrag_data", env="LIGHTRAG_WORKING_DIR"
-    )
-
-    # Vector storage settings
-    VECTOR_STORAGE_TYPE: str = Field(
-        default="PGVectorStorage", env="LIGHTRAG_VECTOR_STORAGE_TYPE"
-    )
-    GRAPH_STORAGE_TYPE: str = Field(
-        default="Neo4JStorage", env="LIGHTRAG_GRAPH_STORAGE_TYPE"
-    )
-
-    # PostgreSQL settings for PGVectorStorage
-    LIGHTRAG_POSTGRESQL_HOST: Optional[str] = Field(
-        default=None, env="LIGHTRAG_POSTGRESQL_DATABASE_HOST"
-    )
-    LIGHTRAG_POSTGRESQL_USER: Optional[str] = Field(
-        default=None, env="LIGHTRAG_POSTGRESQL_DATABASE_USER"
-    )
-    LIGHTRAG_POSTGRESQL_PASSWORD: Optional[str] = Field(
-        default=None, env="LIGHTRAG_POSTGRESQL_DATABASE_PASSWORD"
-    )
-    LIGHTRAG_POSTGRESQL_DATABASE: Optional[str] = Field(
-        default=None, env="LIGHTRAG_POSTGRESQL_DATABASE_DATABASE"
-    )
-
-    # Chunk settings
-    CHUNK_TOKEN_SIZE: int = Field(default=600, env="LIGHTRAG_CHUNK_TOKEN_SIZE")
-    CHUNK_OVERLAP_TOKEN_SIZE: int = Field(
-        default=150, env="LIGHTRAG_CHUNK_OVERLAP_TOKEN_SIZE"
-    )
-
-    # Embedding behavior settings
-    EMBEDDING_DIM: int = Field(default=1024, validation_alias="LIGHTRAG_EMBEDDING_DIM")
-    MAX_TOKEN_SIZE: int = Field(default=8192, validation_alias="LIGHTRAG_MAX_TOKEN_SIZE")
-    EMBEDDING_TIMEOUT_SECONDS: int = Field(
-        default=120, validation_alias="LIGHTRAG_EMBEDDING_TIMEOUT_SECONDS"
-    )
-    EMBEDDING_FUNC_MAX_ASYNC: int = Field(
-        default=4, validation_alias="LIGHTRAG_EMBEDDING_FUNC_MAX_ASYNC"
-    )
-    EMBEDDING_BATCH_NUM: int = Field(default=4, validation_alias="LIGHTRAG_EMBEDDING_BATCH_NUM")
-
-    # Azure OpenAI LLM settings
-    AZURE_OPENAI_LLM_MODEL_API_KEY: Optional[str] = Field(
-        default=None, env="AZURE_OPENAI_LLM_MODEL_API_KEY"
-    )
-    AZURE_OPENAI_LLM_MODEL_API_BASE: Optional[str] = Field(
-        default=None, env="AZURE_OPENAI_LLM_MODEL_API_BASE"
-    )
-    AZURE_OPENAI_LLM_MODEL_API_VERSION: str = Field(
-        default="2024-02-15-preview", env="AZURE_OPENAI_LLM_MODEL_API_VERSION"
-    )
-    AZURE_OPENAI_LLM_MODEL_LLM_MODEL: Optional[str] = Field(
-        default=None, env="AZURE_OPENAI_LLM_MODEL_LLM_MODEL"
-    )
-
-    # Azure OpenAI embedding settings
-    AZURE_OPENAI_EMBEDDING_MODEL_API_KEY: Optional[str] = Field(
-        default=None, env="AZURE_OPENAI_EMBEDDING_MODEL_API_KEY"
-    )
-    AZURE_OPENAI_EMBEDDING_MODEL_API_BASE: Optional[str] = Field(
-        default=None, env="AZURE_OPENAI_EMBEDDING_MODEL_API_BASE"
-    )
-    AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION: str = Field(
-        default="2024-02-01", env="AZURE_OPENAI_EMBEDDING_MODEL_API_VERSION"
-    )
-    AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL: Optional[str] = Field(
-        default=None, env="AZURE_OPENAI_EMBEDDING_MODEL_EMBEDDING_MODEL"
-    )
-
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="ignore",
-    )
-
+# =============================================================================
+# Main Settings
+# =============================================================================
 
 class Settings(BaseSettings):
     """Main application settings"""
 
-    # Application settings
-    APP_NAME: str = Field(default="KB REST Service", env="APP_NAME")
-    VERSION: str = Field(default="2.0.0", env="APP_VERSION")
-    ENVIRONMENT: str = Field(default="development", env="ENVIRONMENT")
-    DEBUG: bool = Field(default=False, env="DEBUG")
+    # -------------------------------------------------------------------------
+    # Application Settings
+    # -------------------------------------------------------------------------
+    APP_NAME: str = Field(default="KB REST Service")
+    VERSION: str = Field(default="2.0.0")
+    ENVIRONMENT: str = Field(default="development")
+    DEBUG: bool = Field(default=False)
 
-    # Multi-cloud deployment settings
-    CLOUD_PROVIDER: str = Field(default="azure", env="CLOUD_PROVIDER")
-    STORAGE_PROVIDER: Optional[str] = Field(default=None, env="STORAGE_PROVIDER")
-    QUEUE_PROVIDER: Optional[str] = Field(default=None, env="QUEUE_PROVIDER")
+    # -------------------------------------------------------------------------
+    # Multi-Cloud Deployment
+    # -------------------------------------------------------------------------
+    CLOUD_PROVIDER: str = Field(default="azure")  # azure, aws, gcp
 
-    # Queue settings
-    SQS_QUEUE_NAME: str = Field(default="indexing-jobs", env="SQS_QUEUE_NAME")
-    REDIS_QUEUE_NAME: str = Field(default="indexing-jobs", env="REDIS_QUEUE_NAME")
-    QUEUE_CONNECTION_STRING: Optional[str] = Field(default=None, env="QUEUE_CONNECTION_STRING")
-    SQS_QUEUE_URL: Optional[str] = Field(default=None, env="SQS_QUEUE_URL")
-    AWS_REGION: str = Field(default="us-east-1", env="AWS_REGION")
-    REDIS_QUEUE_URL: Optional[str] = Field(default=None, env="REDIS_QUEUE_URL")
+    # -------------------------------------------------------------------------
+    # Server Settings
+    # -------------------------------------------------------------------------
+    HOST: str = Field(default="0.0.0.0")
+    PORT: int = Field(default=8000)
 
-    # Intent Detection settings
-    INTENT_DETECTOR_TYPE: str = Field(default="rule", env="INTENT_DETECTOR_TYPE")
-    INTENT_CONFIDENCE_THRESHOLD: float = Field(default=0.8, env="INTENT_CONFIDENCE_THRESHOLD")
-    INTENT_CACHE_ENABLED: bool = Field(default=True, env="INTENT_CACHE_ENABLED")
-    INTENT_CACHE_TTL: int = Field(default=600, env="INTENT_CACHE_TTL")
+    # -------------------------------------------------------------------------
+    # Logging Settings
+    # -------------------------------------------------------------------------
+    LOG_LEVEL: str = Field(default="INFO")
+    LOG_FORMAT: str = Field(default="json")
 
-    CHAT_HISTORY_TURNS_FOR_CONTEXT: int = Field(default=5, env="CHAT_HISTORY_TURNS_FOR_CONTEXT")
-    # Context is summarized (via common_adapters.context_compaction) once the
-    # conversation exceeds this many estimated tokens (~chars/4).
-    CHAT_CONTEXT_TOKEN_THRESHOLD: int = Field(default=200_000, env="CHAT_CONTEXT_TOKEN_THRESHOLD")
+    # -------------------------------------------------------------------------
+    # Request Validation
+    # -------------------------------------------------------------------------
+    MAX_REQUEST_SIZE: int = Field(default=10485760)  # 10MB default
 
-    # Storage settings
-    BLOB_URL_EXPIRY_MINUTES: int = Field(default=60, env="BLOB_URL_EXPIRY_MINUTES")
+    # -------------------------------------------------------------------------
+    # Chat Settings (for common_adapters context_compaction)
+    # -------------------------------------------------------------------------
+    CHAT_HISTORY_TURNS_FOR_CONTEXT: int = Field(default=5)
+    CHAT_CONTEXT_TOKEN_THRESHOLD: int = Field(default=200_000)
 
-    # Server settings
-    HOST: str = Field(default="0.0.0.0", env="HOST")
-    PORT: int = Field(default=8000, env="PORT")
+    # Intent Detection
+    INTENT_DETECTOR_TYPE: str = Field(default="rule")
+    INTENT_CONFIDENCE_THRESHOLD: float = Field(default=0.8)
+    INTENT_CACHE_ENABLED: bool = Field(default=True)
+    INTENT_CACHE_TTL: int = Field(default=600)
 
-    # Logging settings
-    LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
-    LOG_FORMAT: str = Field(default="json", env="LOG_FORMAT")
+    # -------------------------------------------------------------------------
+    # Debug Toggles
+    # -------------------------------------------------------------------------
+    SKIP_DUPLICATE_CHECK: bool = Field(default=False)
 
-    # Rate limiting
-    RATE_LIMIT_ENABLED: bool = Field(default=True, env="RATE_LIMIT_ENABLED")
-    RATE_LIMIT_REQUESTS: int = Field(default=100, env="RATE_LIMIT_REQUESTS")
-    RATE_LIMIT_WINDOW: int = Field(default=60, env="RATE_LIMIT_WINDOW")
+    # -------------------------------------------------------------------------
+    # Legacy Settings (for backward compatibility with some code)
+    # -------------------------------------------------------------------------
+    AWS_REGION: str = Field(default="us-east-1")
+    SQS_QUEUE_NAME: str = Field(default="indexing-jobs")
+    SQS_QUEUE_URL: Optional[str] = Field(default=None)
+    REDIS_QUEUE_NAME: str = Field(default="indexing-jobs")
+    REDIS_QUEUE_URL: Optional[str] = Field(default=None)
 
-    # Request validation
-    MAX_REQUEST_SIZE: int = Field(
-        default=10485760, env="MAX_REQUEST_SIZE"
-    )  # 10MB default
-
-    # Debug toggles
-    SKIP_DUPLICATE_CHECK: bool = Field(default=False, env="SKIP_DUPLICATE_CHECK")
-
-    # Nested settings
+    # -------------------------------------------------------------------------
+    # Nested Settings
+    # -------------------------------------------------------------------------
     database: DatabaseSettings = DatabaseSettings()
     cache: CacheSettings = CacheSettings()
-    azure: AzureSettings = AzureSettings()
-    security: SecuritySettings = SecuritySettings()
-    progress: ProgressSettings = ProgressSettings()
-    lightrag: LightRAGSettings = LightRAGSettings()
     storage: StorageSettings = StorageSettings()
-    blob: BlobSettings = BlobSettings()
+    queue: QueueSettings = QueueSettings()
+    ocr: OCRSettings = OCRSettings()
+    security: SecuritySettings = SecuritySettings()
+    lightrag: LightRAGSettings = LightRAGSettings()
+    progress: ProgressSettings = ProgressSettings()
 
-    @validator("LOG_LEVEL")
+    @field_validator("LOG_LEVEL")
+    @classmethod
     def validate_log_level(cls, v):
         valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         if v.upper() not in valid_levels:
             raise ValueError(f"LOG_LEVEL must be one of {valid_levels}")
         return v.upper()
 
-    @validator("LOG_FORMAT")
+    @field_validator("LOG_FORMAT")
+    @classmethod
     def validate_log_format(cls, v):
         valid_formats = ["console", "json"]
         if v.lower() not in valid_formats:
             raise ValueError(f"LOG_FORMAT must be one of {valid_formats}")
         return v.lower()
 
-    @validator("ENVIRONMENT")
+    @field_validator("ENVIRONMENT")
+    @classmethod
     def validate_environment(cls, v):
         valid_envs = ["development", "staging", "production"]
         if v.lower() not in valid_envs:
@@ -529,7 +522,7 @@ class Settings(BaseSettings):
     @property
     def active_queue_provider(self) -> str:
         """Get effective queue provider with cloud provider fallback."""
-        return (self.QUEUE_PROVIDER or self.CLOUD_PROVIDER or "azure").lower()
+        return (self.queue.QUEUE_PROVIDER or self.CLOUD_PROVIDER or "azure").lower()
 
     @property
     def active_queue_name(self) -> str:
@@ -539,22 +532,28 @@ class Settings(BaseSettings):
             return self.SQS_QUEUE_NAME
         if provider == "redis":
             return self.REDIS_QUEUE_NAME
-        return self.azure.INDEXING_QUEUE_NAME
+        return self.queue.AZURE_INDEXING_QUEUE_NAME
 
     @property
     def active_queue_connection(self) -> Optional[str]:
         """Resolve queue connection string/URL for active provider."""
-        if self.QUEUE_CONNECTION_STRING:
-            return self.QUEUE_CONNECTION_STRING
-
         provider = self.active_queue_provider
         if provider == "aws":
             return self.SQS_QUEUE_URL
         if provider == "redis":
             return self.REDIS_QUEUE_URL or self.database.redis_url
         if provider == "azure_service_bus":
-            return self.azure.SERVICE_BUS_CONNECTION_STRING
-        return self.azure.AZURE_STORAGE_CONNECTION_STRING
+            return self.queue.SERVICE_BUS_CONNECTION_STRING
+        return self.queue.AZURE_STORAGE_CONNECTION_STRING
+
+    # Backward compatibility properties
+    @property
+    def STORAGE_PROVIDER(self) -> str:
+        return self.storage.STORAGE_PROVIDER
+
+    @property
+    def QUEUE_PROVIDER(self) -> str:
+        return self.queue.QUEUE_PROVIDER
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -564,7 +563,10 @@ class Settings(BaseSettings):
     )
 
 
-# Global settings instance
+# =============================================================================
+# Global Settings Instance
+# =============================================================================
+
 settings = Settings()
 
 

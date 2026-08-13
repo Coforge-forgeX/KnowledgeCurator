@@ -92,6 +92,23 @@ class StorageAdapter(ABC):
         """
         pass
 
+    @abstractmethod
+    async def list_files(self, prefix: Optional[str] = None) -> list[str]:
+        """
+        List all files in the container/bucket with optional prefix filter.
+
+        Args:
+            prefix: Optional prefix to filter files (e.g., "workspace/123/")
+
+        Returns:
+            List of file paths (relative to container/bucket root)
+
+        Example:
+            files = await storage.list_files(prefix="workspace/1/")
+            # Returns: ["workspace/1/doc1.pdf", "workspace/1/doc2.pdf", ...]
+        """
+        pass
+
     @property
     @abstractmethod
     def provider_name(self) -> str:

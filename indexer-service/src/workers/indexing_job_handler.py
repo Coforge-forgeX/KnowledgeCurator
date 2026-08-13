@@ -613,18 +613,36 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
     from shared.adapters.storage import get_storage_adapter as _get_storage_adapter
 
     def get_storage_adapter(container_override: Optional[str] = None):
-        """Get storage adapter configured with indexer-service settings"""
+        """Get storage adapter configured with indexer-service settings (provider-agnostic)"""
         from src.core.config import settings
-        connection_string = (
-            settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING
-            or settings.azure.AZURE_STORAGE_CONNECTION_STRING
-        )
 
-        return _get_storage_adapter(
-            provider=settings.storage.STORAGE_PROVIDER or "azure",
-            connection_string=connection_string,
-            container_name=container_override or settings.storage.STORAGE_CONTAINER_NAME,
-        )
+        # Determine provider from settings
+        provider = (settings.storage.STORAGE_PROVIDER or settings.CLOUD_PROVIDER).lower()
+
+        # Build kwargs based on provider
+        kwargs = {}
+        if provider == "azure":
+            connection_string = (
+                settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING
+                or settings.azure.AZURE_STORAGE_CONNECTION_STRING
+            )
+            kwargs["connection_string"] = connection_string
+            kwargs["container_name"] = container_override or settings.storage.STORAGE_CONTAINER_NAME
+        elif provider == "aws":
+            kwargs["bucket_name"] = container_override or settings.storage.S3_BUCKET_NAME
+            kwargs["region_name"] = settings.storage.AWS_REGION
+            kwargs["access_key_id"] = settings.storage.AWS_ACCESS_KEY_ID
+            kwargs["secret_access_key"] = settings.storage.AWS_SECRET_ACCESS_KEY
+        elif provider == "gcp":
+            kwargs["bucket_name"] = container_override or settings.storage.GCS_BUCKET_NAME
+            kwargs["project_id"] = settings.storage.GCP_PROJECT_ID
+            kwargs["credentials_path"] = settings.storage.GCP_CREDENTIALS_PATH
+        elif provider == "local":
+            pass
+        else:
+            raise ValueError(f"Unsupported storage provider: {provider}")
+
+        return _get_storage_adapter(provider=provider, **kwargs)
 
     def resolve_container_name(preferred: Optional[str], default: str) -> str:
         """Resolve target blob container for this job.
@@ -730,15 +748,9 @@ async def process_indexing_job(job_data: dict, retry_count: int = 0) -> dict:
         await create_or_update_indexing_job(job_id, workspace_id, file_path, "downloading", retry_count, kb_id=kb_id)
 
         # Defensive fallback in case adapter ignored override.
+        # Re-create storage adapter if target container differs (provider-agnostic)
         if target_container != getattr(storage, "container_name", target_container):
-            from shared.adapters.storage.adapters.azure_blob import AzureBlobStorageAdapter
-            storage = AzureBlobStorageAdapter(
-                connection_string=(
-                    settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING
-                    or settings.azure.AZURE_STORAGE_CONNECTION_STRING
-                ),
-                container_name=target_container,
-            )
+            storage = get_storage_adapter(container_override=target_container)
 
         success, file_bytes, error = await download_file_from_blob(
             storage, file_path

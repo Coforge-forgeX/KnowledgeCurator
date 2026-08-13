@@ -11,11 +11,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from azure.storage.blob import (
-    BlobSasPermissions,
-    BlobServiceClient,
-    generate_blob_sas,
-)
 from sqlalchemy import select
 
 from src.core.config import settings
@@ -24,6 +19,7 @@ from src.core.exceptions import LightRAGException, ValidationException
 from src.core.lightrag_service import get_lightrag_service
 from src.core.logging import get_logger
 from src.helpers.queue_helpers import get_indexing_queue_helper
+from src.storage import get_storage_adapter
 
 logger = get_logger(__name__)
 
@@ -43,8 +39,7 @@ class RAGService:
     def __init__(self):
         self.lightrag_service = get_lightrag_service()
         self._queue_helper = None  # Lazy-loaded only when needed
-        self.blob_connection_string = settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING
-        self.blob_container_name = settings.storage.STORAGE_CONTAINER_NAME
+        self._storage = None  # Lazy-loaded storage adapter
 
     @property
     def queue_helper(self):
@@ -52,6 +47,13 @@ class RAGService:
         if self._queue_helper is None:
             self._queue_helper = get_indexing_queue_helper()
         return self._queue_helper
+
+    @property
+    def storage(self):
+        """Lazy-load storage adapter only when needed"""
+        if self._storage is None:
+            self._storage = get_storage_adapter()
+        return self._storage
 
     # ========================================================================
     # Document Upload & Indexing
@@ -97,21 +99,9 @@ class RAGService:
             # Construct blob path
             blob_path = self._construct_blob_path(workspace_id, domain, kb_name)
 
-            # Upload files to blob storage
+            # Upload files to storage using provider-agnostic adapter
             uploaded_files = []
             task_ids = []
-
-            if not self.blob_connection_string:
-                raise ValidationException(
-                    message="Azure Blob Storage connection string not configured"
-                )
-
-            blob_service_client = BlobServiceClient.from_connection_string(
-                self.blob_connection_string
-            )
-            container_client = blob_service_client.get_container_client(
-                self.blob_container_name
-            )
 
             for file_name, file_content in zip(file_names, file_contents):
                 try:
@@ -125,25 +115,28 @@ class RAGService:
                     else:
                         file_bytes = file_content
 
-                    # Upload to blob
+                    # Upload to storage using adapter
                     full_blob_path = f"{blob_path}/{file_name}"
-                    blob_client = container_client.get_blob_client(full_blob_path)
-                    blob_client.upload_blob(file_bytes, overwrite=True)
+                    blob_info = await self.storage.upload(
+                        filename=full_blob_path,
+                        data=file_bytes,
+                        content_type=None,  # Let adapter determine
+                    )
 
-                    uploaded_files.append(full_blob_path)
+                    uploaded_files.append(blob_info.blob_name)
 
                     # Create file task for indexing
                     async with get_async_session() as session:
                         file_task = FileTask(
-                            container_name=self.blob_container_name,
+                            container_name=self.storage.container_name,
                             upload_path=blob_path,
                             domain=domain or "",
                             kb_name=kb_name or "",
-                            file_path=full_blob_path,
+                            file_path=blob_info.blob_name,
                             file_name=file_name,
                             workspace_id=workspace_id,
                             status="pending",
-                            file_size=len(file_bytes),
+                            file_size=blob_info.size_bytes,
                             uploaded_by=str(user_id),
                             created_at=datetime.now(timezone.utc),
                             updated_at=datetime.now(timezone.utc),
@@ -449,24 +442,17 @@ class RAGService:
             Example: {"domain1": ["kb1", "kb2"], "domain2": ["kb1"]}
         """
         try:
-            logger.info("Fetching blob structure", workspace_id=workspace_id)
+            logger.info("Fetching blob structure using storage adapter", workspace_id=workspace_id)
 
-            if not self.blob_connection_string:
-                return {"error": "Azure Blob Storage not configured"}
-
-            blob_service_client = BlobServiceClient.from_connection_string(
-                self.blob_connection_string
-            )
-            container_client = blob_service_client.get_container_client(
-                self.blob_container_name
-            )
+            # Use storage adapter to list all files
+            blob_paths = await self.storage.list_files()
 
             structure = {}
 
-            # List all blobs and extract domain/kb structure
-            async for blob in container_client.list_blobs():
-                # Expecting path like "domain/kb/filename"
-                parts = blob.name.split("/")
+            # Extract domain/kb structure from file paths
+            # Expecting path like "domain/kb/filename"
+            for blob_path in blob_paths:
+                parts = blob_path.split("/")
                 if len(parts) >= 2:
                     domain, kb = parts[0], parts[1]
                     if domain not in structure:
@@ -478,6 +464,7 @@ class RAGService:
 
             logger.info(
                 "Fetched blob structure",
+                provider=self.storage.provider_name,
                 domain_count=len(structure),
             )
 
@@ -510,21 +497,10 @@ class RAGService:
         """
         try:
             logger.info(
-                "Deleting files from blob",
+                "Deleting files using storage adapter",
                 workspace_id=workspace_id,
                 file_count=len(file_names),
-            )
-
-            if not self.blob_connection_string:
-                raise ValidationException(
-                    message="Azure Blob Storage not configured"
-                )
-
-            blob_service_client = BlobServiceClient.from_connection_string(
-                self.blob_connection_string
-            )
-            container_client = blob_service_client.get_container_client(
-                self.blob_container_name
+                provider=self.storage.provider_name,
             )
 
             deleted_files = []
@@ -538,29 +514,32 @@ class RAGService:
                     else:
                         blob_path = self._construct_blob_path(workspace_id, domain, kb) + f"/{file_name}"
 
-                    blob_client = container_client.get_blob_client(blob_path)
-
                     try:
-                        blob_client.delete_blob()
-                        deleted_files.append(blob_path)
-                        logger.info("Deleted blob", blob_path=blob_path)
+                        # Use storage adapter to delete
+                        success = await self.storage.delete(blob_path)
 
-                        # Update file task status
-                        async with get_async_session() as session:
-                            stmt = select(FileTask).where(
-                                FileTask.file_path == blob_path,
-                                FileTask.workspace_id == workspace_id,
-                            )
-                            result = await session.execute(stmt)
-                            task = result.scalar_one_or_none()
+                        if success:
+                            deleted_files.append(blob_path)
+                            logger.info("Deleted file", blob_path=blob_path)
 
-                            if task:
-                                await session.delete(task)
-                                await session.commit()
+                            # Update file task status
+                            async with get_async_session() as session:
+                                stmt = select(FileTask).where(
+                                    FileTask.file_path == blob_path,
+                                    FileTask.workspace_id == workspace_id,
+                                )
+                                result = await session.execute(stmt)
+                                task = result.scalar_one_or_none()
+
+                                if task:
+                                    await session.delete(task)
+                                    await session.commit()
+                        else:
+                            logger.warning("File not found for deletion", blob_path=blob_path)
 
                     except Exception as e:
                         logger.warning(
-                            "Failed to delete blob",
+                            "Failed to delete file",
                             error=e,
                             blob_path=blob_path,
                         )

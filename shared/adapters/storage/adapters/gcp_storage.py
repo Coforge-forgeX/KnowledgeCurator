@@ -193,3 +193,55 @@ class GCPStorageAdapter(StorageAdapter):
         except Exception as e:
             logger.error(f"Failed to download GCS blob {blob_name}: {e}")
             raise
+
+    async def list_files(self, prefix: Optional[str] = None) -> list[str]:
+        """List all blobs in GCS bucket with optional prefix"""
+        import asyncio
+
+        try:
+            # Build the full prefix including path_prefix
+            if prefix:
+                full_prefix = self._build_blob_name(prefix.strip())
+            elif self._path_prefix:
+                full_prefix = self._path_prefix.rstrip("/") + "/"
+            else:
+                full_prefix = None
+
+            file_paths: list[str] = []
+
+            # List blobs
+            def _list_blobs():
+                paths = []
+                blobs = self._bucket.list_blobs(prefix=full_prefix) if full_prefix else self._bucket.list_blobs()
+
+                for blob in blobs:
+                    # Skip directory markers (blobs ending with /)
+                    if not blob.name.endswith('/'):
+                        # Remove path_prefix if present to return relative paths
+                        if self._path_prefix and blob.name.startswith(self._path_prefix):
+                            relative_name = blob.name[len(self._path_prefix):].lstrip('/')
+                            paths.append(relative_name)
+                        else:
+                            paths.append(blob.name)
+                return paths
+
+            file_paths = await asyncio.to_thread(_list_blobs)
+
+            logger.info(
+                f"Listed {len(file_paths)} files from GCS",
+                prefix=prefix or "(all)",
+            )
+
+            return file_paths
+
+        except Exception as e:
+            logger.error(f"Failed to list files from GCS: {e}", exc_info=True)
+            raise
+
+    @property
+    def provider_name(self) -> str:
+        return "gcp"
+
+    @property
+    def container_name(self) -> str:
+        return self._bucket_name

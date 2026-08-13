@@ -82,6 +82,27 @@ class QueueSettings(BaseSettings):
     )
 
 
+class RedisSettings(BaseSettings):
+    """Redis configuration settings."""
+
+    # Redis connection
+    REDIS_URL: Optional[str] = Field(default=None)
+    REDIS_HOST: str = Field(default="localhost")
+    REDIS_PORT: int = Field(default=6379)
+    REDIS_DB: int = Field(default=0)
+    REDIS_PASSWORD: Optional[str] = Field(default=None)
+
+    # Redis queue name
+    REDIS_QUEUE_NAME: str = Field(default="indexing-jobs")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+
 class AzureSettings(BaseSettings):
     """Azure-specific configuration settings."""
 
@@ -241,6 +262,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     queue: QueueSettings = Field(default_factory=QueueSettings)
     azure: AzureSettings = Field(default_factory=AzureSettings)
+    redis: RedisSettings = Field(default_factory=RedisSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     processing: ProcessingSettings = Field(default_factory=ProcessingSettings)

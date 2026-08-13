@@ -18,8 +18,8 @@ from typing import List, Optional, Tuple
 
 from sqlalchemy import select
 
-from shared.adapters.storage import get_storage_adapter as _get_storage_adapter
-from src.queue_adapters import get_queue_adapter as _get_queue_adapter
+from src.storage import get_storage_adapter
+from src.queue_adapters import get_queue_adapter
 
 from src.core import (
     get_logger,
@@ -55,20 +55,10 @@ def should_skip_duplicate_check() -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
-# Helper functions to get configured adapters
-def get_storage_adapter(container_name: Optional[str] = None):
-    """Get storage adapter configured with kb-rest-service settings"""
-    from src.core.config import settings
-
-    return _get_storage_adapter(
-        provider=settings.storage.STORAGE_PROVIDER or "azure",
-        connection_string=settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING,
-        container_name=container_name or settings.storage.STORAGE_CONTAINER_NAME,
-    )
+# Use the service's provider-agnostic storage adapter
+from src.storage import get_storage_adapter
 
 
-# Queue adapter is imported from src.queue_adapters and handles config automatically
-get_queue_adapter = _get_queue_adapter
 
 
 async def upload_file_to_storage(
@@ -91,7 +81,8 @@ async def upload_file_to_storage(
         (success, error_message, file_size_bytes)
     """
     try:
-        storage = get_storage_adapter(container_name=container)
+        # Use container-specific storage adapter (respects workspace container overrides)
+        storage = get_storage_adapter(container_override=container)
 
         # Decode base64 content only when raw bytes are not provided.
         if file_bytes is None:

@@ -110,9 +110,9 @@ class MongoDBService:
         try:
             from src.core.config import settings
 
-            mongodb_uri = settings.database.MONGODB_DATABASE_URI or settings.database.MONGODB_URI
+            mongodb_uri = settings.database.MONGODB_URI
             if not mongodb_uri:
-                raise ValueError("MONGODB_DATABASE_URI environment variable not set")
+                raise ValueError("MONGODB_URI environment variable not set")
 
             logger.info("Initializing MongoDB connection")
 
@@ -127,7 +127,7 @@ class MongoDBService:
             await self._client.admin.command("ping")
 
             # Get database name from environment or use default
-            db_name = settings.database.MONGODB_DATABASE_NAME or settings.database.MONGODB_DATABASE
+            db_name = settings.database.MONGODB_DATABASE
             self._db = self._client[db_name]
 
             self._initialized = True

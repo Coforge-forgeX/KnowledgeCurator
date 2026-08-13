@@ -10,7 +10,7 @@ from src.core.redis import redis_manager
 from src.helpers.file_token import decode_signed_file_id
 from src.services.workspace_service import get_workspace_service
 from src.common import create_error_response, create_internal_error_response, create_success_response
-from shared.adapters.storage import get_storage_adapter
+from src.storage import get_storage_adapter
 
 logger = get_logger(__name__)
 
@@ -78,11 +78,8 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
                 message=f"You are not authorized to access workspace {workspace_id}"
             )
 
-        storage = get_storage_adapter(
-            provider=provider,
-            connection_string=settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING,
-            container_name=container_name,
-        )
+        # Use service's provider-agnostic storage adapter
+        storage = get_storage_adapter()
 
         exists = await storage.blob_exists(blob_path)
         if not exists:

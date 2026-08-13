@@ -4,7 +4,6 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from azure.storage.blob import BlobServiceClient
 from sqlalchemy import select
 
 from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
@@ -17,6 +16,7 @@ from src.helpers.workspace_kb_helpers import get_kb_id_for_upload
 from src.helpers.workspace_permissions import require_workspace_admin_curator
 from src.common import create_error_response, create_internal_error_response, create_success_response, parse_request
 from src.functions.api.upload_and_index.__init__ import enqueue_indexing_job
+from src.storage import get_storage_adapter
 
 from .payloads import (
     IndexedFileTaskResponse,
@@ -35,26 +35,27 @@ def _normalize_prefix(prefix: str) -> str:
 
 
 async def _list_blob_paths(container_name: str, prefix: str) -> List[str]:
-    """List blob paths from configured container under a strict prefix."""
-    from src.core.config import settings
+    """List blob paths from configured storage using provider-agnostic adapter."""
+    try:
+        storage = get_storage_adapter()
+        normalized_prefix = _normalize_prefix(prefix)
 
-    connection_string = settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING
-    if not connection_string:
+        # Use storage adapter's list_files method
+        blob_paths = await storage.list_files(prefix=normalized_prefix if normalized_prefix else None)
+
+        logger.info(
+            "Listed blob paths using storage adapter",
+            provider=storage.provider_name,
+            container=container_name,
+            prefix=normalized_prefix or "(all)",
+            count=len(blob_paths),
+        )
+
+        return blob_paths
+
+    except Exception as e:
+        logger.error(f"Failed to list blob paths: {e}", exc_info=True)
         return []
-
-    blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-    container_client = blob_service_client.get_container_client(container_name)
-
-    normalized_prefix = _normalize_prefix(prefix)
-
-    blob_paths: List[str] = []
-    for blob in container_client.list_blobs(name_starts_with=normalized_prefix):
-        blob_name = str(getattr(blob, "name", "") or "")
-        if not blob_name or blob_name.endswith("/"):
-            continue
-        blob_paths.append(blob_name)
-
-    return blob_paths
 
 
 async def _get_uploader_name(user_id: int) -> str:

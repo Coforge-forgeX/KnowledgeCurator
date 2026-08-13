@@ -8,8 +8,6 @@ import os
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from azure.storage.blob import BlobSasPermissions, BlobServiceClient, generate_blob_sas
-
 from src.core.config import settings
 from src.core.exceptions import LightRAGException, ValidationException
 from src.core.logging import get_logger
@@ -23,6 +21,7 @@ from src.models.rag_models import (
     RAGQueryResult,
 )
 from src.services.query_strategies import QueryStrategyFactory
+from src.storage import get_storage_adapter
 
 logger = get_logger(__name__)
 
@@ -33,25 +32,23 @@ class SourceEnricher:
 
     Design:
     - Single Responsibility: Only generates URLs
-    - Dependency Injection: Blob client injected
+    - Dependency Injection: Storage adapter injected
     - No side effects: Pure transformation
+    - Provider Agnostic: Works with Azure, AWS, GCP
     """
 
-    def __init__(self, blob_connection_string: str, container_name: str):
-        self.blob_connection_string = blob_connection_string
-        self.container_name = container_name
-        self._blob_service_client = None
+    def __init__(self):
+        """Initialize with provider-agnostic storage adapter"""
+        self._storage = None
 
     @property
-    def blob_service_client(self) -> BlobServiceClient:
-        """Lazy initialization of blob service client"""
-        if not self._blob_service_client:
-            self._blob_service_client = BlobServiceClient.from_connection_string(
-                self.blob_connection_string
-            )
-        return self._blob_service_client
+    def storage(self):
+        """Lazy initialization of storage adapter"""
+        if self._storage is None:
+            self._storage = get_storage_adapter()
+        return self._storage
 
-    def enrich_reference(
+    async def enrich_reference(
         self,
         reference: DocumentReference,
         domain: str,
@@ -86,26 +83,23 @@ class SourceEnricher:
                 role_id
             )
 
-            # Check if blob exists
-            blob_client = self.blob_service_client.get_blob_client(
-                container=self.container_name,
-                blob=blob_path
-            )
-
-            if not blob_client.exists():
+            # Check if file exists using storage adapter
+            exists = await self.storage.blob_exists(blob_path)
+            if not exists:
                 logger.warning(
-                    f"Blob not found for reference: {reference.file_path}",
-                    blob_path=blob_path
+                    f"File not found for reference: {reference.file_path}",
+                    blob_path=blob_path,
+                    provider=self.storage.provider_name,
                 )
                 return None
 
-            # Generate SAS URL
-            download_url = self._generate_sas_url(blob_path)
+            # Generate download URL using storage adapter
+            download_url = await self._generate_download_url(blob_path)
 
             enriched = EnrichedSource(
                 file_name=f"{reference.citation_number} {reference.file_name}",
                 download_url=download_url,
-                container_name=self.container_name,
+                container_name=self.storage.container_name,
                 blob_path=blob_path,
                 download_name=reference.file_name,
                 citation=reference.citation_number
@@ -152,50 +146,27 @@ class SourceEnricher:
 
         return '/'.join(parts)
 
-    def _generate_sas_url(self, blob_path: str) -> str:
-        """Generate SAS URL for blob"""
+    async def _generate_download_url(self, blob_path: str) -> str:
+        """Generate signed download URL using storage adapter (provider-agnostic)"""
         try:
-            # Get blob client
-            blob_client = self.blob_service_client.get_blob_client(
-                container=self.container_name,
-                blob=blob_path
+            # Use storage adapter to generate download URL
+            # Works for Azure SAS, AWS presigned, GCP signed URLs
+            url = await self.storage.generate_download_url(
+                filename=blob_path,
+                expiry_minutes=525600  # 1 year (365 * 24 * 60)
             )
 
-            # Extract account name and key from connection string
-            account_name = self.blob_service_client.account_name
-            account_key = self._extract_account_key()
-
-            if not account_key:
-                raise ValueError("Could not extract account key from connection string")
-
-            # Generate SAS token
-            sas_token = generate_blob_sas(
-                account_name=account_name,
-                container_name=self.container_name,
-                blob_name=blob_path,
-                account_key=account_key,
-                permission=BlobSasPermissions(read=True),
-                expiry=datetime.utcnow() + timedelta(days=365 * 10)  # 10 years
+            logger.debug(
+                "Generated download URL",
+                blob_path=blob_path,
+                provider=self.storage.provider_name,
             )
 
-            # Build URL
-            url = f"{blob_client.url}?{sas_token}"
             return url
 
         except Exception as e:
-            logger.error(f"Failed to generate SAS URL", error=e, blob_path=blob_path)
+            logger.error(f"Failed to generate download URL", error=e, blob_path=blob_path)
             raise
-
-    def _extract_account_key(self) -> Optional[str]:
-        """Extract account key from connection string"""
-        try:
-            parts = self.blob_connection_string.split(';')
-            for part in parts:
-                if part.startswith('AccountKey='):
-                    return part.split('=', 1)[1]
-            return None
-        except Exception:
-            return None
 
 
 class RAGQueryService:
@@ -210,29 +181,26 @@ class RAGQueryService:
 
     def __init__(
         self,
-        blob_connection_string: Optional[str] = None,
-        blob_container_name: Optional[str] = None
+        blob_connection_string: Optional[str] = None,  # Deprecated - kept for backwards compatibility
+        blob_container_name: Optional[str] = None  # Deprecated - kept for backwards compatibility
     ):
         """
-        Initialize RAG Query Service.
+        Initialize RAG Query Service with provider-agnostic storage.
 
         Args:
-            blob_connection_string: Azure Blob Storage connection string
-            blob_container_name: Blob storage container name
+            blob_connection_string: (Deprecated) Kept for backwards compatibility
+            blob_container_name: (Deprecated) Kept for backwards compatibility
         """
-        self.blob_connection_string = blob_connection_string or \
-            settings.storage.AZURE_BLOB_STORAGE_CONNECTION_STRING
-        self.blob_container_name = blob_container_name or \
-            settings.storage.STORAGE_CONTAINER_NAME
-
-        if not self.blob_connection_string:
-            logger.warning("Blob storage not configured - source enrichment disabled")
-            self.source_enricher = None
-        else:
-            self.source_enricher = SourceEnricher(
-                self.blob_connection_string,
-                self.blob_container_name
+        # Initialize source enricher with storage adapter (provider-agnostic)
+        try:
+            self.source_enricher = SourceEnricher()
+            logger.info(
+                "Source enricher initialized",
+                provider=self.source_enricher.storage.provider_name,
             )
+        except Exception as e:
+            logger.warning(f"Failed to initialize source enricher: {e} - source enrichment disabled")
+            self.source_enricher = None
 
     async def query(
         self,
@@ -464,7 +432,7 @@ class RAGQueryService:
         enriched_sources = []
 
         for ref in references:
-            enriched = self.source_enricher.enrich_reference(
+            enriched = await self.source_enricher.enrich_reference(
                 ref,
                 domain,
                 kb_name,

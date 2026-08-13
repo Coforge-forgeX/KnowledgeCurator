@@ -310,6 +310,11 @@ async def indexing_worker():
                     continue
 
                 # Poll queue for messages (short wait since we're continuously polling)
+                # logger.info(
+                #     "Polling for messages",
+                #     available_slots=available_slots,
+                #     active_tasks=len(active_tasks)
+                # )
                 messages = await queue.receive_messages(
                     max_messages=available_slots,
                     visibility_timeout=300,  # 5 minutes to process
@@ -318,7 +323,8 @@ async def indexing_worker():
 
                 if not messages:
                     # No messages, continue polling
-                    await asyncio.sleep(1)
+                    logger.info("No messages in queue, continuing to poll")
+                    await asyncio.sleep(5)
                     continue
 
                 # Spawn tasks for new messages immediately (non-blocking)

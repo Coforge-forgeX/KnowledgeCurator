@@ -34,10 +34,10 @@ def _resolve_backend() -> str:
     # Auto-detect from cloud provider
     cloud = resolve_cloud_provider(
         explicit_provider=settings.CLOUD_PROVIDER,
-        aws_region=settings.AWS_REGION,
+        aws_region=settings.storage.AWS_REGION,
         azure_website_name=None,  # Not available in settings
-        azure_webjobs_storage=settings.azure.AZURE_STORAGE_CONNECTION_STRING,
-        gcp_project_id=None,  # Add to settings if needed
+        azure_webjobs_storage=settings.storage.AZURE_STORAGE_CONNECTION_STRING,
+        gcp_project_id=settings.storage.GCP_PROJECT_ID,
     )
     if cloud == CloudProvider.AZURE:
         return "azure_service_bus"

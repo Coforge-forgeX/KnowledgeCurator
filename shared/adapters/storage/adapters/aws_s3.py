@@ -198,3 +198,62 @@ class AWSS3StorageAdapter(StorageAdapter):
         except Exception as e:
             logger.error(f"Failed to download S3 object {key}: {e}")
             raise
+
+    async def list_files(self, prefix: Optional[str] = None) -> list[str]:
+        """List all objects in S3 bucket with optional prefix"""
+        import asyncio
+
+        try:
+            # Build the full prefix including path_prefix
+            if prefix:
+                full_prefix = self._build_key(prefix.strip())
+            elif self._path_prefix:
+                full_prefix = self._path_prefix.rstrip("/") + "/"
+            else:
+                full_prefix = ""
+
+            file_paths: list[str] = []
+
+            # List objects with pagination
+            def _list_objects():
+                paths = []
+                paginator = self._s3_client.get_paginator('list_objects_v2')
+                page_iterator = paginator.paginate(
+                    Bucket=self._bucket,
+                    Prefix=full_prefix
+                )
+
+                for page in page_iterator:
+                    if 'Contents' in page:
+                        for obj in page['Contents']:
+                            key = obj['Key']
+                            # Skip directory markers (keys ending with /)
+                            if not key.endswith('/'):
+                                # Remove path_prefix if present to return relative paths
+                                if self._path_prefix and key.startswith(self._path_prefix):
+                                    relative_key = key[len(self._path_prefix):].lstrip('/')
+                                    paths.append(relative_key)
+                                else:
+                                    paths.append(key)
+                return paths
+
+            file_paths = await asyncio.to_thread(_list_objects)
+
+            logger.info(
+                f"Listed {len(file_paths)} files from S3",
+                prefix=prefix or "(all)",
+            )
+
+            return file_paths
+
+        except Exception as e:
+            logger.error(f"Failed to list files from S3: {e}", exc_info=True)
+            raise
+
+    @property
+    def provider_name(self) -> str:
+        return "aws"
+
+    @property
+    def container_name(self) -> str:
+        return self._bucket

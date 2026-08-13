@@ -177,3 +177,64 @@ class LocalStorageAdapter(StorageAdapter):
         except Exception as e:
             logger.error(f"Failed to download local file: {e}")
             raise
+
+    async def list_files(self, prefix: Optional[str] = None) -> list[str]:
+        """List all files in local storage with optional prefix"""
+        try:
+            file_paths: list[str] = []
+
+            # Determine the starting directory
+            if prefix:
+                # If prefix provided, list from that subdirectory
+                search_path = self._build_file_path(prefix.strip())
+                if not search_path.exists():
+                    logger.warning(f"Prefix path does not exist: {search_path}")
+                    return []
+            else:
+                # List from container root
+                search_path = self._base_path / self._container
+
+            if not search_path.exists():
+                logger.warning(f"Storage path does not exist: {search_path}")
+                return []
+
+            # Recursively find all files
+            if search_path.is_file():
+                # Prefix points to a single file
+                relative_path = self._build_relative_path(prefix.strip())
+                file_paths.append(relative_path)
+            else:
+                # Prefix points to a directory, list all files recursively
+                for file_path in search_path.rglob("*"):
+                    if file_path.is_file():
+                        # Get path relative to container root
+                        try:
+                            relative_to_container = file_path.relative_to(self._base_path / self._container)
+                            # Apply path_prefix if set
+                            if self._path_prefix:
+                                relative_path = f"{self._path_prefix.rstrip('/')}/{relative_to_container}".lstrip('/')
+                            else:
+                                relative_path = str(relative_to_container)
+                            file_paths.append(relative_path.replace("\\", "/"))  # Normalize to forward slashes
+                        except ValueError:
+                            # File is outside container root, skip
+                            continue
+
+            logger.info(
+                f"Listed {len(file_paths)} files from local storage",
+                prefix=prefix or "(all)",
+            )
+
+            return file_paths
+
+        except Exception as e:
+            logger.error(f"Failed to list files from local storage: {e}", exc_info=True)
+            raise
+
+    @property
+    def provider_name(self) -> str:
+        return "local"
+
+    @property
+    def container_name(self) -> str:
+        return self._container

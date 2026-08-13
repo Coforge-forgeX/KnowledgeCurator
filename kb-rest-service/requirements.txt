@@ -38,21 +38,56 @@ structlog==24.1.0
 aiohttp==3.14.1
 requests==2.34.2
 
-# Cloud providers - Azure (default)
+# ============================================================================
+# Cloud Provider Dependencies
+# ============================================================================
+# Install based on your deployment target:
+#   - Azure only:     Install all dependencies (default)
+#   - AWS only:       Install all dependencies (AWS packages will be used)
+#   - GCP only:       Install all dependencies (GCP packages will be used)
+#   - Multi-cloud:    Install all dependencies (all packages will be available)
+#
+# Alternatively, use optional extras from pyproject.toml:
+#   pip install "kb-rest-service[aws]"      # Azure + AWS
+#   pip install "kb-rest-service[gcp]"      # Azure + GCP
+#   pip install "kb-rest-service[all-clouds]"  # All providers
+# ============================================================================
+
+# --- Azure Cloud Provider (default, always installed) ---
 azure-functions==1.18.0
 azure-storage-blob==12.30.0
 azure-storage-queue==12.9.0
 azure-servicebus==7.12.1
 
+# --- AWS Cloud Provider (for AWS Lambda, S3, SQS deployments) ---
+# Required for: AWS Lambda runtime, AWS S3 storage, AWS SQS queue, AWS Textract OCR
+boto3>=1.34.0,<2.0
+
+# --- GCP Cloud Provider (for GCP Cloud Functions, Cloud Storage deployments) ---
+# Required for: GCP Cloud Functions runtime, GCP Cloud Storage, GCP Document AI OCR
+google-cloud-storage>=2.14.0,<3.0
+google-cloud-documentai>=2.20.0,<3.0
+
+# --- Azure OCR (Document Intelligence) ---
+# Required for: Azure Document Intelligence OCR (chat file extraction fallback)
+# Can be used from any cloud provider (cross-cloud API call)
+azure-ai-documentintelligence==1.0.2
+
+# ============================================================================
 # RAG and AI
+# ============================================================================
 lightrag-hku==1.4.16
 numpy==2.3.5
 
-# Document text extraction (shared/text_extraction, used by chat file-context extraction)
-azure-ai-documentintelligence==1.0.2
+# ============================================================================
+# Document text extraction (shared/text_extraction)
+# ============================================================================
+# Used for chat file-context extraction and indexing pipeline
 python-docx==1.2.0
 PyPDF2==3.0.1
 pdfplumber==0.11.0
 
+# ============================================================================
 # Internal packages
+# ============================================================================
 git+https://github.com/Coforge-forgeX/forgexpackages.git@main#egg=common-adapters
