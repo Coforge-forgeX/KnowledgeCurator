@@ -426,15 +426,20 @@ class UserConfigManager:
 
     def set_config(self, workspace_id: str, user_id: str, config: dict):
         """
-        update existing fields or create new fields for a user config in the workspace. 
+        update existing fields or create new fields for a user config in the workspace.
         config fields:
        {}
-        """ 
-        
+        """
+
         # Build filter to match user and workspace
         filter = {"workspace_id": workspace_id, "user_id": user_id}
-        update = {"$set": config}
-        
+
+        # Set updated_at on every update, created_at only on insert
+        update = {
+            "$set": {**config, "updated_at": datetime.utcnow()},
+            "$setOnInsert": {"created_at": datetime.utcnow()}
+        }
+
         try:
             result = self.config_collection.update_one(filter, update, upsert=True)
             if result.upserted_id:
@@ -459,8 +464,10 @@ class UserConfigManager:
             query = {"workspace_id": workspace_id, "user_id": user_id}
             config_doc = self.config_collection.find_one(query)
             if config_doc:
-                # Remove MongoDB internal _id field
+                # Remove MongoDB internal fields
                 config_doc.pop("_id", None)
+                config_doc.pop("created_at", None)
+                config_doc.pop("updated_at", None)
                 if fields is None:
                     return config_doc
                 else:
