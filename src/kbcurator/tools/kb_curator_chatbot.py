@@ -27,6 +27,7 @@ from kbcurator.utils.access_validation import (
     validate_chatbot_request_scope,
 )
 from kbcurator.utils.request_context import request_var
+from common_adapters.trustai.exceptions import GuardrailBlockedException
 
 # Cancellation support (used by UI Stop button via `cancel_conversation` MCP tool)
 from common_adapters.cancel_convesation import (
@@ -209,6 +210,8 @@ def validate_url(url: str) -> bool:
 
 class Chatbot:
     """ Interactive chatbot for knowledge base management. """
+    
+    
     def __init__(
             self, 
             industry: str, 
@@ -347,12 +350,13 @@ class Chatbot:
                 if not op_task.done():
                     op_task.cancel()
 
+        user_message_id = None  # Track user message ID for rollback on guardrail block
         try:
             cancel_watcher = asyncio.create_task(_cancel_watch())
 
             print(f"Inside Process message: {message}")
             context = self.get_or_create_context(self.session_id)
-            insert_id = self.session.append_message(self.workspace_id, self.user_id, self.session_id, "user", message, [])
+            user_message_id = self.session.append_message(self.workspace_id, self.user_id, self.session_id, "user", message, [])
             # Seed title/time once when the first user message for this session is stored.
             self.session.ensure_conversation_metadata(
                 self.workspace_id,
@@ -476,6 +480,10 @@ class Chatbot:
             return response
         except (asyncio.CancelledError, CancelledError):
             return {"Request cancelled."}
+        except GuardrailBlockedException:
+            # Re-raise to be handled by message_gpt for consistent UI responses
+            # User message is preserved in history (same as cancellation)
+            raise
         except Exception as e:
             print(f"Error processing message: {e}")
             return "Sorry, something went wrong while processing your request. Please try again"
@@ -551,8 +559,8 @@ class Chatbot:
             history = history[-5:]
             # print(f"History: {history}, type: {type(history)}")
             # Check for cancellation before starting long-running RAG.
-            if await is_cancelled(conversation_id=str(self.session_id)):
-                raise asyncio.CancelledError()
+            # if await is_cancelled(conversation_id=str(self.session_id)):
+            #     raise asyncio.CancelledError()
 
             assistant_message = await self.mcp_tool_obj.query_rag(
                 'Search',
@@ -564,8 +572,8 @@ class Chatbot:
             )
 
             # Check cancellation again right after the call.
-            if await is_cancelled(conversation_id=str(self.session_id)):
-                raise asyncio.CancelledError()
+            # if await is_cancelled(conversation_id=str(self.session_id)):
+            #     raise asyncio.CancelledError()
             print(f"Query RAG response type: {type(assistant_message)}")
             
             # Check if response is structured (dict with sources) or plain text
@@ -1278,6 +1286,23 @@ async def message_gpt(
             }
         else:
             return {"response": response}
+    except GuardrailBlockedException as gbe:
+        
+        logger.warning(
+            f"[GUARDRAIL_BLOCKED] workspace={workspace_id} user={user_id} "
+            f"blocked_by={gbe.blocked_by} details={gbe.details}"
+        )
+        
+        # Mark the last user message as blocked
+        try:
+            bot.session.mark_last_message_blocked(workspace_id, user_id, session_id)
+        except Exception as mark_err:
+            logger.error(f"Failed to mark message as blocked: {mark_err}")
+        return {
+            "response": gbe.get_user_message(),
+            "blocked": True,
+            "blocked_by": gbe.blocked_by
+        }
     except Exception as e:
         print(f"Error in message_gpt: {e}")
         return {"error":f"Sorry, something went wrong while processing your request. Please try again.{e}"}
@@ -1468,7 +1493,7 @@ def load_conversation(workspace_id: str, user_id: str, session_id: str) -> Dict[
         user_id_q = user_id
 
     try:
-        response = session.load_history(workspace_id_q, user_id_q, session_id)
+        response = session.load_history(workspace_id_q, user_id_q, session_id,blocked=False)
         return {"response": response}
     except Exception as e:
         return {"error": f"Error occurred while loading conversation: {e}"}
