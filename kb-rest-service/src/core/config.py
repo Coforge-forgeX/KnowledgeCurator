@@ -345,7 +345,7 @@ class LightRAGSettings(BaseSettings):
 
     # LightRAG working directory
     LIGHTRAG_WORKING_DIR: Optional[str] = Field(
-        default=None,
+        default="/tmp/lightrag_data",
         env="LIGHTRAG_WORKING_DIR"
     )
 
