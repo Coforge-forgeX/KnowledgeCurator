@@ -328,7 +328,7 @@ class LightRAGSettings(BaseSettings):
     """
 
     # Working directory
-    LIGHTRAG_WORKING_DIR: str = Field(default="./lightrag_data")
+    LIGHTRAG_WORKING_DIR: str = Field(default="/tmp/lightrag_data")
 
     # Storage backend types
     VECTOR_STORAGE_TYPE: str = Field(default="PGVectorStorage")
