@@ -55,7 +55,7 @@ ENV CLOUD_PROVIDER=azure
 ENV STORAGE_PROVIDER=azure
 ENV QUEUE_PROVIDER=azure
 ENV PORT=8081
-ENV ENVIRONMENT=production
+ENV ENVIRONMENT=development
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
