@@ -173,8 +173,8 @@ class ProcessingSettings(BaseSettings):
 class LightRAGSettings(BaseSettings):
     """LightRAG configuration settings."""
 
-    WORKING_DIR: str = Field(default="./lightrag_data", validation_alias="LIGHTRAG_WORKING_DIR")
-    EMBEDDING_DIM: int = Field(default=3072, validation_alias="LIGHTRAG_EMBEDDING_DIM")
+    WORKING_DIR: str = Field(default="/tmp/lightrag_data", validation_alias="LIGHTRAG_WORKING_DIR")
+    EMBEDDING_DIM: int = Field(default=1024, validation_alias="LIGHTRAG_EMBEDDING_DIM")
     MAX_TOKEN_SIZE: int = Field(default=8192, validation_alias="LIGHTRAG_MAX_TOKEN_SIZE")
     CHUNK_TOKEN_SIZE: int = Field(default=600, validation_alias="LIGHTRAG_CHUNK_TOKEN_SIZE")
     CHUNK_OVERLAP_TOKEN_SIZE: int = Field(default=150, validation_alias="LIGHTRAG_CHUNK_OVERLAP_TOKEN_SIZE")
