@@ -5,14 +5,17 @@ import psycopg2
 from configparser import ConfigParser
 from sqlalchemy import func
 from kbcurator.utils.db import db
-import sys
 from os import getenv
+import sys
 import threading
 import requests
 from kbcurator.utils.auth import create_jwt_token, verify_jwt_token, create_refresh_token, verify_refresh_token
 from kbcurator.utils.request_context import request_var
 from sqlalchemy import select, func as sql_func
 from datetime import datetime, timezone
+import os
+from urllib.parse import quote_plus
+import kbcurator.server.server as server
 
 # --- New Import for Password Hashing ---
 from passlib.hash import argon2
@@ -241,6 +244,7 @@ def login_user(email: str, password: str):
                         seen_workspaces.add(workspace_id)
                         workspaces.append({
                             'workspace_id': workspace.workspace_id,
+                            'public_workspace_id': str(workspace.public_workspace_id) if workspace.public_workspace_id else None,
                             'workspace_name': workspace.workspace_name,
                             'workspace_desc': workspace.workspace_desc
                         })
@@ -402,6 +406,7 @@ def refresh_jwt_token(refresh_token: str = None):
                 seen_workspaces.add(workspace_id)
                 workspaces.append({
                     'workspace_id': workspace.workspace_id,
+                    'public_workspace_id': str(workspace.public_workspace_id) if workspace.public_workspace_id else None,
                     'workspace_name': workspace.workspace_name,
                     'workspace_desc': workspace.workspace_desc
                 })
@@ -622,6 +627,7 @@ def fetch_workspaces_list(user_id):
                 dummy_workspace_id = 1
             dummy_workspace = {
                 'workspace_id': dummy_workspace_id,
+                'public_workspace_id': None,
                 'workspace_name': dummy_workspace_name,
                 'workspace_desc': dummy_workspace_desc,
                 'agent_count': 0,
@@ -665,6 +671,7 @@ def fetch_workspaces_list(user_id):
 
         base_query = session.query(
             db.Workspace.workspace_id,
+            db.Workspace.public_workspace_id,
             db.Workspace.workspace_name,
             db.Workspace.workspace_desc,
             sql_func.coalesce(agent_count_subq.c.agent_count, 0).label('agent_count'),
@@ -688,6 +695,7 @@ def fetch_workspaces_list(user_id):
         results = [
             {
                 'workspace_id': ws.workspace_id,
+                'public_workspace_id': str(ws.public_workspace_id) if ws.public_workspace_id else None,
                 'workspace_name': ws.workspace_name,
                 'workspace_desc': ws.workspace_desc,
                 'agent_count': ws.agent_count,
@@ -713,6 +721,7 @@ def fetch_workspaces_list(user_id):
                 print(f"Could not assign user {jwt_user_id} to dummy workspace: {assign_exc}")
             results = [{
                 'workspace_id': dummy_ws_id,
+                'public_workspace_id': None,
                 'workspace_name': dummy_ws_name,
                 'workspace_desc': dummy_ws_desc,
                 'agent_count': 0,
@@ -1147,6 +1156,9 @@ def fetch_tools_info(user_id=None,intent=None):
             tool_list = []
             for t in tools:
                 tool_dict = {col: getattr(t, col) for col in t.__table__.columns.keys()}
+                # Convert public_tool_id to string
+                if tool_dict.get('public_tool_id'):
+                    tool_dict['public_tool_id'] = str(tool_dict['public_tool_id'])
                 tool_dict['favourite'] = False
                 tool_list.append(tool_dict)
             return {'response': tool_list}
@@ -1178,6 +1190,9 @@ def fetch_tools_info(user_id=None,intent=None):
         tool_list = []
         for t in tools:
             tool_dict = {col: getattr(t, col) for col in t.__table__.columns.keys()}
+            # Convert public_tool_id to string
+            if tool_dict.get('public_tool_id'):
+                tool_dict['public_tool_id'] = str(tool_dict['public_tool_id'])
             tool_dict['favourite'] = t.tool_id in favorite_tool_ids
             tool_list.append(tool_dict)
         return {'response': tool_list}
@@ -1220,6 +1235,9 @@ def fetch_intent_tools_info(user_id=None, intent=None):
         tool_list = []
         for t in tools:
             tool_dict = {col: getattr(t, col) for col in t.__table__.columns.keys()}
+            # Convert public_tool_id to string
+            if tool_dict.get('public_tool_id'):
+                tool_dict['public_tool_id'] = str(tool_dict['public_tool_id'])
             tool_list.append(tool_dict)
         return {'response': tool_list}
     except Exception as e:
@@ -1274,6 +1292,9 @@ def fetch_agents_info(user_id=None, intent=None):
             agent_list = []
             for a in agents:
                 agent_dict = {col: getattr(a, col) for col in a.__table__.columns.keys()}
+                # Convert public_agent_id to string
+                if agent_dict.get('public_agent_id'):
+                    agent_dict['public_agent_id'] = str(agent_dict['public_agent_id'])
                 agent_dict['favourite'] = False
                 agent_list.append(agent_dict)
             return {'response': agent_list}
@@ -1305,6 +1326,9 @@ def fetch_agents_info(user_id=None, intent=None):
         agent_list = []
         for a in agents:
             agent_dict = {col: getattr(a, col) for col in a.__table__.columns.keys()}
+            # Convert public_agent_id to string
+            if agent_dict.get('public_agent_id'):
+                agent_dict['public_agent_id'] = str(agent_dict['public_agent_id'])
             agent_dict['favourite'] = a.agent_id in favorite_agent_ids
             agent_list.append(agent_dict)
         return {'response': agent_list}
@@ -1347,6 +1371,9 @@ def fetch_intent_agents_info(user_id=None, intent=None):
         agent_list = []
         for a in agents:
             agent_dict = {col: getattr(a, col) for col in a.__table__.columns.keys()}
+            # Convert public_agent_id to string
+            if agent_dict.get('public_agent_id'):
+                agent_dict['public_agent_id'] = str(agent_dict['public_agent_id'])
             agent_list.append(agent_dict)
         return {'response': agent_list}
     except Exception as e:
@@ -1357,7 +1384,7 @@ def fetch_intent_agents_info(user_id=None, intent=None):
 
 @mcp.tool()
 @require_auth
-def update_workspace(payload):
+async def update_workspace(payload):
     """
     Update workspace details (name, description, tools, agents, KBs, etc.) using a payload dict.
     Only Workspace Admin can update workspaces.
@@ -1732,6 +1759,9 @@ def fetch_workspace_details(workspace_id) -> ToolResult:
                     tool_query = tool_query.filter(db.Tool.is_active == True)
                 for t in tool_query.all():
                     tool_dict = {col: getattr(t, col) for col in t.__table__.columns.keys()}
+                    # Convert public_tool_id to string
+                    if tool_dict.get('public_tool_id'):
+                        tool_dict['public_tool_id'] = str(tool_dict['public_tool_id'])
                     tool_dict['last_updated'] = None
                     tool_dict['last_used'] = None
                     cat_ids = str(tool_dict.get('tool_category', '') or '').split(',')
@@ -1745,6 +1775,9 @@ def fetch_workspace_details(workspace_id) -> ToolResult:
                     agent_query = agent_query.filter(db.Agent.is_active == True)
                 for a in agent_query.all():
                     agent_dict = {col: getattr(a, col) for col in a.__table__.columns.keys()}
+                    # Convert public_agent_id to string
+                    if agent_dict.get('public_agent_id'):
+                        agent_dict['public_agent_id'] = str(agent_dict['public_agent_id'])
                     agent_dict['last_updated'] = None
                     agent_dict['last_used'] = None
                     cat_ids = str(agent_dict.get('agent_category', '') or '').split(',')
@@ -1810,6 +1843,9 @@ def fetch_workspace_details(workspace_id) -> ToolResult:
                 tool_query = tool_query.filter(db.Tool.is_active == True)
             for t in tool_query.all():
                 tool_dict = {col: getattr(t, col) for col in t.__table__.columns.keys()}
+                # Convert public_tool_id to string
+                if tool_dict.get('public_tool_id'):
+                    tool_dict['public_tool_id'] = str(tool_dict['public_tool_id'])
                 # Add last_updated from ToolMap
                 tm = tool_map_dict.get(t.tool_id)
                 last_updated_val = getattr(tm, 'last_updated', None) if tm else None
@@ -1831,6 +1867,9 @@ def fetch_workspace_details(workspace_id) -> ToolResult:
                 agent_query = agent_query.filter(db.Agent.is_active == True)
             for a in agent_query.all():
                 agent_dict = {col: getattr(a, col) for col in a.__table__.columns.keys()}
+                # Convert public_agent_id to string
+                if agent_dict.get('public_agent_id'):
+                    agent_dict['public_agent_id'] = str(agent_dict['public_agent_id'])
                 # Add last_updated from AgentMap
                 am = agent_map_dict.get(a.agent_id)
                 last_updated_val = getattr(am, 'last_updated', None) if am else None
@@ -1905,6 +1944,9 @@ def fetch_workspace_details(workspace_id) -> ToolResult:
                     tool_query = tool_query.filter(db.Tool.is_active == True)
                 for t in tool_query.all():
                     tool_dict = {col: getattr(t, col) for col in t.__table__.columns.keys()}
+                    # Convert public_tool_id to string
+                    if tool_dict.get('public_tool_id'):
+                        tool_dict['public_tool_id'] = str(tool_dict['public_tool_id'])
                     tool_dict['last_updated'] = None
                     tool_dict['last_used'] = None
                     cat_ids = str(tool_dict.get('tool_category', '') or '').split(',')
@@ -1917,6 +1959,9 @@ def fetch_workspace_details(workspace_id) -> ToolResult:
                     agent_query = agent_query.filter(db.Agent.is_active == True)
                 for a in agent_query.all():
                     agent_dict = {col: getattr(a, col) for col in a.__table__.columns.keys()}
+                    # Convert public_agent_id to string
+                    if agent_dict.get('public_agent_id'):
+                        agent_dict['public_agent_id'] = str(agent_dict['public_agent_id'])
                     agent_dict['last_updated'] = None
                     agent_dict['last_used'] = None
                     cat_ids = str(agent_dict.get('agent_category', '') or '').split(',')
@@ -1978,6 +2023,9 @@ def fetch_agents_tools_by_ids(workspace_id):
                 tool_query = tool_query.filter(db.Tool.is_active != 'false')
             for t in tool_query.all():
                 tool_dict = {col: getattr(t, col) for col in t.__table__.columns.keys()}
+                # Convert public_tool_id to string
+                if tool_dict.get('public_tool_id'):
+                    tool_dict['public_tool_id'] = str(tool_dict['public_tool_id'])
                 # Replace tool_category IDs with names
                 cat_ids = str(tool_dict.get('tool_category', '') or '').split(',')
                 tool_dict['tool_category'] = [cat_map.get(cid.strip()) for cid in cat_ids if cid.strip() in cat_map]
@@ -1993,6 +2041,9 @@ def fetch_agents_tools_by_ids(workspace_id):
                 agent_query = agent_query.filter(db.Agent.is_active != 'false')
             for a in agent_query.all():
                 agent_dict = {col: getattr(a, col) for col in a.__table__.columns.keys()}
+                # Convert public_agent_id to string
+                if agent_dict.get('public_agent_id'):
+                    agent_dict['public_agent_id'] = str(agent_dict['public_agent_id'])
                 # Replace agent_category IDs with names
                 cat_ids = str(agent_dict.get('agent_category', '') or '').split(',')
                 agent_dict['agent_category'] = [cat_map.get(cid.strip()) for cid in cat_ids if cid.strip() in cat_map]

@@ -1,3 +1,4 @@
+
 from dotenv import load_dotenv
 load_dotenv()
 from common_adapters.langfuse_instrumentation import setup_langfuse
