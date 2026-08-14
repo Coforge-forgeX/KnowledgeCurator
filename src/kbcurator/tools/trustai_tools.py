@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from kbcurator.utils.auth import require_auth_async
 from os import getenv
+import os
 
 # from kbcurator.utils.permission import is_admin, get_user_role_id
 
@@ -203,8 +204,6 @@ def _build_headers(
     user_email: Optional[str] = None,
     user_id: Optional[str] = None,
     include_content_type: bool = False,
-    plevel: bool = False,
-    params: Optional[Dict[str, Any]] = None
 ) -> Dict[str, str]:
     headers = {
         "accept": "application/json",
@@ -216,10 +215,6 @@ def _build_headers(
         headers["Content-Type"] = "application/json"
     if user_email:
         headers["X-User-ID"] = user_email
-
-    # Update params to include app_id if not platform level
-    if params is not None and not plevel:
-        params["app_id"] = config.x_app_id
 
     return headers
 
@@ -272,8 +267,7 @@ async def batch_update_guardrail_config(
 @mcp.tool()
 @require_auth_async
 async def get_guardrail_logs(
-    workspace_id: Optional[str] = 220,
-    plevel: Optional[bool] = False,
+    workspace_id: Optional[str] = None,
     user_email: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -292,6 +286,10 @@ async def get_guardrail_logs(
         limit: Max records to return
         offset: Pagination offset
     """
+    workspace_provided = workspace_id
+    if not workspace_id:
+        workspace_id = int(os.getenv("DEFAULT_TURSTAI_WORKSPACE",220)) # default workspace_id for api_key & app_id
+        
     config = server.trustai_db_manager.get_workspace_config(workspace_id)
     if not config:
         return {"error": "Workspace configuration not found"}
@@ -308,15 +306,18 @@ async def get_guardrail_logs(
         "limit": limit,
         "offset": offset
     }
+    
+    if workspace_provided:
+        params['app_id'] = config.x_app_id
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"{TRUSTAI_BASE_URL}/trustai-api/dashboard/guardrail-logs",
             params=params,
-            headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True, plevel=plevel, params=params)
+            headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
         )
         raw_payload = _wrap_response(response.json())
-        return _guardrail_logs_response(workspace_id, raw_payload)
+        return _guardrail_logs_response(workspace_id if workspace_provided else "*", raw_payload)
 
 
 @mcp.tool()
