@@ -345,7 +345,7 @@ class LightRAGSettings(BaseSettings):
 
     # LightRAG working directory
     LIGHTRAG_WORKING_DIR: str = Field(
-        default="./lightrag_data", env="LIGHTRAG_WORKING_DIR"
+        default=None
     )
 
     # Vector storage settings
