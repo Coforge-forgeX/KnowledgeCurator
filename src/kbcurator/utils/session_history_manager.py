@@ -89,6 +89,30 @@ class SessionHistoryManager:
         except Exception as e:
             logging.error(f"Error in append_message: {e}")
             return None
+
+    def delete_message(self, message_id):
+        """
+        Delete a message by its MongoDB ObjectId.
+        Used to rollback messages when guardrails block the request.
+        
+        Args:
+            message_id: The MongoDB ObjectId returned by append_message
+            
+        Returns:
+            True if deleted, False otherwise
+        """
+        try:
+            if message_id is None:
+                return False
+            from bson import ObjectId
+            if not isinstance(message_id, ObjectId):
+                message_id = ObjectId(message_id)
+            result = self.chat_collection.delete_one({"_id": message_id})
+            return result.deleted_count > 0
+        except Exception as e:
+            logging.error(f"Error in delete_message: {e}")
+            return False
+
     def get_recent_sessions_by_ttl(self, workspace_id, user_id, current_time: datetime, ttl_seconds: float = 900):
         # Compute cutoff time
         cutoff_time = current_time - timedelta(seconds=ttl_seconds)
@@ -152,7 +176,7 @@ class SessionHistoryManager:
     #         logging.error(f"Error in load_history: {e}")
     #         return []
 
-    def load_history(self, workspace_id, user_id, session_id):
+    def load_history(self, workspace_id, user_id, session_id, blocked=True):
         try:
             # Ensure consistent types with persisted docs.
             try:
@@ -165,6 +189,11 @@ class SessionHistoryManager:
                 pass
 
             query = {"workspace_id": workspace_id, "user_id": user_id, "session_id": session_id}
+            
+            # Filter out blocked messages by default
+            if blocked:
+                query["is_blocked"] = {"$ne": True}
+            
             messages = list(self.chat_collection.find(query).sort("timestamp", 1))
             return [
                 {
@@ -175,6 +204,7 @@ class SessionHistoryManager:
                     "task_ids": m.get("tasks", None),  # Fixed: read from "tasks" not "task_ids"
                     # Re-mint a fresh SAS download URL from the persisted blob
                     # coordinates so links served from old sessions never expire.
+                    **({'is_blocked': m.get("is_blocked", False)} if not blocked else {}),
                     "sources": [refresh_source_url(s) for s in m.get("sources", [])]
                 }
                 for m in messages
@@ -210,6 +240,39 @@ class SessionHistoryManager:
                 "status": "error",
                 "message": str(e)
             }
+            
+    def mark_last_message_blocked(self, workspace_id, user_id, session_id):
+        """
+        Mark the last message in a session as blocked (is_blocked: true).
+        Used when guardrail blocks a message.
+
+        Args:
+            workspace_id: Unique workspace identifier
+            user_id: Unique user identifier
+            session_id: Unique session identifier
+
+        Returns:
+            Dictionary with operation status
+        """
+        try:
+            query = {"workspace_id": workspace_id, "user_id": user_id, "session_id": session_id}
+            last_message = self.chat_collection.find_one(query, sort=[("timestamp", -1)])
+
+            if not last_message:
+                return {"status": "error", "message": "No message found in session"}
+
+            result = self.chat_collection.update_one(
+                {"_id": last_message["_id"]},
+                {"$set": {"is_blocked": True}}
+            )
+
+            return {
+                "status": "success" if result.modified_count > 0 else "no_change",
+                "modified_count": result.modified_count
+            }
+        except Exception as e:
+            logging.error(f"Error in mark_last_message_blocked: {e}")
+            raise
 
     def set_conversation_title(self, workspace_id, user_id, session_id, title):
         """Set/update the conversation title in the context collection."""
@@ -402,15 +465,20 @@ class UserConfigManager:
 
     def set_config(self, workspace_id: str, user_id: str, config: dict):
         """
-        update existing fields or create new fields for a user config in the workspace. 
+        update existing fields or create new fields for a user config in the workspace.
         config fields:
        {}
-        """ 
-        
+        """
+
         # Build filter to match user and workspace
         filter = {"workspace_id": workspace_id, "user_id": user_id}
-        update = {"$set": config}
-        
+
+        # Set updated_at on every update, created_at only on insert
+        update = {
+            "$set": {**config, "updated_at": datetime.utcnow()},
+            "$setOnInsert": {"created_at": datetime.utcnow()}
+        }
+
         try:
             result = self.config_collection.update_one(filter, update, upsert=True)
             if result.upserted_id:
@@ -435,8 +503,10 @@ class UserConfigManager:
             query = {"workspace_id": workspace_id, "user_id": user_id}
             config_doc = self.config_collection.find_one(query)
             if config_doc:
-                # Remove MongoDB internal _id field
+                # Remove MongoDB internal fields
                 config_doc.pop("_id", None)
+                config_doc.pop("created_at", None)
+                config_doc.pop("updated_at", None)
                 if fields is None:
                     return config_doc
                 else:
