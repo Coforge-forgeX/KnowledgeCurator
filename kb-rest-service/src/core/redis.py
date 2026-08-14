@@ -365,7 +365,7 @@ class RedisClient:
         """
         if ttl is None:
             from .config import settings
-            ttl = settings.CONVERSATION_HISTORY_CACHE_TTL
+            ttl = settings.cache.CONVERSATION_HISTORY_CACHE_TTL
 
         key = self._make_chat_history_key(session_id, workspace_id, user_id)
         try:
@@ -411,7 +411,7 @@ class RedisClient:
         """
         if ttl is None:
             from .config import settings
-            ttl = settings.CONVERSATION_HISTORY_CACHE_TTL
+            ttl = settings.cache.CONVERSATION_HISTORY_CACHE_TTL
 
         history = self.get_conversation_history(session_id, workspace_id, user_id)
         if history is None:
