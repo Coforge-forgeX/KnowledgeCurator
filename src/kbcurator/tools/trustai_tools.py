@@ -202,17 +202,24 @@ def _build_headers(
     config: Any,
     user_email: Optional[str] = None,
     user_id: Optional[str] = None,
-    include_content_type: bool = False
+    include_content_type: bool = False,
+    plevel: bool = False,
+    params: Optional[Dict[str, Any]] = None
 ) -> Dict[str, str]:
     headers = {
         "accept": "application/json",
         "x-app-id": config.x_app_id,
         "X-Api-Key": config.x_api_key
     }
+
     if include_content_type:
         headers["Content-Type"] = "application/json"
     if user_email:
         headers["X-User-ID"] = user_email
+
+    # Update params to include app_id if not platform level
+    if params is not None and not plevel:
+        params["app_id"] = config.x_app_id
 
     return headers
 
@@ -265,7 +272,8 @@ async def batch_update_guardrail_config(
 @mcp.tool()
 @require_auth_async
 async def get_guardrail_logs(
-    workspace_id: str,
+    workspace_id: Optional[str] = 220,
+    plevel: Optional[bool] = False,
     user_email: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -277,6 +285,7 @@ async def get_guardrail_logs(
 
     Args:
         workspace_id: Workspace ID
+        plevel: Platform level flag - if True, don't include app_id in params/headers
         user_email: User email mapped to endpoint user_id
         start_date: Start date (YYYY-MM-DD, optional)
         end_date: End date (YYYY-MM-DD, optional)
@@ -304,7 +313,7 @@ async def get_guardrail_logs(
         response = await client.get(
             f"{TRUSTAI_BASE_URL}/trustai-api/dashboard/guardrail-logs",
             params=params,
-            headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True)
+            headers=_build_headers(config, user_email=user_email, user_id=user_id, include_content_type=True, plevel=plevel, params=params)
         )
         raw_payload = _wrap_response(response.json())
         return _guardrail_logs_response(workspace_id, raw_payload)
