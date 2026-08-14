@@ -40,6 +40,38 @@ from kbcurator.services.workspace_provider_credentials_service import workspace_
 
 from fastmcp.tools.tool import ToolResult
 
+DEFAULT_TRUSTAI_CONFIG = lambda workspace_id: {
+    "application": {
+        "name": workspace_id,
+        "description": "test app des",
+        "line_of_business": "travel",
+        "technical_architect": "test@test.com",
+        "business_sponsor": "test@test.com",
+    },
+    "guardrails": [
+        "BSI_DETECTION",
+        "TOXIC",
+        "COMPETITOR_CHECK",
+        "PII",
+        "TOKEN_QUOTA",
+        "PROMPT_INJECTION",
+        "BIAS_DETECTION",
+        "FACTUAL_ACCURACY",
+        "CODE_HALLUCINATION",
+    ],
+    "system_config": {
+        "guardrail_model": "gpt-4-1",
+        "admin_emails": [
+            "test@test.com",
+        ],
+        "is_guardrail_notification_enabled": "true",
+        "input_guardrail_execution_mode": "sync",
+        "output_guardrail_execution_mode": "sync",
+        "warning_message": "warning message",
+        "block_message": "block message ",
+    },
+}
+
 @mcp.tool()
 @require_auth_async
 async def get_workspace_types_by_role():
@@ -1159,21 +1191,23 @@ async def create_workspace(payload):
         
         
         #workspace registration with trustai
-        if trustai_config:
-            agent_ids = fields.get('agent_ids') or []
-            db_url = get_postgres_connection_string()
-            # print(f"trustai_config\n:{trustai_config}")
-            if not db_url:
-                print("POSTGRESQL environment vairables not configured!!!")
-                raise ValueError("POSTGRESQL environment vairables not configured!!! Please check you env variable and try again...")
-            try:
-                trustai_config['application']['name'] = workspace_id
-                print(f"[updated] trustai_config\n:{trustai_config}")
-                response = await register_workspace_with_trustai(workspace_id,trustai_config,db_url,agent_ids,creator_id)
+        if not trustai_config:
+            trustai_config = DEFAULT_TRUSTAI_CONFIG(workspace_id)
             
-            except Exception as e:
-                print(f"Error while registering workspace with TRUSTAI: {e}")
-                raise Exception("Failed to create the workspace. Please try again.")
+        agent_ids = fields.get('agent_ids') or []
+        db_url = get_postgres_connection_string()
+        # print(f"trustai_config\n:{trustai_config}")
+        if not db_url:
+            print("POSTGRESQL environment vairables not configured!!!")
+            raise ValueError("POSTGRESQL environment vairables not configured!!! Please check you env variable and try again...")
+        try:
+            trustai_config['application']['name'] = workspace_id
+            print(f"[updated] trustai_config\n:{trustai_config}")
+            response = await register_workspace_with_trustai(workspace_id,trustai_config,db_url,agent_ids,creator_id)
+        
+        except Exception as e:
+            print(f"Error while registering workspace with TRUSTAI: {e}")
+            raise Exception("Failed to create the workspace. Please try again.")
             
         session.commit()
 

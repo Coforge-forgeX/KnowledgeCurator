@@ -210,6 +210,8 @@ def validate_url(url: str) -> bool:
 
 class Chatbot:
     """ Interactive chatbot for knowledge base management. """
+    
+    
     def __init__(
             self, 
             industry: str, 
@@ -1285,10 +1287,17 @@ async def message_gpt(
         else:
             return {"response": response}
     except GuardrailBlockedException as gbe:
+        
         logger.warning(
             f"[GUARDRAIL_BLOCKED] workspace={workspace_id} user={user_id} "
             f"blocked_by={gbe.blocked_by} details={gbe.details}"
         )
+        
+        # Mark the last user message as blocked
+        try:
+            bot.session.mark_last_message_blocked(workspace_id, user_id, session_id)
+        except Exception as mark_err:
+            logger.error(f"Failed to mark message as blocked: {mark_err}")
         return {
             "response": gbe.get_user_message(),
             "blocked": True,
@@ -1484,7 +1493,7 @@ def load_conversation(workspace_id: str, user_id: str, session_id: str) -> Dict[
         user_id_q = user_id
 
     try:
-        response = session.load_history(workspace_id_q, user_id_q, session_id)
+        response = session.load_history(workspace_id_q, user_id_q, session_id,blocked=False)
         return {"response": response}
     except Exception as e:
         return {"error": f"Error occurred while loading conversation: {e}"}
