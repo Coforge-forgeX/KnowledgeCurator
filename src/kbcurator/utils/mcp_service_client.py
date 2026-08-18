@@ -30,10 +30,9 @@ class MCPServiceClient:
         self.sub_industry = sub_industry #sub_industry
         self.knowledge_bases = knowledge_bases 
         if knowledge_bases is None:
-            self.knowledge_bases = [""] #knowledge_bases
+            self.knowledge_bases = [] #knowledge_bases
         else:
             self.knowledge_bases = list(knowledge_bases)
-            self.knowledge_bases.append("") #knowledge_bases
             
         self.obj = MCPClient(server_url=self.server_url, token=token)
         self._token = token
