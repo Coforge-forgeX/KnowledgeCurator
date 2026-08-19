@@ -62,7 +62,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         workspace_id = int(cached_mapping.get("workspace_id"))
         container_name = str(cached_mapping.get("container_name") or "").strip()
         blob_path = str(cached_mapping.get("blob_path") or "").strip()
-        provider = str(cached_mapping.get("provider") or settings.storage.STORAGE_PROVIDER or "azure")
+        provider = str(cached_mapping.get("provider") or settings.storage.STORAGE_PROVIDER)
         file_name = str(cached_mapping.get("file_name") or "").strip()
 
         if not container_name or not blob_path:
@@ -79,7 +79,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             )
 
         # Use service's provider-agnostic storage adapter
-        storage = get_storage_adapter()
+        storage = get_storage_adapter(container_override=container_name if container_name else None)
 
         exists = await storage.blob_exists(blob_path)
         if not exists:

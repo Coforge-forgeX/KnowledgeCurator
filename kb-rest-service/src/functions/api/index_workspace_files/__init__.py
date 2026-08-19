@@ -12,7 +12,6 @@ from src.core.database import FileTask, User, get_async_session
 from src.core.logging import get_logger
 from src.helpers.file_validation import validate_file_extension
 from src.helpers.workspace_helpers import get_workspace_storage_paths
-from src.helpers.workspace_kb_helpers import get_kb_id_for_upload
 from src.helpers.workspace_permissions import require_workspace_admin_curator
 from src.common import create_error_response, create_internal_error_response, create_success_response, parse_request
 from src.functions.api.upload_and_index.__init__ import enqueue_indexing_job
@@ -37,7 +36,7 @@ def _normalize_prefix(prefix: str) -> str:
 async def _list_blob_paths(container_name: str, prefix: str) -> List[str]:
     """List blob paths from configured storage using provider-agnostic adapter."""
     try:
-        storage = get_storage_adapter()
+        storage = get_storage_adapter(container_override=container_name if container_name else None)
         normalized_prefix = _normalize_prefix(prefix)
 
         # Use storage adapter's list_files method
@@ -156,7 +155,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
     domain = str(workspace_paths.get("domain") or "")
     kb_name = str(workspace_paths.get("kb_name") or "")
     is_kg = bool(workspace_paths.get("is_kg"))
-    kb_id_for_upload = await get_kb_id_for_upload(workspace_id)
+    kb_id_for_upload = workspace_paths.get("all_kb_ids")
 
     if is_kg and kb_id_for_upload is None:
         return create_error_response(
