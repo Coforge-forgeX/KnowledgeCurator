@@ -106,11 +106,11 @@ class ChatOrchestrator:
                 "Cache miss - fetching conversation history from MongoDB",
                 session_id=payload.session_id,
             )
-            messages = await self._mongo.get_conversation_history(
+            messages, _ = await self._mongo.get_messages_page(
                 session_id=payload.session_id,
                 workspace_id=access.workspace_id,
                 user_id=access.user_id,
-                limit=settings.CHAT_HISTORY_TURNS_FOR_CONTEXT,
+                page_size=settings.CHAT_HISTORY_TURNS_FOR_CONTEXT,
             )
             # Cache the result for subsequent messages
             cache_conversation_history(
@@ -231,7 +231,7 @@ class ChatOrchestrator:
             history.append({"role": role, "content": content})
         return history
 
-    async def _run_cancellable(self, handler: ModeHandler, payload, access, history) -> HandlerResult:
+    async def _run_cancellable(self, handler: ModeHandler, payload: ChatRequest, access, history) -> HandlerResult:
         """
         Runs the handler as an asyncio Task registered for cooperative
         cancellation, so `cancel_chat_message` can interrupt an in-flight

@@ -5,11 +5,10 @@ Handles chatbot conversations, message processing, and session management.
 Integrates with RAG service for knowledge-based responses.
 """
 import asyncio
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 import uuid
 
-from src.core.database import ConversationSession, get_async_session
+from src.core.config import settings
 from src.core.exceptions import (
     APIException,
     DatabaseException,
@@ -17,11 +16,10 @@ from src.core.exceptions import (
     ValidationException,
 )
 from src.core.logging import get_logger
-from src.helpers.workspace_helpers import get_workspace_storage_paths
+# from src.helpers.workspace_helpers import get_workspace_storage_paths
 from src.services.mongodb_service import get_mongodb_service
-from src.services.rag_service import get_rag_service
-from src.services.rag_query_service import get_rag_query_service
-from sqlalchemy import select, and_
+# from src.services.rag_service import get_rag_service
+# from src.services.rag_query_service import get_rag_query_service
 
 logger = get_logger(__name__)
 
@@ -38,8 +36,8 @@ class ChatService:
 
     def __init__(self):
         self.mongo_service = get_mongodb_service()
-        self.rag_service = get_rag_service()  # For document operations
-        self.rag_query_service = get_rag_query_service()  # For optimized queries
+        # self.rag_service = get_rag_service()  # For document operations
+        # self.rag_query_service = get_rag_query_service()  # For optimized queries
 
     async def initialize(self) -> None:
         """Initialize chat service dependencies"""
@@ -48,84 +46,6 @@ class ChatService:
     # ========================================================================
     # Session Management
     # ========================================================================
-
-    async def start_conversation(
-        self,
-        workspace_id: int,
-        user_id: int,
-    ) -> Dict[str, Any]:
-        """
-        Start a new conversation session.
-
-        Args:
-            workspace_id: Workspace identifier
-            user_id: User identifier
-
-        Returns:
-            Dict with session_id and status
-        """
-        try:
-            logger.info(
-                "Starting new conversation",
-                workspace_id=workspace_id,
-                user_id=user_id,
-            )
-
-            # Generate session ID
-            session_id = str(uuid.uuid4())
-
-            # Create session in MongoDB
-            await self.mongo_service.create_session(
-                workspace_id=workspace_id,
-                user_id=user_id,
-                session_id=session_id,
-            )
-
-            # Create session metadata in PostgreSQL.
-            # If the table/migrations are not applied yet, don't block chat creation;
-            # MongoDB is the source of truth for sessions/messages.
-            try:
-                async with get_async_session() as session:
-                    conv_session = ConversationSession(
-                        session_id=session_id,
-                        workspace_id=workspace_id,
-                        user_id=user_id,
-                        title="New Conversation",
-                        message_count=0,
-                        is_active=True,
-                        created_at=datetime.now(timezone.utc),
-                        updated_at=datetime.now(timezone.utc),
-                    )
-                    session.add(conv_session)
-                    await session.commit()
-            except Exception as e:
-                logger.warning(
-                    "PostgreSQL conversation_sessions insert failed; continuing with MongoDB session only",
-                    error=e,
-                    session_id=session_id,
-                    workspace_id=workspace_id,
-                    user_id=user_id,
-                )
-
-            logger.info(
-                "Conversation started",
-                session_id=session_id,
-            )
-
-            return {
-                "session_id": session_id,
-                "status": "created",
-                "message": f"Session started with id: {session_id}",
-            }
-
-        except APIException:
-            raise
-        except Exception as e:
-            logger.error("Failed to start conversation", error=e)
-            raise DatabaseException(
-                message=f"Failed to start conversation: {str(e)}",
-                operation="start_conversation"
-            )
 
     async def get_conversation_history(
         self,
@@ -174,8 +94,6 @@ class ChatService:
                 ),
             )
 
-            await self._attach_pg_metadata(sessions, workspace_id, user_id)
-
             logger.info(
                 "Retrieved conversation history",
                 session_count=len(sessions),
@@ -196,50 +114,6 @@ class ChatService:
             raise DatabaseException(
                 message=f"Failed to get conversation history: {str(e)}",
                 operation="get_conversation_history"
-            )
-
-    @staticmethod
-    async def _attach_pg_metadata(
-        sessions: List[Dict[str, Any]],
-        workspace_id: int,
-        user_id: int,
-    ) -> None:
-        """
-        Decorate session summaries with PostgreSQL metadata, in one query.
-
-        Best-effort: PostgreSQL is optional in local/dev, and MongoDB is the
-        source of truth for sessions, so a missing table must not fail the read.
-        """
-        session_ids = [s.get("session_id") for s in sessions if s.get("session_id")]
-        if not session_ids:
-            return
-
-        try:
-            async with get_async_session() as pg_session:
-                stmt = select(ConversationSession).where(
-                    and_(
-                        ConversationSession.session_id.in_(session_ids),
-                        ConversationSession.workspace_id == workspace_id,
-                        ConversationSession.user_id == user_id,
-                    )
-                )
-                rows = (await pg_session.execute(stmt)).scalars().all()
-
-            by_session_id = {row.session_id: row for row in rows}
-            for session in sessions:
-                conv = by_session_id.get(session.get("session_id"))
-                if conv:
-                    session["pg_metadata"] = {
-                        "title": conv.title,
-                        "message_count": conv.message_count,
-                        "is_active": conv.is_active,
-                    }
-        except Exception as e:
-            logger.warning(
-                "PostgreSQL conversation_sessions read failed; returning MongoDB sessions only",
-                error=e,
-                workspace_id=workspace_id,
-                user_id=user_id,
             )
 
     async def load_conversation(
@@ -368,39 +242,9 @@ class ChatService:
             )
 
             if not success:
-                # `update_session_title` only reports success when a document
-                # actually matched, so this is a genuine "no such conversation
-                # for this user/workspace" — never a silent no-op.
                 raise NotFoundException(
                     message=f"Conversation not found: {session_id}",
                     resource_type="conversation",
-                )
-
-            # Update in PostgreSQL
-            # PostgreSQL is optional in local/dev; don't fail rename if table/migrations aren't present.
-            try:
-                async with get_async_session() as session:
-                    stmt = select(ConversationSession).where(
-                        and_(
-                            ConversationSession.session_id == session_id,
-                            ConversationSession.workspace_id == workspace_id,
-                            ConversationSession.user_id == user_id,
-                        )
-                    )
-                    result = await session.execute(stmt)
-                    conv = result.scalar_one_or_none()
-
-                    if conv:
-                        conv.title = title.strip()
-                        conv.updated_at = datetime.now(timezone.utc)
-                        await session.commit()
-            except Exception as e:
-                logger.warning(
-                    "PostgreSQL conversation_sessions update failed; continuing with MongoDB rename only",
-                    error=e,
-                    session_id=session_id,
-                    workspace_id=workspace_id,
-                    user_id=user_id,
                 )
 
             logger.info(
@@ -458,35 +302,7 @@ class ChatService:
                 user_id=user_id,
             )
 
-            # Delete from PostgreSQL
-            # PostgreSQL is optional in local/dev; don't fail delete if table/migrations aren't present.
-            pg_success = False
-            try:
-                async with get_async_session() as session:
-                    stmt = select(ConversationSession).where(
-                        and_(
-                            ConversationSession.session_id == session_id,
-                            ConversationSession.workspace_id == workspace_id,
-                            ConversationSession.user_id == user_id,
-                        )
-                    )
-                    result = await session.execute(stmt)
-                    conv = result.scalar_one_or_none()
-
-                    if conv:
-                        await session.delete(conv)
-                        await session.commit()
-                        pg_success = True
-            except Exception as e:
-                logger.warning(
-                    "PostgreSQL conversation_sessions delete failed; continuing with MongoDB delete only",
-                    error=e,
-                    session_id=session_id,
-                    workspace_id=workspace_id,
-                    user_id=user_id,
-                )
-
-            if not mongo_success and not pg_success:
+            if not mongo_success:
                 logger.warning(
                     "Conversation not found for deletion",
                     session_id=session_id,
@@ -522,199 +338,199 @@ class ChatService:
     # Message Processing
     # ========================================================================
 
-    async def message_gpt(
-        self,
-        user_message: str,
-        session_id: str,
-        workspace_id: int,
-        user_id: int,
-        role_id: int,
-        industry: Optional[str] = None,
-        sub_industry: Optional[str] = None,
-        mode: str = "Search",
-        agent_id: Optional[int] = None,
-        knowledge_bases: Optional[List[str]] = None,
-        file_names: Optional[List[str]] = None,
-        file_contents: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Process a user message and generate a response.
+    # async def message_gpt(
+    #     self,
+    #     user_message: str,
+    #     session_id: str,
+    #     workspace_id: int,
+    #     user_id: int,
+    #     role_id: int,
+    #     industry: Optional[str] = None,
+    #     sub_industry: Optional[str] = None,
+    #     mode: str = "Search",
+    #     agent_id: Optional[int] = None,
+    #     knowledge_bases: Optional[List[str]] = None,
+    #     file_names: Optional[List[str]] = None,
+    #     file_contents: Optional[List[str]] = None,
+    # ) -> Dict[str, Any]:
+    #     """
+    #     Process a user message and generate a response.
 
-        Args:
-            user_message: User's message
-            session_id: Session identifier
-            workspace_id: Workspace identifier
-            user_id: User identifier
-            role_id: Role identifier
-            industry: Optional industry/domain
-            sub_industry: Optional sub-industry
-            mode: Conversation mode (Search, Query, Update)
-            agent_id: Optional agent identifier
-            knowledge_bases: Optional list of KBs to query
-            file_names: Optional files to upload
-            file_contents: Optional file contents
+    #     Args:
+    #         user_message: User's message
+    #         session_id: Session identifier
+    #         workspace_id: Workspace identifier
+    #         user_id: User identifier
+    #         role_id: Role identifier
+    #         industry: Optional industry/domain
+    #         sub_industry: Optional sub-industry
+    #         mode: Conversation mode (Search, Query, Update)
+    #         agent_id: Optional agent identifier
+    #         knowledge_bases: Optional list of KBs to query
+    #         file_names: Optional files to upload
+    #         file_contents: Optional file contents
 
-            Returns:
-            Dict with response, sources, and task_ids
-        """
-        try:
-            logger.info(
-                "Processing message",
-                session_id=session_id,
-                workspace_id=workspace_id,
-                message_length=len(user_message),
-                mode=mode,
-            )
+    #         Returns:
+    #         Dict with response, sources, and task_ids
+    #     """
+    #     try:
+    #         logger.info(
+    #             "Processing message",
+    #             session_id=session_id,
+    #             workspace_id=workspace_id,
+    #             message_length=len(user_message),
+    #             mode=mode,
+    #         )
 
-            # Save user message
-            await self.mongo_service.append_message(
-                session_id=session_id,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                role="user",
-                content=user_message,
-            )
+    #         # Save user message
+    #         await self.mongo_service.append_message(
+    #             session_id=session_id,
+    #             workspace_id=workspace_id,
+    #             user_id=user_id,
+    #             role="user",
+    #             content=user_message,
+    #         )
 
-            # Handle file upload mode
-            if file_names and file_contents:
-                logger.info("Processing file upload")
-                upload_result = await self.rag_service.upload_and_index_tool(
-                    file_names=file_names,
-                    file_contents=file_contents,
-                    workspace_id=workspace_id,
-                    user_id=user_id,
-                    role_id=role_id,
-                    domain=industry,
-                    kb_name=sub_industry,
-                )
+    #         # Handle file upload mode
+    #         if file_names and file_contents:
+    #             logger.info("Processing file upload")
+    #             upload_result = await self.rag_service.upload_and_index_tool(
+    #                 file_names=file_names,
+    #                 file_contents=file_contents,
+    #                 workspace_id=workspace_id,
+    #                 user_id=user_id,
+    #                 role_id=role_id,
+    #                 domain=industry,
+    #                 kb_name=sub_industry,
+    #             )
 
-                response_text = upload_result.get("response", "Files uploaded successfully")
-                task_ids = upload_result.get("task_ids", [])
+    #             response_text = upload_result.get("response", "Files uploaded successfully")
+    #             task_ids = upload_result.get("task_ids", [])
 
-                # Save assistant response
-                await self.mongo_service.append_message(
-                    session_id=session_id,
-                    workspace_id=workspace_id,
-                    user_id=user_id,
-                    role="assistant",
-                    content=response_text,
-                    task_ids=task_ids,
-                )
+    #             # Save assistant response
+    #             await self.mongo_service.append_message(
+    #                 session_id=session_id,
+    #                 workspace_id=workspace_id,
+    #                 user_id=user_id,
+    #                 role="assistant",
+    #                 content=response_text,
+    #                 task_ids=task_ids,
+    #             )
 
-                return {
-                    "response": response_text,
-                    "task_ids": task_ids,
-                    "sources": [],
-                }
+    #             return {
+    #                 "response": response_text,
+    #                 "task_ids": task_ids,
+    #                 "sources": [],
+    #             }
 
-            # Query RAG for knowledge-based response
-            history = await self.mongo_service.get_conversation_history(
-                session_id=session_id,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                limit=5,  # Last 5 messages for context
-            )
+    #         # Query RAG for knowledge-based response
+    #         history, _ = await self.mongo_service.get_messages_page(
+    #             session_id=session_id,
+    #             workspace_id=workspace_id,
+    #             user_id=user_id,
+    #             page_size=settings.CHAT_HISTORY_TURNS_FOR_CONTEXT,  # Last 5 messages for context
+    #         )
 
-            # Get workspace storage paths for security (domain, kb_name from DB)
-            storage_paths = await get_workspace_storage_paths(workspace_id)
-            if not storage_paths:
-                raise ValidationException(
-                    message=f"Failed to retrieve workspace configuration for workspace {workspace_id}"
-                )
+    #         # Get workspace storage paths for security (domain, kb_name from DB)
+    #         storage_paths = await get_workspace_storage_paths(workspace_id)
+    #         if not storage_paths:
+    #             raise ValidationException(
+    #                 message=f"Failed to retrieve workspace configuration for workspace {workspace_id}"
+    #             )
 
-            domain = storage_paths.get("domain", "")
-            kb_name = storage_paths.get("kb_name", "")
-            all_kb_titles = storage_paths.get("all_kb_titles", [])
+    #         domain = storage_paths.get("domain", "")
+    #         kb_name = storage_paths.get("kb_name", "")
+    #         all_kb_titles = storage_paths.get("all_kb_titles", [])
 
-            # For multi-KB workspaces, pass additional KBs
-            additional_kbs = None
-            if len(all_kb_titles) > 1:
-                additional_kbs = all_kb_titles[1:]
+    #         # For multi-KB workspaces, pass additional KBs
+    #         additional_kbs = None
+    #         if len(all_kb_titles) > 1:
+    #             additional_kbs = all_kb_titles[1:]
 
-            # Use optimized RAG query service
-            rag_result = await self.rag_query_service.query(
-                query=user_message,
-                workspace_id=workspace_id,
-                role_id=role_id,
-                domain=domain,
-                kb_name=kb_name,
-                mode="hybrid",
-                history=history,
-                knowledge_bases=additional_kbs,
-                agent_id=agent_id,
-                is_kg=storage_paths.get("is_kg"),
-            )
+    #         # Use optimized RAG query service
+    #         rag_result = await self.rag_query_service.query(
+    #             query=user_message,
+    #             workspace_id=workspace_id,
+    #             role_id=role_id,
+    #             domain=domain,
+    #             kb_name=kb_name,
+    #             mode="hybrid",
+    #             history=history,
+    #             knowledge_bases=additional_kbs,
+    #             agent_id=agent_id,
+    #             is_kg=storage_paths.get("is_kg"),
+    #         )
 
-            response_text = rag_result.answer or "I don't have enough information to answer that question."
-            # Convert EnrichedSource objects to dicts for MongoDB storage
-            sources = [
-                {
-                    "file_name": src.file_name,
-                    "download_url": src.download_url,
-                    "citation": src.citation,
-                }
-                for src in rag_result.sources
-            ]
+    #         response_text = rag_result.answer or "I don't have enough information to answer that question."
+    #         # Convert EnrichedSource objects to dicts for MongoDB storage
+    #         sources = [
+    #             {
+    #                 "file_name": src.file_name,
+    #                 "download_url": src.download_url,
+    #                 "citation": src.citation,
+    #             }
+    #             for src in rag_result.sources
+    #         ]
 
-            # Save assistant response
-            await self.mongo_service.append_message(
-                session_id=session_id,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                role="assistant",
-                content=response_text,
-                sources=sources,
-            )
+    #         # Save assistant response
+    #         await self.mongo_service.append_message(
+    #             session_id=session_id,
+    #             workspace_id=workspace_id,
+    #             user_id=user_id,
+    #             role="assistant",
+    #             content=response_text,
+    #             sources=sources,
+    #         )
 
-            # Keep the title in sync with the latest user message. This is a
-            # no-op once the user has manually renamed the session (see
-            # `update_session_title`'s `is_manual=False` guard on
-            # `title_set_by_user`), so a rename always wins.
-            title = user_message.strip()
-            if len(title) > 50:
-                title = title[:50] + "..."
-            await self.mongo_service.update_session_title(
-                session_id=session_id,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                title=title,
-                is_manual=False,
-            )
+    #         # Keep the title in sync with the latest user message. This is a
+    #         # no-op once the user has manually renamed the session (see
+    #         # `update_session_title`'s `is_manual=False` guard on
+    #         # `title_set_by_user`), so a rename always wins.
+    #         title = user_message.strip()
+    #         if len(title) > 50:
+    #             title = title[:50] + "..."
+    #         await self.mongo_service.update_session_title(
+    #             session_id=session_id,
+    #             workspace_id=workspace_id,
+    #             user_id=user_id,
+    #             title=title,
+    #             is_manual=False,
+    #         )
 
-            logger.info(
-                "Message processed",
-                session_id=session_id,
-                has_sources=bool(sources),
-            )
+    #         logger.info(
+    #             "Message processed",
+    #             session_id=session_id,
+    #             has_sources=bool(sources),
+    #         )
 
-            return {
-                "response": response_text,
-                "sources": sources,
-                "task_ids": [],
-            }
+    #         return {
+    #             "response": response_text,
+    #             "sources": sources,
+    #             "task_ids": [],
+    #         }
 
-        except Exception as e:
-            logger.error("Failed to process message", error=e)
-            error_response = f"Sorry, something went wrong while processing your request: {str(e)}"
+    #     except Exception as e:
+    #         logger.error("Failed to process message", error=e)
+    #         error_response = f"Sorry, something went wrong while processing your request: {str(e)}"
 
-            # Try to save error response
-            try:
-                await self.mongo_service.append_message(
-                    session_id=session_id,
-                    workspace_id=workspace_id,
-                    user_id=user_id,
-                    role="assistant",
-                    content=error_response,
-                )
-            except Exception:
-                pass  # Don't fail if we can't save error
+    #         # Try to save error response
+    #         try:
+    #             await self.mongo_service.append_message(
+    #                 session_id=session_id,
+    #                 workspace_id=workspace_id,
+    #                 user_id=user_id,
+    #                 role="assistant",
+    #                 content=error_response,
+    #             )
+    #         except Exception:
+    #             pass  # Don't fail if we can't save error
 
-            return {
-                "response": error_response,
-                "error": str(e),
-                "sources": [],
-                "task_ids": [],
-            }
+    #         return {
+    #             "response": error_response,
+    #             "error": str(e),
+    #             "sources": [],
+    #             "task_ids": [],
+    #         }
 
 
 # ============================================================================

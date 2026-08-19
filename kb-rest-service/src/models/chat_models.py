@@ -5,9 +5,16 @@ Pydantic models for chatbot REST endpoints.
 """
 
 from datetime import datetime
+from enum import Enum
 from typing import List, Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, field_validator
 
+from src.functions.api.upload_and_index.payloads import FileUpload
+
+
+class Mode(str, Enum):
+    SEARCH = "SEARCH"
+    UPDATE = "UPDATE"
 
 class ChatSource(BaseModel):
     """
@@ -63,15 +70,28 @@ class ChatRequest(BaseModel):
     agent_id: int = Field(default=1, gt=0)
     session_id: str = Field(...)
     user_message: str = Field(..., min_length=1)
-    mode: str = Field(default="SEARCH")
-    file_names: Optional[List[str]] = None
-    file_contents: Optional[List[str]] = None
+    mode: Mode = Field(default=Mode.SEARCH.value)
+    files: Optional[List[FileUpload]] = None
+    # file_names: Optional[List[str]] = None
+    # file_contents: Optional[List[str]] = None
 
-    @validator("mode")
-    def validate_mode(cls, v):
-        if v.upper() not in ["SEARCH", "UPDATE"]:
-            raise ValueError("Mode must be SEARCH or UPDATE")
-        return v.upper()
+    @field_validator("files")
+    @classmethod
+    def validate_files_limit(cls, v: List[FileUpload]) -> List[FileUpload]:
+        """Limit number of files per request"""
+        max_files = 10
+        if len(v) > max_files:
+            raise ValueError(f"Maximum {max_files} files allowed per request")
+        return v
+    
+    @field_validator("files")
+    @classmethod
+    def validate_duplicate_filenames(cls, v: List[FileUpload]) -> List[FileUpload]:
+        """Check for duplicate file names"""
+        file_names = [f.file_name for f in v]
+        if len(file_names) != len(set(file_names)):
+            raise ValueError("Duplicate file names not allowed")
+        return v
 
 
 class ChatResponse(BaseModel):
@@ -81,18 +101,6 @@ class ChatResponse(BaseModel):
     sources: List[ChatSource] = Field(default_factory=list)
     task_ids: List[int] = Field(default_factory=list)
     session_id: str
-
-
-class StartConversationRequest(BaseModel):
-    """
-    POST /chat/start request.
-
-    `user_id` is deliberately absent: it comes from the Bearer token, and
-    workspace membership is validated against UserMap server-side. Same rule as
-    `ChatRequest` — see its docstring.
-    """
-
-    workspace_id: int = Field(..., gt=0)
 
 
 class ConversationHistoryRequest(BaseModel):

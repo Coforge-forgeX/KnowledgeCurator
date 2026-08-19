@@ -81,7 +81,7 @@ def get_ocr_adapter(
             api_key=azure_api_key,
         )
         if adapter.is_configured:
-            logger.info("OCR adapter initialized", provider="azure")
+            logger.info("OCR adapter initialized")
         else:
             logger.warning(
                 "Azure Document Intelligence credentials not configured. "

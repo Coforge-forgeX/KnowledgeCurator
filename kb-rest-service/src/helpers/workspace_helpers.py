@@ -67,7 +67,8 @@ async def get_workspace_storage_paths(workspace_id: int) -> Optional[Dict[str, s
                 select(
                     Industry.industry_name,
                     SubIndustry.subindustry_name,
-                    KnowledgeBase.title
+                    KnowledgeBase.title,
+                    KnowledgeBase.id,
                 )
                 .select_from(WorkspaceIndustryIntentMap)
                 .join(Industry, WorkspaceIndustryIntentMap.industry_id == Industry.industry_id)
@@ -90,6 +91,7 @@ async def get_workspace_storage_paths(workspace_id: int) -> Optional[Dict[str, s
 
                 # Collect all KB titles for multi-KB querying
                 all_kb_titles = [row.title for row in mapping_rows if row.title]
+                all_kb_ids = [row.id for row in mapping_rows if row.id]
 
                 logger.debug(
                     "Fetched workspace metadata",
@@ -122,6 +124,7 @@ async def get_workspace_storage_paths(workspace_id: int) -> Optional[Dict[str, s
 
             # Add list of all KB titles for multi-KB querying
             paths["all_kb_titles"] = all_kb_titles
+            paths["all_kb_ids"] = all_kb_ids
 
             logger.info(
                 "Built workspace storage paths",

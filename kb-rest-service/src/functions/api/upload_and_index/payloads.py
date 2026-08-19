@@ -4,11 +4,14 @@ Upload and Index API - Request/Response Models
 Optimized payload validation for file upload and indexing.
 """
 
+import base64
 from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from src.helpers.file_validation import validate_file_extension
 
+MAX_FILE_SIZE_MB = 50
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
 class FileUpload(BaseModel):
     """Individual file upload"""
@@ -21,6 +24,19 @@ class FileUpload(BaseModel):
     def validate_file_name(cls, v: str) -> str:
         """Validate file extension using centralized validation"""
         return validate_file_extension(v)
+
+    @field_validator("file_content")
+    @classmethod
+    def validate_file_size(cls, v: str) -> str:
+        try:
+            decoded = base64.b64decode(v, validate=True)
+        except Exception:
+            raise ValueError("Invalid Base64 content")
+        if len(decoded) > MAX_FILE_SIZE_BYTES:
+            raise ValueError(
+                f"File size exceeds {MAX_FILE_SIZE_MB} MB limit"
+            )
+        return v
 
 
 class UploadAndIndexRequest(BaseModel):

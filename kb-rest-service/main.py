@@ -69,7 +69,6 @@ from src.models.chat_models import (
     ChatResponse,
     SessionDeleteRequest,
     SessionRenameRequest,
-    StartConversationRequest,
 )
 
 # Setup logging BEFORE creating app (important for cold start tracking)
@@ -813,16 +812,15 @@ async def fetch_graph_data(request: Request, payload: FetchGraphRequest):
     return await invoke_handler(request, "fetch_graph")
 
 
-@api_router.post(
+@api_router.get(
     "/chat/start",
     tags=["Chat"],
     summary="Start Conversation",
     description="Create a new conversation session in a workspace for the authenticated user",
     status_code=201,
 )
-async def chat_start_conversation(request: Request, payload: StartConversationRequest):
+async def chat_start_conversation(request: Request):
     """Start a conversation session. `user_id` is taken from the Bearer token."""
-    request.state.parsed_payload = payload
     return await invoke_handler(request, "chat_start_conversation")
 
 

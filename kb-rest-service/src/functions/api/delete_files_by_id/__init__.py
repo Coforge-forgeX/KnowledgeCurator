@@ -33,15 +33,6 @@ logger = get_logger(__name__)
 FILE_KEY_PREFIX = "query_file:"
 
 
-async def _validate_curate_permission(user_id: int, workspace_id: int) -> None:
-    """Require user to be admin in workspace and can_curate_kb=True."""
-    await require_workspace_admin_curator(
-        user_id=user_id,
-        workspace_id=workspace_id,
-        action_description="delete files",
-    )
-
-
 async def _load_token_mapping(file_id: str) -> Dict[str, Any]:
     """Load file mapping from signed token or Redis cache."""
     signed_mapping = decode_signed_file_id(file_id)
@@ -126,7 +117,7 @@ async def _resolve_target(
             raise ValidationException(message="file_id is invalid for this workspace")
     else:
         file_path = normalize_path(target.get("file_path"))
-        file_name = str(target.get("file_name") or "").strip() or file_path.split("/")[-1]
+        file_name = file_path.split("/")[-1]
         provider = str(settings.storage.STORAGE_PROVIDER or "azure")
         container_name = str(default_container)
         file_id = file_id or file_path
@@ -176,10 +167,14 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
     workspace_id = int(payload.workspace_id)
 
     try:
-        await _validate_curate_permission(user_id, workspace_id)
+        await require_workspace_admin_curator(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            action_description="delete files",
+        )
 
         storage_paths = await get_workspace_storage_paths(workspace_id)
-        default_container = str((storage_paths or {}).get("container") or settings.storage.STORAGE_CONTAINER_NAME or "")
+        default_container = str((storage_paths or {}).get("container") or settings.storage.STORAGE_CONTAINER_NAME)
 
         deleted: List[Dict[str, Any]] = []
         failed: List[Dict[str, Any]] = []

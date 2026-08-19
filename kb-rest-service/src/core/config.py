@@ -525,7 +525,7 @@ class Settings(BaseSettings):
     @property
     def active_queue_provider(self) -> str:
         """Get effective queue provider with cloud provider fallback."""
-        return (self.queue.QUEUE_PROVIDER or self.CLOUD_PROVIDER or "azure").lower()
+        return (self.queue.QUEUE_PROVIDER or self.CLOUD_PROVIDER).lower()
 
     @property
     def active_queue_name(self) -> str:

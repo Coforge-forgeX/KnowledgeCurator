@@ -118,26 +118,6 @@ class DocumentMetadata(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), comment="Creation timestamp")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), comment="Last update timestamp")
 
-
-class ConversationSession(Base):
-    """
-    Conversation/chat session metadata.
-    Stores conversation sessions for chatbot functionality.
-    Note: Actual messages stored in MongoDB for performance.
-    """
-    __tablename__ = "conversation_sessions"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    session_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
-    workspace_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    message_count: Mapped[int] = mapped_column(Integer, default=0)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-
-
 class User(Base):
     """
     User model - Basic user information.

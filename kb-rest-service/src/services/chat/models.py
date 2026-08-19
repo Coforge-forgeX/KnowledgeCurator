@@ -16,9 +16,12 @@ class AccessContext:
     workspace_id: int
     role_id: int
     can_curate_kb: bool
+    container_name: str
+    upload_path: str
     domain: str
     kb_name: str
     all_kb_titles: List[str] = field(default_factory=list)
+    all_kb_ids: List[int] = field(default_factory=list)
     is_kg: bool = False
 
     @property

@@ -689,56 +689,6 @@ class MongoDBService:
                 operation="append_message"
             )
 
-    async def get_conversation_history(
-        self,
-        session_id: str,
-        workspace_id: int,
-        user_id: int,
-        limit: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Get conversation history for a session.
-
-        Args:
-            session_id: Session identifier
-            workspace_id: Workspace identifier
-            user_id: User identifier
-            limit: Optional limit on number of messages
-
-        Returns:
-            List of messages
-        """
-        try:
-            query = _scope(session_id, workspace_id, user_id)
-
-            cursor = self.chat_history.find(
-                query,
-                {"_id": 0}
-            ).sort("timestamp", 1)
-
-            if limit:
-                # Get last N messages
-                cursor = cursor.skip(max(0, await self.chat_history.count_documents(query) - limit))
-
-            messages = await cursor.to_list(length=limit if limit else None)
-
-            logger.debug(
-                "Retrieved conversation history",
-                session_id=session_id,
-                message_count=len(messages),
-            )
-
-            # Normalized so legacy documents (`tasks`, string ids, no
-            # message_id) come back in the current schema.
-            return [_normalize_message(m) for m in messages]
-
-        except PyMongoError as e:
-            logger.error("Failed to get conversation history", error=e)
-            raise DatabaseException(
-                message=f"Failed to get conversation history: {str(e)}",
-                operation="get_conversation_history"
-            )
-
     async def get_messages_page(
         self,
         session_id: str,
@@ -750,9 +700,6 @@ class MongoDBService:
     ) -> tuple[List[Dict[str, Any]], int]:
         """
         Get one page of a conversation's messages, plus the total message count.
-
-        Distinct from `get_conversation_history`, whose `limit` means "the last N
-        messages for LLM context" and is not a paging primitive.
 
         Args:
             newest_first: when True (the default), page 1 is the newest slice of

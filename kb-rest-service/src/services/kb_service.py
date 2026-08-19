@@ -41,63 +41,63 @@ class KnowledgeBaseService:
             self._queue_helper = get_indexing_queue_helper()
         return self._queue_helper
 
-    async def queue_document_for_indexing(
-        self,
-        document_text: str,
-        workspace_id: int,
-        file_name: str,
-        metadata: Optional[Dict] = None,
-    ) -> str:
-        """
-        Queue a document for background indexing.
+    # async def queue_document_for_indexing(
+    #     self,
+    #     document_text: str,
+    #     workspace_id: int,
+    #     file_name: str,
+    #     metadata: Optional[Dict] = None,
+    # ) -> str:
+    #     """
+    #     Queue a document for background indexing.
 
-        Args:
-            document_text: Document content
-            workspace_id: Workspace identifier
-            file_name: Original file name
-            metadata: Optional metadata
+    #     Args:
+    #         document_text: Document content
+    #         workspace_id: Workspace identifier
+    #         file_name: Original file name
+    #         metadata: Optional metadata
 
-        Returns:
-            Queue message ID
+    #     Returns:
+    #         Queue message ID
 
-        Raises:
-            QueueException: If queueing fails
-        """
-        try:
-            logger.info(
-                "Queueing document for indexing",
-                workspace_id=workspace_id,
-                file_name=file_name,
-                content_length=len(document_text),
-            )
+    #     Raises:
+    #         QueueException: If queueing fails
+    #     """
+    #     try:
+    #         logger.info(
+    #             "Queueing document for indexing",
+    #             workspace_id=workspace_id,
+    #             file_name=file_name,
+    #             content_length=len(document_text),
+    #         )
 
-            # Prepare queue message
-            message = {
-                "workspace_id": workspace_id,
-                "file_name": file_name,
-                "document_text": document_text,
-                "metadata": metadata or {},
-                "queued_at": str(datetime.utcnow()),
-            }
+    #         # Prepare queue message
+    #         message = {
+    #             "workspace_id": workspace_id,
+    #             "file_name": file_name,
+    #             "document_text": document_text,
+    #             "metadata": metadata or {},
+    #             "queued_at": str(datetime.utcnow()),
+    #         }
 
-            # Send to queue
-            message_id = await self.queue_helper.send_message_async(message)
+    #         # Send to queue
+    #         message_id = await self.queue_helper.send_message(message)
 
-            logger.info(
-                "Document queued successfully",
-                workspace_id=workspace_id,
-                message_id=message_id,
-            )
+    #         logger.info(
+    #             "Document queued successfully",
+    #             workspace_id=workspace_id,
+    #             message_id=message_id,
+    #         )
 
-            return message_id
+    #         return message_id
 
-        except Exception as e:
-            logger.error(
-                "Failed to queue document",
-                error=e,
-                workspace_id=workspace_id,
-            )
-            raise
+    #     except Exception as e:
+    #         logger.error(
+    #             "Failed to queue document",
+    #             error=e,
+    #             workspace_id=workspace_id,
+    #         )
+    #         raise
 
     async def delete_documents(
         self,
@@ -323,9 +323,11 @@ class KnowledgeBaseService:
                     "Failed to get workspace storage paths for working directory",
                     workspace_id=workspace_id
                 )
-                raise ValidationException(
-                    message=f"Cannot determine working directory for workspace {workspace_id}"
-                )
+                # Fallback to basic working dir if storage paths unavailable
+                return get_workspace_working_dir(workspace_id, base_dir)
+                # raise ValidationException(
+                #     message=f"Cannot determine working directory for workspace {workspace_id}"
+                # )
 
             domain = storage_paths.get("domain")
             kb_name = storage_paths.get("kb_name")

@@ -29,6 +29,7 @@ dependencies = [
     "requests==2.34.2",
     "gunicorn==26.0.0",
     "msal==1.37.0",
+    "pgvector==0.5.0",
 ]
 
 [project.optional-dependencies]

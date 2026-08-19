@@ -7,14 +7,12 @@ Body: { "workspace_id": int }
 `user_id` comes from the token — never from the body — and workspace membership
 is verified against UserMap before a session is created, matching `message_gpt`.
 """
+import uuid
 
 from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
-from src.core.auth import get_user_id, require_auth
+from src.core.auth import require_auth
 from src.core.logging import get_logger
-from src.models.chat_models import StartConversationRequest
-from src.services.chat import get_chat_access_validator
-from src.services.chat_service import get_chat_service
-from src.common import create_exception_response, create_success_response, parse_request
+from src.common import create_exception_response, create_success_response
 
 logger = get_logger(__name__)
 
@@ -32,24 +30,15 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         500: Server error
     """
     correlation_id = context.correlation_id
-    user_id = get_user_id(req)
 
     try:
-        payload, error = parse_request(req, StartConversationRequest)
-        if error:
-            return error
 
-        await get_chat_access_validator().validate_membership(
-            user_id=user_id,
-            workspace_id=payload.workspace_id,
-        )
-
-        service = get_chat_service()
-        await service.initialize()
-        data = await service.start_conversation(
-            workspace_id=payload.workspace_id,
-            user_id=user_id,
-        )
+        session_id = str(uuid.uuid4())
+        data = {
+                "session_id": session_id,
+                "status": "created",
+                "message": f"Session started with id: {session_id}",
+            }
 
         return create_success_response(
             message="Conversation started",

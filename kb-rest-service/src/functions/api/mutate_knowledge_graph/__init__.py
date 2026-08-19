@@ -25,14 +25,6 @@ CHUNK_TABLES = ["lightrag_vdb_chunks"]
 RELATION_TABLES = ["lightrag_vdb_relation", "lightrag_vdb_relations"]
 
 
-async def _validate_admin_curate_permission(user_id: int, workspace_id: int) -> None:
-    await require_workspace_admin_curator(
-        user_id=user_id,
-        workspace_id=workspace_id,
-        action_description="mutate knowledge graph",
-    )
-
-
 def _norm(value: Optional[str]) -> str:
     return str(value or "").strip().replace("\\", "/")
 
@@ -630,7 +622,11 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         return error_response
 
     try:
-        await _validate_admin_curate_permission(user_id=user_id, workspace_id=payload.workspace_id)
+        await require_workspace_admin_curator(
+            user_id=user_id,
+            workspace_id=payload.workspace_id,
+            action_description="mutate knowledge graph",
+        )
         mutation_result, warnings = await _apply_mutation(payload)
 
         response_data: Dict[str, Any] = {

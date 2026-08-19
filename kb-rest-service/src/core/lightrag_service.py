@@ -840,18 +840,3 @@ def get_lightrag_service(working_dir: Optional[str] = None) -> LightRAGService:
         _lightrag_service_instance = LightRAGService(working_dir=working_dir)
 
     return _lightrag_service_instance
-
-
-async def initialize_lightrag_service(working_dir: Optional[str] = None) -> LightRAGService:
-    """
-    Initialize and return the global LightRAG service instance.
-
-    Args:
-        working_dir: Optional working directory
-
-    Returns:
-        LightRAGService: Initialized service instance
-    """
-    service = get_lightrag_service(working_dir=working_dir)
-    await service.initialize()
-    return service

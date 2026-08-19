@@ -34,7 +34,7 @@ ROUTE_TO_HANDLER = {
     ("GET", "/api/v2/files/{file_id}/download"): "query_source_download_url",
 
     # Chat / Conversation session management
-    ("POST", "/api/v2/chat/start"): "chat_start_conversation",
+    ("GET", "/api/v2/chat/start"): "chat_start_conversation",
     ("GET", "/api/v2/chat/history"): "chat_get_conversation_history",
     ("GET", "/api/v2/chat/load"): "chat_load_conversation",
     ("POST", "/api/v2/chat/session/rename"): "chat_rename_conversation",

@@ -55,7 +55,10 @@ class ChatAccessValidator:
             can_curate_kb=bool(getattr(user_map_row, "can_curate_kb", False)),
             domain=storage_paths.get("domain", ""),
             kb_name=storage_paths.get("kb_name", ""),
+            container_name=storage_paths.get("container", ""),
+            upload_path=storage_paths.get("upload_path", ""),
             all_kb_titles=list(storage_paths.get("all_kb_titles", []) or []),
+            all_kb_ids=list(storage_paths.get("all_kb_ids", []) or []),
             is_kg=bool(storage_paths.get("is_kg")),
         )
 

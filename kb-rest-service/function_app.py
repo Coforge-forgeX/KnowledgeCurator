@@ -100,7 +100,7 @@ async def query_sources_download_url(req: func.HttpRequest, context: func.Contex
     return await _handle(req, context)
 
 
-@app.route(route="api/v2/chat/start", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+@app.route(route="api/v2/chat/start", auth_level=func.AuthLevel.ANONYMOUS, methods=["GET"])
 async def chat_start_conversation(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
 

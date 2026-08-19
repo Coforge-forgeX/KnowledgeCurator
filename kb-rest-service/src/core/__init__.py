@@ -16,7 +16,6 @@ from .config import settings
 from .database import (
     Base,
     Database,
-    ConversationSession,
     DocumentMetadata,
     FileTask,
     Role,
@@ -43,7 +42,6 @@ from .exceptions import (
 from .lightrag_service import (
     LightRAGService,
     get_lightrag_service,
-    initialize_lightrag_service,
 )
 from .logging import Logger, get_logger, setup_logging
 from .middleware import AzureFunctionMiddleware, azure_http_decorator
@@ -73,7 +71,6 @@ __all__ = [
     "Role",
     "FileTask",
     "DocumentMetadata",
-    "ConversationSession",
     "db",
     "get_async_session",
     # Auth
@@ -111,7 +108,6 @@ __all__ = [
     # LightRAG
     "LightRAGService",
     "get_lightrag_service",
-    "initialize_lightrag_service",
     # Neo4j
     "Neo4jDriver",
     "get_neo4j_driver",

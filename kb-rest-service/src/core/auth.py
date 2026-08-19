@@ -13,7 +13,7 @@ from passlib.hash import argon2
 
 from .abstractions import AbstractRequest, AbstractResponse
 from .config import settings
-from .exceptions import AuthenticationException, AuthorizationException
+from .exceptions import AuthenticationException, AuthorizationException, APIException
 from .logging import get_logger
 from .redis import get_redis_client, is_redis_available
 
@@ -365,7 +365,33 @@ def require_auth(
                 error = _authenticate(args, kwargs)
                 if error:
                     return _error_response(error)
-                return await fn(*args, **kwargs)
+                # Extract context_obj for correlation_id
+                context_obj = kwargs.get('context')
+                if context_obj is None and len(args) >= 2:
+                    context_obj = args[1]
+                correlation_id = getattr(context_obj, 'correlation_id', None) if context_obj is not None else None
+                try:
+                     return await fn(*args, **kwargs)
+                except APIException as e:
+                    from src.common.response_utils import create_error_response
+                    return create_error_response(
+                        message=e.message,
+                        error_code=e.error_code,
+                        status_code=e.status_code,
+                        details=e.details,
+                        correlation_id=correlation_id,
+                    )
+                except Exception as e:
+                    from src.core.logging import get_logger
+                    logger = get_logger(__name__)
+                    logger.exception("Unhandled exception in authenticated function")
+                    from src.common.response_utils import create_error_response
+                    return create_error_response(
+                        message="Internal server error",
+                        error_code="INTERNAL_ERROR",
+                        status_code=500,
+                        correlation_id=correlation_id,
+                    )
 
             return _async_wrapped
 
@@ -374,8 +400,33 @@ def require_auth(
             error = _authenticate(args, kwargs)
             if error:
                 return _error_response(error)
-            return fn(*args, **kwargs)
-
+            # Extract context_obj for correlation_id
+            context_obj = kwargs.get('context')
+            if context_obj is None and len(args) >= 2:
+                context_obj = args[1]
+            correlation_id = getattr(context_obj, 'correlation_id', None) if context_obj is not None else None
+            try:
+                return fn(*args, **kwargs)
+            except APIException as e:
+                from src.common.response_utils import create_error_response
+                return create_error_response(
+                    message=e.message,
+                    error_code=e.error_code,
+                    status_code=e.status_code,
+                    details=e.details,
+                    correlation_id=correlation_id,
+                )
+            except Exception as e:
+                from src.core.logging import get_logger
+                logger = get_logger(__name__)
+                logger.exception("Unhandled exception in authenticated function")
+                from src.common.response_utils import create_error_response
+                return create_error_response(
+                    message="Internal server error",
+                    error_code="INTERNAL_ERROR",
+                    status_code=500,
+                    correlation_id=correlation_id,
+                )
         return _wrapped
 
     return _decorator

@@ -13,13 +13,6 @@ from .chat_models import (
     LoadConversationRequest,
     SessionRenameRequest,
     SessionDeleteRequest,
-    StartConversationRequest,
-)
-
-from .upload_models import (
-    UploadRequest,
-    UploadResponse,
-    FileMetadata,
 )
 
 from .query_models import (
@@ -37,11 +30,6 @@ __all__ = [
     "LoadConversationRequest",
     "SessionRenameRequest",
     "SessionDeleteRequest",
-    "StartConversationRequest",
-    # Upload models
-    "UploadRequest",
-    "UploadResponse",
-    "FileMetadata",
     # Query models
     "QueryRequest",
     "QueryResponse",

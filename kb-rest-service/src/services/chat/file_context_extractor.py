@@ -32,7 +32,7 @@ class FileContextExtractor:
 
     def __init__(self) -> None:
         # Build OCR adapter based on configuration
-        ocr_provider = settings.ocr.OCR_PROVIDER or settings.CLOUD_PROVIDER or "azure"
+        ocr_provider = settings.ocr.OCR_PROVIDER or settings.CLOUD_PROVIDER
 
         try:
             ocr_adapter = get_ocr_adapter(

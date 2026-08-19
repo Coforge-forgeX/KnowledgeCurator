@@ -125,7 +125,7 @@ class SearchModeHandler(ModeHandler):
         access: AccessContext,
         history: List[Dict[str, Any]],
     ) -> HandlerResult:
-        if payload.file_names and payload.file_contents:
+        if payload.files:
             return await self._answer_with_file_context(payload, access, history)
 
         intent_detector = get_chat_intent_detector(access.workspace_id, payload.agent_id)
@@ -253,7 +253,14 @@ class SearchModeHandler(ModeHandler):
     ) -> HandlerResult:
         llm_provider = get_llm_provider(workspace_id=access.workspace_id, agent_id=payload.agent_id)
 
-        raw_context = await self._file_extractor.extract(payload.file_names, payload.file_contents)
+        # Extract file names and contents from payload files
+        file_names: List[str] = []
+        file_contents: List[str] = []
+        if payload.files:
+            file_names = [f.file_name for f in payload.files]
+            file_contents = [f.file_content for f in payload.files]
+
+        raw_context = await self._file_extractor.extract(file_names, file_contents)
         if not raw_context.strip():
             return HandlerResult(
                 response="I couldn't extract any readable text from the attached file(s).",
@@ -298,17 +305,21 @@ class UpdateModeHandler(ModeHandler):
                 "Indexing or editing the knowledge base is not allowed for your account."
             )
 
-        if not (payload.file_names and payload.file_contents):
+        if not (payload.files):
             raise ValidationException(message="UPDATE mode requires file_names and file_contents to index")
 
         upload_result = await self._rag_service.upload_and_index_tool(
-            file_names=payload.file_names,
-            file_contents=payload.file_contents,
+            # file_names=payload.file_names,
+            # file_contents=payload.file_contents,
+            files=payload.files,
             workspace_id=access.workspace_id,
             user_id=access.user_id,
-            role_id=access.role_id,
             domain=access.domain,
             kb_name=access.kb_name,
+            upload_path=access.upload_path,
+            kb_ids=access.all_kb_ids,
+            container_name=access.container_name,
+            is_kg=access.is_kg,
         )
 
         return HandlerResult(
