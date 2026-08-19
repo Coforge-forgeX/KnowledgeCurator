@@ -62,6 +62,18 @@ from src.functions.api.delete_files_by_id.payloads import DeleteFilesByIdRequest
 from src.functions.api.delete_all_indexed_documents.payloads import DeleteAllIndexedDocumentsRequest
 from src.functions.api.fetch_graph.payloads import FetchGraphRequest, FetchGraphResponse
 from src.functions.api.mutate_knowledge_graph.payloads import MutateKnowledgeGraphRequest
+from src.functions.api.sharepoint.payloads import (
+    TestSharePointConnectionRequest,
+    TestSharePointConnectionResponse,
+    ToggleSharePointConnectionRequest,
+    ToggleSharePointConnectionResponse,
+    ExtractSharePointDataRequest,
+    ExtractSharePointDataResponse,
+)
+from src.functions.api.workspace_download_zip.payloads import (
+    WorkspaceDownloadZipRequest,
+    WorkspaceDownloadZipResponse,
+)
 from src.models.chat_models import (
     CancelChatRequest,
     CancelChatResponse,
@@ -928,6 +940,63 @@ async def cancel_chat_message(request: Request, payload: CancelChatRequest):
     """Cancel the running message_gpt task for a session."""
     request.state.parsed_payload = payload
     return await invoke_handler(request, "cancel_chat_message")
+
+
+# ============================================================================
+# SharePoint Integration Endpoints
+# ============================================================================
+
+
+@api_router.post(
+    "/sharepoint/test-connection",
+    tags=["SharePoint Integration"],
+    summary="Test SharePoint Connection",
+    description="Test Microsoft Graph API credentials and site access for SharePoint",
+    response_model=TestSharePointConnectionResponse,
+)
+async def test_sharepoint_connection(request: Request, payload: TestSharePointConnectionRequest):
+    """Test SharePoint connection for workspace/user."""
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "sharepoint_test_connection")
+
+
+@api_router.post(
+    "/sharepoint/toggle-connection",
+    tags=["SharePoint Integration"],
+    summary="Toggle SharePoint Connection",
+    description="Enable or disable SharePoint integration for a workspace and user",
+    response_model=ToggleSharePointConnectionResponse,
+)
+async def toggle_sharepoint_connection(request: Request, payload: ToggleSharePointConnectionRequest):
+    """Enable/disable SharePoint connection."""
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "sharepoint_toggle_connection")
+
+
+@api_router.post(
+    "/sharepoint/extract-data",
+    tags=["SharePoint Integration"],
+    summary="Extract SharePoint Data",
+    description="Scan SharePoint library, apply metadata/tag filters, download files, and run OCR",
+    response_model=ExtractSharePointDataResponse,
+)
+async def extract_sharepoint_data(request: Request, payload: ExtractSharePointDataRequest):
+    """Extract text and metadata from SharePoint documents."""
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "sharepoint_extract_data")
+
+
+@api_router.post(
+    "/workspaces/download-zip",
+    tags=["Document Management"],
+    summary="Download Workspace Documents ZIP",
+    description="Bundles all workspace documents into a ZIP archive and returns a signed download URL",
+    response_model=WorkspaceDownloadZipResponse,
+)
+async def workspace_download_zip(request: Request, payload: WorkspaceDownloadZipRequest):
+    """Bundle workspace documents into a ZIP file and generate signed download URL."""
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "workspace_download_zip")
 
 
 # ============================================================================

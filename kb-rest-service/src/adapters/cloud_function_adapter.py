@@ -43,6 +43,14 @@ ROUTE_TO_HANDLER = {
     # Chat / Messaging
     ("POST", "/api/v2/chat/message"): "message_gpt",
     ("POST", "/api/v2/chat/message/cancel"): "cancel_chat_message",
+    
+    # SharePoint Integration
+    ("POST", "/api/v2/sharepoint/test-connection"): "sharepoint_test_connection",
+    ("POST", "/api/v2/sharepoint/toggle-connection"): "sharepoint_toggle_connection",
+    ("POST", "/api/v2/sharepoint/extract-data"): "sharepoint_extract_data",
+
+    # Workspace Document Management
+    ("POST", "/api/v2/workspaces/download-zip"): "workspace_download_zip",
 }
 
 

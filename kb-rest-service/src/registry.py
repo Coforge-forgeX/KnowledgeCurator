@@ -72,6 +72,14 @@ HANDLER_MODULE_PATHS: Dict[str, str] = {
     # Chat / Messaging
     "message_gpt": "src.functions.api.message_gpt",
     "cancel_chat_message": "src.functions.api.cancel_chat_message",
+
+    # SharePoint Integration
+    "sharepoint_test_connection": "src.functions.api.sharepoint.test_connection",
+    "sharepoint_toggle_connection": "src.functions.api.sharepoint.toggle_connection",
+    "sharepoint_extract_data": "src.functions.api.sharepoint.extract_data",
+
+    # Workspace Document Management
+    "workspace_download_zip": "src.functions.api.workspace_download_zip",
 }
 
 # Cache for loaded handlers (lazy loading + memoization)

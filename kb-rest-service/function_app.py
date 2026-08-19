@@ -133,3 +133,22 @@ async def message_gpt(req: func.HttpRequest, context: func.Context) -> func.Http
 @app.route(route="api/v2/chat/message/cancel", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 async def cancel_chat_message(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
+
+@app.route(route="api/v2/sharepoint/test-connection", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def sharepoint_test_connection(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/sharepoint/toggle-connection", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def sharepoint_toggle_connection(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/sharepoint/extract-data", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def sharepoint_extract_data(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/workspaces/download-zip", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def workspace_download_zip(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
