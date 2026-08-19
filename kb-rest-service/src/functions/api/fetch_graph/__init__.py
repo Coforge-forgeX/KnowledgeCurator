@@ -8,6 +8,7 @@ import json
 import time
 import hashlib
 import re
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
@@ -184,7 +185,6 @@ async def _fetch_context_from_lightrag(
     """Fetch structured graph data from LightRAG without answer generation."""
     del role_id  # role_id is validated upstream, not needed for retrieval calls
 
-    lightrag = get_lightrag_service()
     resolved_mode = _normalize_mode(mode)
 
     kb_targets: List[str] = [kb_name]
@@ -193,8 +193,9 @@ async def _fetch_context_from_lightrag(
 
     kb_results: Dict[str, Any] = {}
     for kb_target in kb_targets:
+        target_workspace = WorkspaceResolver.build_workspace_name(domain, kb_target)
+        lightrag = get_lightrag_service(workspace=target_workspace)
         lightrag.working_dir = settings.lightrag.LIGHTRAG_WORKING_DIR
-        lightrag.workspace = WorkspaceResolver.build_workspace_name(domain, kb_target)
         lightrag.set_runtime_context(workspace_id=workspace_id, agent_id=agent_id)
 
         data_response = await lightrag.query_data(
@@ -209,11 +210,60 @@ async def _fetch_context_from_lightrag(
         entities_payload = data_payload.get("entities", []) if isinstance(data_payload.get("entities"), list) else []
         relationships_payload = data_payload.get("relationships", []) if isinstance(data_payload.get("relationships"), list) else []
 
+        # Retrieve true Neo4j KnowledgeGraph subgraphs (with element_id) for candidate entity labels
+        graph_entities: List[Dict[str, Any]] = []
+        graph_relationships: List[Dict[str, Any]] = []
+
+        candidate_labels = [
+            _extract_entity_name(e)
+            for e in entities_payload
+            if isinstance(e, dict) and _extract_entity_name(e)
+        ]
+
+        if candidate_labels:
+            semaphore = asyncio.Semaphore(4)
+
+            async def _fetch_kg_for_label(lbl: str):
+                async with semaphore:
+                    try:
+                        return await lightrag.get_knowledge_graph(node_label=lbl, max_depth=2)
+                    except Exception as kg_err:
+                        logger.warning(f"Failed to fetch knowledge graph for label '{lbl}'", error=kg_err)
+                        return None
+
+            kg_batch_results = await asyncio.gather(
+                *[_fetch_kg_for_label(lbl) for lbl in candidate_labels],
+                return_exceptions=True,
+            )
+
+            seen_nodes: set[str] = set()
+            seen_edges: set[str] = set()
+
+            for res in kg_batch_results:
+                if isinstance(res, dict):
+                    nodes_list = res.get("nodes", [])
+                    edges_list = res.get("edges", [])
+                    if isinstance(nodes_list, list):
+                        for n in nodes_list:
+                            n_id = str(n.get("element_id") or n.get("id") or _extract_entity_name(n))
+                            if n_id not in seen_nodes:
+                                seen_nodes.add(n_id)
+                                graph_entities.append(n)
+                    if isinstance(edges_list, list):
+                        for e in edges_list:
+                            e_id = str(e.get("element_id") or e.get("id") or f"{e.get('source')}-{e.get('target')}")
+                            if e_id not in seen_edges:
+                                seen_edges.add(e_id)
+                                graph_relationships.append(e)
+
+        final_entities = graph_entities if graph_entities else entities_payload
+        final_relationships = graph_relationships if graph_relationships else relationships_payload
+
         parsed_context: List[Dict[str, Any]] = [
             {
-                "entities": entities_payload,
-                "relationships": relationships_payload,
-                "metadata": data_response.get("metadata", {}) if isinstance(data_response.get("metadata"), dict) else {},
+                "entities": final_entities,
+                "relationships": final_relationships,
+                "metadata": data_response.get("metadata", {}) if isinstance(data_response, dict) else {},
             }
         ]
 
@@ -234,7 +284,7 @@ def _build_llm_filter_func(workspace_id: int, agent_id: Optional[int]):
     """Build LLM callable using common_adapters workspace/agent routing with safe fallback."""
     if llm_router_config_store is not None:
         try:
-            effective = llm_router_config_store.get_effective_configuration(workspace_id, agent_id)
+            effective = llm_router_config_store.get_effective_configuration(workspace_id, agent_id or 1)
             current_provider = (effective or {}).get("current_provider", "").strip().lower()
             current_model = (effective or {}).get("current_model")
             if current_provider:
@@ -243,7 +293,7 @@ def _build_llm_filter_func(workspace_id: int, agent_id: Optional[int]):
                     current_provider,
                     model_override=current_model,
                 )
-                if (provider_config.get("provider_name") or "").strip().lower() == "azure":
+                if isinstance(provider_config, dict) and (provider_config.get("provider_name") or "").strip().lower() == "azure":
                     api_key = provider_config.get("api_key")
                     api_base = provider_config.get("endpoint")
                     api_version = provider_config.get("api_version") or settings.lightrag.AZURE_OPENAI_LLM_MODEL_API_VERSION
@@ -257,23 +307,23 @@ def _build_llm_filter_func(workspace_id: int, agent_id: Optional[int]):
                             model=provider_config.get("model") or deployment,
                         )
                         return build_azure_openai_chat_completion_func(
-                            api_key=api_key,
-                            api_base=api_base,
-                            api_version=api_version,
-                            deployment=deployment,
+                            api_key=str(api_key or ""),
+                            api_base=str(api_base or ""),
+                            api_version=str(api_version or ""),
+                            deployment=str(deployment or ""),
                         )
         except Exception as route_error:
             logger.warning(
                 "Failed to resolve common_adapters LLM route for graph filtering",
                 workspace_id=workspace_id,
                 agent_id=agent_id,
-                error=str(route_error),
+                error=route_error,
             )
 
     api_key = settings.lightrag.AZURE_OPENAI_LLM_MODEL_API_KEY
-    api_base = settings.lightrag.AZURE_OPENAI_LLM_MODEL_API_BASE or settings.lightrag.AZURE_OPENAI_LLM_MODEL_ENDPOINT
+    api_base = settings.lightrag.AZURE_OPENAI_LLM_MODEL_API_BASE or getattr(settings.lightrag, "AZURE_OPENAI_LLM_MODEL_ENDPOINT", None)
     api_version = settings.lightrag.AZURE_OPENAI_LLM_MODEL_API_VERSION
-    deployment = settings.lightrag.AZURE_OPENAI_LLM_MODEL_LLM_MODEL or settings.lightrag.AZURE_OPENAI_LLM_MODEL_NAME
+    deployment = settings.lightrag.AZURE_OPENAI_LLM_MODEL_LLM_MODEL or getattr(settings.lightrag, "AZURE_OPENAI_LLM_MODEL_NAME", None)
 
     if all([api_key, api_base, deployment]):
         logger.info(
@@ -283,10 +333,10 @@ def _build_llm_filter_func(workspace_id: int, agent_id: Optional[int]):
             model=deployment,
         )
         return build_azure_openai_chat_completion_func(
-            api_key=api_key,
-            api_base=api_base,
-            api_version=api_version,
-            deployment=deployment,
+            api_key=str(api_key or ""),
+            api_base=str(api_base or ""),
+            api_version=str(api_version or ""),
+            deployment=str(deployment or ""),
         )
 
     raise ValidationException(message="No LLM configuration found for graph filtering")
@@ -423,9 +473,9 @@ def _extract_relationship_label(relationship: Dict[str, Any]) -> str:
     return ""
 
 
-def _extract_entity_id(entity: Dict[str, Any]) -> Optional[Any]:
+def _extract_entity_id(entity: Dict[str, Any]) -> Any:
     """Extract entity id from heterogeneous payload shapes."""
-    for key in ("entity_id", "id", "uid", "node_id"):
+    for key in ("element_id", "entity_id", "id", "uid", "node_id"):
         value = entity.get(key)
         if value is not None and str(value).strip():
             return value
@@ -440,42 +490,52 @@ def _ensure_entity_id(entity: Dict[str, Any], idx: Optional[int] = None) -> str:
 
     name = _extract_entity_name(entity, idx)
     entity_type = _extract_entity_type(entity)
-    file_path = _extract_entity_file_path(entity) or ""
-    source_id = _extract_entity_source_id(entity) or ""
+    file_path = str(_extract_entity_file_path(entity) or "")
+    source_id = str(_extract_entity_source_id(entity) or "")
     material = f"{_canonical_label(name)}|{_canonical_label(entity_type)}|{file_path}|{source_id}"
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
     return f"node-{digest}"
 
 
-def _extract_entity_file_path(entity: Dict[str, Any]) -> Optional[Any]:
+def _extract_prop(obj: Dict[str, Any], key: str) -> Any:
+    """Extract property checking top level, properties dict, and metadata dict."""
+    if not isinstance(obj, dict):
+        return None
+    val = obj.get(key)
+    if val is not None and str(val).strip() != "":
+        return val
+    props = obj.get("properties")
+    if isinstance(props, dict):
+        val = props.get(key)
+        if val is not None and str(val).strip() != "":
+            return val
+    meta = obj.get("metadata")
+    if isinstance(meta, dict):
+        val = meta.get(key)
+        if val is not None and str(val).strip() != "":
+            return val
+    return None
+
+
+def _extract_entity_file_path(entity: Dict[str, Any]) -> Any:
     """Extract file path provenance from entity payload."""
     for key in ("file_path", "source_file", "source_path"):
-        value = entity.get(key)
-        if value:
-            return value
-    metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
-    for key in ("file_path", "source_file", "source_path"):
-        value = metadata.get(key)
-        if value:
-            return value
+        val = _extract_prop(entity, key)
+        if val:
+            return val
     return None
 
 
-def _extract_entity_source_id(entity: Dict[str, Any]) -> Optional[Any]:
+def _extract_entity_source_id(entity: Dict[str, Any]) -> Any:
     """Extract source id provenance from entity payload."""
     for key in ("source_id", "chunk_id", "doc_id"):
-        value = entity.get(key)
-        if value is not None and str(value).strip():
-            return value
-    metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
-    for key in ("source_id", "chunk_id", "doc_id"):
-        value = metadata.get(key)
-        if value is not None and str(value).strip():
-            return value
+        val = _extract_prop(entity, key)
+        if val is not None and str(val).strip():
+            return val
     return None
 
 
-def _extract_relationship_id(relationship: Dict[str, Any]) -> Optional[Any]:
+def _extract_relationship_id(relationship: Dict[str, Any]) -> Any:
     """Extract relation id from heterogeneous payload shapes."""
     for key in ("relation_id", "id", "edge_id", "uid"):
         value = relationship.get(key)
@@ -492,38 +552,28 @@ def _ensure_relationship_id(relationship: Dict[str, Any]) -> str:
 
     src, dst = _extract_relationship_endpoints(relationship)
     rel = _canonical_label(_extract_relationship_label(relationship))
-    source_id = _extract_relationship_source_id(relationship) or ""
-    file_path = _extract_relationship_file_path(relationship) or ""
+    source_id = str(_extract_relationship_source_id(relationship) or "")
+    file_path = str(_extract_relationship_file_path(relationship) or "")
     material = f"{src}|{rel}|{dst}|{source_id}|{file_path}"
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
     return f"rel-{digest}"
 
 
-def _extract_relationship_file_path(relationship: Dict[str, Any]) -> Optional[Any]:
+def _extract_relationship_file_path(relationship: Dict[str, Any]) -> Any:
     """Extract file path provenance from relationship payload."""
     for key in ("file_path", "source_file", "source_path"):
-        value = relationship.get(key)
-        if value:
-            return value
-    metadata = relationship.get("metadata") if isinstance(relationship.get("metadata"), dict) else {}
-    for key in ("file_path", "source_file", "source_path"):
-        value = metadata.get(key)
-        if value:
-            return value
+        val = _extract_prop(relationship, key)
+        if val:
+            return val
     return None
 
 
-def _extract_relationship_source_id(relationship: Dict[str, Any]) -> Optional[Any]:
+def _extract_relationship_source_id(relationship: Dict[str, Any]) -> Any:
     """Extract source id provenance from relationship payload."""
     for key in ("source_id", "chunk_id", "doc_id"):
-        value = relationship.get(key)
-        if value is not None and str(value).strip():
-            return value
-    metadata = relationship.get("metadata") if isinstance(relationship.get("metadata"), dict) else {}
-    for key in ("source_id", "chunk_id", "doc_id"):
-        value = metadata.get(key)
-        if value is not None and str(value).strip():
-            return value
+        val = _extract_prop(relationship, key)
+        if val is not None and str(val).strip():
+            return val
     return None
 
 
@@ -656,15 +706,19 @@ def _build_graph_relationship_model(
     """Build relationship response model with resilient endpoint resolution."""
     source, target = _resolve_relationship_endpoints_for_response(relationship, entities)
     relation = _extract_relationship_label(relationship) or "related_to"
+    rel_element_id = str(relationship.get("element_id") or relationship.get("id") or _ensure_relationship_id(relationship))
 
     return GraphRelationshipModel(
+        element_id=rel_element_id,
         source=source,
         target=target,
         relation=relation,
-        relation_id=_ensure_relationship_id(relationship),
-        description=relationship.get("description"),
-        source_id=_extract_relationship_source_id(relationship),
+        created_at=_extract_prop(relationship, "created_at") or _extract_prop(relationship, "create_time"),
+        description=_extract_prop(relationship, "description"),
         file_path=_extract_relationship_file_path(relationship),
+        keywords=_extract_prop(relationship, "keywords"),
+        source_id=_extract_relationship_source_id(relationship),
+        weight=_extract_prop(relationship, "weight"),
     )
 
 
@@ -878,7 +932,7 @@ Response format:
     except Exception as e:
         logger.error(
             "LLM filtering failed, returning unfiltered graph",
-            error=str(e),
+            error=e,
             workspace_id=workspace_id,
             agent_id=agent_id,
         )
@@ -982,9 +1036,11 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
 
     try:
         # Parse and validate request payload
-        payload, error_response = parse_request(req, FetchGraphRequest)
-        if error_response:
-            return error_response
+        raw_payload, error_response = parse_request(req, FetchGraphRequest)
+        if error_response or not isinstance(raw_payload, FetchGraphRequest):
+            return error_response or create_error_response("Invalid request payload", status_code=400)
+
+        payload: FetchGraphRequest = raw_payload
 
         workspace_id = payload.workspace_id
         query = payload.query
@@ -1066,21 +1122,22 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
                 message=f"Failed to retrieve workspace configuration for workspace {workspace_id}"
             )
 
-        domain = storage_paths.get("domain", "")
-        kb_name = storage_paths.get("kb_name", "")
-        all_kb_titles = storage_paths.get("all_kb_titles", [])
-        is_kg = storage_paths.get("is_kg")
+        domain = str(storage_paths.get("domain", ""))
+        kb_name = str(storage_paths.get("kb_name", ""))
+        raw_all_kbs = storage_paths.get("all_kb_titles")
+        raw_is_kg = storage_paths.get("is_kg")
+        is_kg: bool = bool(raw_is_kg) if raw_is_kg is not None else False
 
-        additional_kbs = None
-        if len(all_kb_titles) > 1:
-            additional_kbs = all_kb_titles[1:]
+        additional_kbs: Optional[List[str]] = None
+        if not is_kg and isinstance(raw_all_kbs, list) and raw_all_kbs:
+            additional_kbs = [str(title) for title in raw_all_kbs if title]
 
         logger.info(
             "Workspace configuration retrieved",
             workspace_id=workspace_id,
             domain=domain,
             kb_name=kb_name,
-            kb_count=len(all_kb_titles),
+            kb_count=1 + (len(additional_kbs) if additional_kbs else 0),
             role_id=role_id,
             correlation_id=correlation_id
         )
@@ -1166,12 +1223,13 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         graph_data = FilteredGraphDataModel(
             entities=[
                 GraphNodeModel(
+                    element_id=str(e.get("element_id") or e.get("id") or _ensure_entity_id(e, idx)),
                     entity_name=_extract_entity_name(e),
                     entity_type=_extract_entity_type(e),
-                    entity_id=_ensure_entity_id(e, idx),
-                    description=e.get("description"),
+                    created_at=_extract_prop(e, "created_at") or _extract_prop(e, "create_time"),
+                    description=_extract_prop(e, "description"),
+                    file_path=_extract_entity_file_path(e),
                     source_id=_extract_entity_source_id(e),
-                    file_path=_extract_entity_file_path(e)
                 )
                 for idx, e in enumerate(filtered_entities)
             ],
@@ -1244,7 +1302,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             "Authorization error",
             error=e.message,
             user_id=user_id,
-            workspace_id=payload.workspace_id if payload else None,
+            workspace_id=payload.workspace_id if payload is not None else None,
             correlation_id=correlation_id
         )
         return create_error_response(
@@ -1257,7 +1315,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
     except Exception as e:
         logger.error(
             "Fetch graph failed",
-            error=str(e),
+            error=e,
             correlation_id=correlation_id,
             exc_info=True
         )

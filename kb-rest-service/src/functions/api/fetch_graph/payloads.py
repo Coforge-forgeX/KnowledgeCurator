@@ -98,23 +98,27 @@ class FetchGraphRequest(BaseModel):
 
 class GraphNodeModel(BaseModel):
     """Single graph node/entity"""
+    element_id: Optional[str] = Field(None, description="Neo4j element ID")
     entity_name: str = Field(..., description="Name of the entity")
     entity_type: str = Field(..., description="Type of the entity")
-    entity_id: Optional[Any] = Field(None, description="Graph entity identifier")
+    created_at: Optional[Any] = Field(None, description="Creation timestamp")
     description: Optional[str] = Field(None, description="Description of the entity")
-    source_id: Optional[Any] = Field(None, description="Source chunk ID(s)")
     file_path: Optional[Any] = Field(None, description="Source file path(s)")
+    source_id: Optional[Any] = Field(None, description="Source chunk ID(s)")
 
 
 class GraphRelationshipModel(BaseModel):
     """Single graph relationship/edge"""
+    element_id: Optional[str] = Field(None, description="Neo4j element ID for relationship")
     source: str = Field(..., description="Source entity name")
     target: str = Field(..., description="Target entity name")
     relation: str = Field(..., description="Relationship type")
-    relation_id: Optional[Any] = Field(None, description="Graph relationship identifier")
+    created_at: Optional[Any] = Field(None, description="Creation timestamp")
     description: Optional[str] = Field(None, description="Relationship description")
-    source_id: Optional[Any] = Field(None, description="Source chunk ID(s)")
     file_path: Optional[Any] = Field(None, description="Source file path(s)")
+    keywords: Optional[Any] = Field(None, description="Relationship keywords")
+    source_id: Optional[Any] = Field(None, description="Source chunk ID(s)")
+    weight: Optional[Any] = Field(None, description="Relationship weight")
 
 
 class FilteredGraphDataModel(BaseModel):

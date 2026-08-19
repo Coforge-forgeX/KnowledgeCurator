@@ -11,7 +11,7 @@ The execution itself lives in the service layer so `message_gpt` (chat) runs the
 exact same path, cache included. Anything changed there applies to both callers.
 """
 import time
-from typing import Optional
+from typing import Optional, cast
 
 from src.core.abstractions import AbstractContext, AbstractRequest, AbstractResponse
 from src.core.auth import get_user_id, require_auth
@@ -65,9 +65,10 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
     )
 
     try:
-        payload, error_response = parse_request(req, QueryRAGRequest)
-        if error_response:
-            return error_response
+        parsed_payload, error_response = parse_request(req, QueryRAGRequest)
+        if error_response or parsed_payload is None:
+            return error_response or create_error_response("Invalid request payload", error_code="INVALID_PAYLOAD", status_code=400)
+        payload = cast(QueryRAGRequest, parsed_payload)
 
         workspace_id = payload.workspace_id
 
@@ -105,10 +106,11 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         domain = storage_paths.get("domain", "")
         kb_name = storage_paths.get("kb_name", "")
         all_kb_titles = storage_paths.get("all_kb_titles", [])
+        is_kg = bool(storage_paths.get("is_kg"))
 
-        # For non-KG workspaces with multiple KBs, pass additional KB titles for querying.
-        # The primary kb_name is the base; all_kb_titles provides the rest.
-        additional_kbs = all_kb_titles[1:] if len(all_kb_titles) > 1 else None
+        # For non-KG workspaces, primary kb_name is the workspace graph; all_kb_titles contains the selected KBs.
+        # Include ALL selected KBs in additional_kbs so query searches workspace graph PLUS all selected KBs.
+        additional_kbs = [str(t) for t in all_kb_titles if t] if (not is_kg and all_kb_titles) else None
 
         logger.info(
             "Workspace storage paths retrieved",
@@ -116,8 +118,8 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             domain=domain,
             kb_name=kb_name,
             container=storage_paths.get("container"),
-            is_kg=storage_paths.get("is_kg"),
-            kb_count=len(all_kb_titles),
+            is_kg=is_kg,
+            kb_count=1 + (len(additional_kbs) if additional_kbs else 0),
             role_id=role_id,
             correlation_id=correlation_id
         )
@@ -132,7 +134,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             history=payload.history,
             additional_kbs=additional_kbs,
             agent_id=payload.agent_id,
-            is_kg=storage_paths.get("is_kg"),
+            is_kg=is_kg,
             correlation_id=correlation_id,
         )
 

@@ -1,5 +1,5 @@
-"""Mutate knowledge graph nodes/relationships with workspace-safe dual updates."""
 import json
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select, text
@@ -29,16 +29,31 @@ def _norm(value: Optional[str]) -> str:
     return str(value or "").strip().replace("\\", "/")
 
 
+def _get_rowcount(result: Any) -> int:
+    try:
+        return int(getattr(result, "rowcount", 0) or 0)
+    except Exception:
+        return 0
+
+
 async def _validate_workspace_scope(
     workspace_id: int,
-    file_path: str,
+    file_path: Optional[str],
     source_id: Optional[str],
     full_doc_id: Optional[str],
 ) -> Dict[str, Any]:
-    """Ensure requested scope maps to indexed rows in the same workspace."""
-    normalized_path = _norm(file_path)
-    normalized_source_id = _norm(source_id)
-    normalized_full_doc_id = _norm(full_doc_id)
+    """Ensure requested scope maps to indexed rows in the same workspace (if scope provided)."""
+    normalized_path = _norm(file_path) if file_path else None
+    normalized_source_id = _norm(source_id) if source_id else None
+    normalized_full_doc_id = _norm(full_doc_id) if full_doc_id else None
+
+    if not normalized_path:
+        return {
+            "file_path": None,
+            "source_id": normalized_source_id,
+            "full_doc_id": normalized_full_doc_id,
+            "full_doc_ids": [],
+        }
 
     async with get_async_session() as session:
         task_stmt = select(FileTask).where(
@@ -79,86 +94,94 @@ async def _validate_workspace_scope(
     }
 
 
-def _merge_properties(base: Dict[str, Any], additional: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    merged = dict(base)
-    if additional:
-        for key, value in additional.items():
-            if value is not None:
-                merged[str(key)] = value
-    return merged
-
-
 async def _mutate_node_neo4j(
     action: str,
     node: NodeMutationPayload,
     scoped: Dict[str, Any],
 ) -> Dict[str, Any]:
     neo4j_driver = get_neo4j_driver()
-    entity_name = _norm(node.entity_name)
-    if not entity_name:
-        raise ValidationException(message="entity_name is required")
-
+    if not neo4j_driver._driver:
+        await neo4j_driver.connect()
+    element_id = (node.element_id or node.elementId or "").strip()
+    entity_id_val = _norm(node.entity_id or node.entity_name)
+    description = node.description
+    entity_type = node.entity_type or "CONCEPT"
+    scoped_file_path = scoped.get("file_path")
     scoped_source_id = scoped.get("source_id")
-    scoped_file_path = scoped["file_path"]
-
-    params: Dict[str, Any] = {
-        "entity_name": entity_name,
-        "file_path": scoped_file_path,
-        "scope_source_id": scoped_source_id,
-    }
+    current_time = int(time.time())
 
     if action == "create":
-        properties = _merge_properties(
-            {
-                "entity_name": entity_name,
-                "entity_type": node.entity_type,
-                "description": node.description,
-                "source_id": node.source_id or scoped_source_id,
-                "file_path": scoped_file_path,
-                "source": scoped_file_path,
-            },
-            node.additional_properties,
-        )
+        if not entity_id_val:
+            raise ValidationException(message="entity_id (or entity_name) is required for node creation")
+        
+        properties: Dict[str, Any] = {
+            "entity_id": entity_id_val,
+            "entity_type": entity_type,
+            "description": description or "",
+            "is_custom": True,
+            "created_at": current_time,
+        }
+        if scoped_file_path:
+            properties["file_path"] = scoped_file_path
+            properties["source"] = scoped_file_path
+        if scoped_source_id:
+            properties["source_id"] = scoped_source_id
+
         create_query = """
         CREATE (n:Entity)
         SET n += $properties
-        RETURN n.entity_name AS entity_name
+        RETURN elementId(n) AS element_id
         """
         result = await neo4j_driver.execute_write_query(create_query, {"properties": properties})
         return {"neo4j_rows": len(result)}
 
     if action == "update":
-        new_name = _norm(node.new_entity_name) or entity_name
-        properties = _merge_properties(
-            {
-                "entity_name": new_name,
-                "entity_type": node.entity_type,
-                "description": node.description,
-                "source_id": node.source_id or scoped_source_id,
-            },
-            node.additional_properties,
-        )
+        if not element_id:
+            raise ValidationException(message="element_id (or elementId) is required for updating a node")
+
+        # Update ONLY entity_id and description based on element_id (or fallback entity_id + file_path).
+        # Update entity_name ONLY if n.entity_name already exists (do NOT add a new property if non-existing!).
         update_query = """
         MATCH (n)
-        WHERE n.entity_name = $entity_name
-          AND n.file_path = $file_path
-          AND ($scope_source_id IS NULL OR n.source_id = $scope_source_id)
-        SET n += $properties
+        WHERE elementId(n) = $element_id
+           OR (n.entity_id = $entity_id_val AND ($file_path IS NULL OR n.file_path = $file_path))
+           OR (n.entity_name = $entity_id_val AND ($file_path IS NULL OR n.file_path = $file_path))
+        SET n.entity_id = CASE WHEN $entity_id_val IS NOT NULL AND $entity_id_val <> '' THEN $entity_id_val ELSE n.entity_id END,
+            n.entity_name = CASE WHEN n.entity_name IS NOT NULL AND $entity_id_val IS NOT NULL AND $entity_id_val <> '' THEN $entity_id_val ELSE n.entity_name END,
+            n.description = CASE WHEN $description IS NOT NULL THEN $description ELSE n.description END,
+            n.update_time = CASE WHEN n.update_time IS NOT NULL THEN $current_time ELSE n.update_time END,
+            n.updated_at = CASE WHEN n.updated_at IS NOT NULL THEN $current_time ELSE n.updated_at END
         RETURN count(n) AS updated_count
         """
-        result = await neo4j_driver.execute_write_query(update_query, {**params, "properties": properties})
+        result = await neo4j_driver.execute_write_query(
+            update_query,
+            {
+                "element_id": element_id,
+                "entity_id_val": entity_id_val,
+                "file_path": scoped_file_path,
+                "description": description,
+                "current_time": current_time,
+            },
+        )
         updated_count = int(result[0].get("updated_count", 0)) if result else 0
         return {"neo4j_rows": updated_count}
 
     delete_query = """
     MATCH (n)
-    WHERE n.entity_name = $entity_name
-      AND n.file_path = $file_path
-      AND ($scope_source_id IS NULL OR n.source_id = $scope_source_id)
+    WHERE (elementId(n) = $element_id AND $element_id <> '')
+       OR (n.entity_id = $entity_id_val AND ($file_path IS NULL OR n.file_path = $file_path))
+       OR (n.entity_name = $entity_id_val AND ($file_path IS NULL OR n.file_path = $file_path))
     DETACH DELETE n
     RETURN count(n) AS deleted_count
     """
-    result = await neo4j_driver.execute_write_query(delete_query, params)
+    result = await neo4j_driver.execute_write_query(
+        delete_query,
+        {
+            "element_id": element_id,
+            "entity_id_val": entity_id_val,
+            "file_path": scoped_file_path,
+        },
+    )
     deleted_count = int(result[0].get("deleted_count", 0)) if result else 0
     return {"neo4j_rows": deleted_count}
 
@@ -169,29 +192,35 @@ async def _mutate_relationship_neo4j(
     scoped: Dict[str, Any],
 ) -> Dict[str, Any]:
     neo4j_driver = get_neo4j_driver()
+    element_id = (relationship.element_id or relationship.elementId or "").strip()
     source = _norm(relationship.source)
     target = _norm(relationship.target)
-    relation = _norm(relationship.relation)
-    if not source or not target or not relation:
-        raise ValidationException(message="source, target, and relation are required")
-
-    scoped_file_path = scoped["file_path"]
+    relation = _norm(relationship.relation) or "RELATED_TO"
+    description = relationship.description
+    scoped_file_path = scoped.get("file_path")
     scoped_source_id = scoped.get("source_id")
+    current_time = int(time.time())
 
     if action == "create":
-        props = _merge_properties(
-            {
-                "relation": relation,
-                "description": relationship.description,
-                "source_id": relationship.source_id or scoped_source_id,
-                "file_path": scoped_file_path,
-                "source": scoped_file_path,
-            },
-            relationship.additional_properties,
-        )
+        if not source or not target:
+            raise ValidationException(message="source and target are required for creating a relationship")
+        
+        props: Dict[str, Any] = {
+            "relation": relation,
+            "description": description or "",
+            "is_custom": True,
+            "created_at": current_time,
+        }
+        if scoped_file_path:
+            props["file_path"] = scoped_file_path
+            props["source"] = scoped_file_path
+        if scoped_source_id:
+            props["source_id"] = scoped_source_id
+
         create_query = """
-        MERGE (s:Entity {entity_name: $source_name, file_path: $file_path})
-        MERGE (t:Entity {entity_name: $target_name, file_path: $file_path})
+        MATCH (s:Entity), (t:Entity)
+        WHERE (elementId(s) = $source OR s.entity_id = $source OR s.entity_name = $source)
+          AND (elementId(t) = $target OR t.entity_id = $target OR t.entity_name = $target)
         CREATE (s)-[r:RELATED_TO]->(t)
         SET r += $properties
         RETURN count(r) AS created_count
@@ -199,9 +228,8 @@ async def _mutate_relationship_neo4j(
         result = await neo4j_driver.execute_write_query(
             create_query,
             {
-                "source_name": source,
-                "target_name": target,
-                "file_path": scoped_file_path,
+                "source": source,
+                "target": target,
                 "properties": props,
             },
         )
@@ -209,51 +237,46 @@ async def _mutate_relationship_neo4j(
         return {"neo4j_rows": created_count}
 
     if action == "update":
-        new_relation = _norm(relationship.new_relation) or relation
-        props = _merge_properties(
-            {
-                "relation": new_relation,
-                "description": relationship.description,
-                "source_id": relationship.source_id or scoped_source_id,
-            },
-            relationship.additional_properties,
-        )
+        if not element_id:
+            raise ValidationException(message="element_id (or elementId) is required for updating a relationship")
+
+        # Update ONLY description based on element_id (or fallback relation + file_path).
+        # Do NOT modify relationship endpoints or relation type.
         update_query = """
-        MATCH (s:Entity {entity_name: $source_name, file_path: $file_path})-[r:RELATED_TO]->(t:Entity {entity_name: $target_name, file_path: $file_path})
-        WHERE r.relation = $relation
-          AND ($scope_source_id IS NULL OR r.source_id = $scope_source_id)
-        SET r += $properties
+        MATCH ()-[r]->()
+        WHERE elementId(r) = $element_id
+           OR (r.relation = $relation AND ($file_path IS NULL OR r.file_path = $file_path))
+        SET r.description = CASE WHEN $description IS NOT NULL THEN $description ELSE r.description END,
+            r.update_time = CASE WHEN r.update_time IS NOT NULL THEN $current_time ELSE r.update_time END,
+            r.updated_at = CASE WHEN r.updated_at IS NOT NULL THEN $current_time ELSE r.updated_at END
         RETURN count(r) AS updated_count
         """
         result = await neo4j_driver.execute_write_query(
             update_query,
             {
-                "source_name": source,
-                "target_name": target,
-                "file_path": scoped_file_path,
+                "element_id": element_id,
                 "relation": relation,
-                "scope_source_id": scoped_source_id,
-                "properties": props,
+                "file_path": scoped_file_path,
+                "description": description,
+                "current_time": current_time,
             },
         )
         updated_count = int(result[0].get("updated_count", 0)) if result else 0
         return {"neo4j_rows": updated_count}
 
     delete_query = """
-    MATCH (s:Entity {entity_name: $source_name, file_path: $file_path})-[r:RELATED_TO]->(t:Entity {entity_name: $target_name, file_path: $file_path})
-    WHERE r.relation = $relation
-      AND ($scope_source_id IS NULL OR r.source_id = $scope_source_id)
+    MATCH ()-[r]->()
+    WHERE (elementId(r) = $element_id AND $element_id <> '')
+       OR (r.relation = $relation AND ($file_path IS NULL OR r.file_path = $file_path))
     DELETE r
     RETURN count(r) AS deleted_count
     """
     result = await neo4j_driver.execute_write_query(
         delete_query,
         {
-            "source_name": source,
-            "target_name": target,
-            "file_path": scoped_file_path,
+            "element_id": element_id,
             "relation": relation,
-            "scope_source_id": scoped_source_id,
+            "file_path": scoped_file_path,
         },
     )
     deleted_count = int(result[0].get("deleted_count", 0)) if result else 0
@@ -300,8 +323,9 @@ async def _update_chunk_tables(
                                     "doc_id": doc_id,
                                 },
                             )
-                            if result.rowcount and result.rowcount > 0:
-                                total += int(result.rowcount)
+                            rc = _get_rowcount(result)
+                            if rc > 0:
+                                total += rc
                         affected += total
                         continue
 
@@ -319,12 +343,11 @@ async def _update_chunk_tables(
                         },
                     )
                 else:
-                    entity_name = _norm(node.entity_name)
-                    new_entity_name = _norm(node.new_entity_name) or entity_name
+                    entity_id_norm = _norm(node.entity_id) if node.entity_id else ""
                     description = node.description
                     metadata_patch = {
-                        "entity_name": new_entity_name,
-                        "entity_type": node.entity_type,
+                        "entity_name": entity_id_norm,
+                        "entity_type": "CONCEPT",
                         "entity_description": description,
                     }
                     if doc_ids:
@@ -343,8 +366,9 @@ async def _update_chunk_tables(
                                     "doc_id": doc_id,
                                 },
                             )
-                            if result.rowcount and result.rowcount > 0:
-                                total += int(result.rowcount)
+                            rc = _get_rowcount(result)
+                            if rc > 0:
+                                total += rc
                         affected += total
                         continue
 
@@ -362,8 +386,9 @@ async def _update_chunk_tables(
                         },
                     )
 
-                if result.rowcount and result.rowcount > 0:
-                    affected += int(result.rowcount)
+                rc = _get_rowcount(result)
+                if rc > 0:
+                    affected += rc
             except Exception as exc:
                 logger.warning(
                     "Chunk table sync failed",
@@ -385,8 +410,7 @@ async def _update_relation_tables(
     source = _norm(relationship.source)
     target = _norm(relationship.target)
     relation = _norm(relationship.relation)
-    new_relation = _norm(relationship.new_relation) or relation
-    source_id = relationship.source_id or scoped.get("source_id")
+    source_id = scoped.get("source_id")
     doc_ids = _build_doc_ids(scoped)
 
     async with get_async_session() as session:
@@ -414,40 +438,35 @@ async def _update_relation_tables(
                         total = 0
                         for doc_id in doc_ids:
                             update_stmt = text(
-                                f"UPDATE {table_name} SET relation = :new_relation, description = :description "
-                                "WHERE source = :source AND target = :target AND relation = :relation "
+                                f"UPDATE {table_name} SET description = :description "
+                                "WHERE relation = :relation "
                                 "AND file_path = :file_path AND full_doc_id = :doc_id"
                             )
                             result = await session.execute(
                                 update_stmt,
                                 {
-                                    "new_relation": new_relation,
-                                    "description": relationship.description,
-                                    "source": source,
-                                    "target": target,
                                     "relation": relation,
+                                    "description": relationship.description,
                                     "file_path": scoped["file_path"],
                                     "doc_id": doc_id,
                                 },
                             )
-                            if result.rowcount and result.rowcount > 0:
-                                total += int(result.rowcount)
+                            rc = _get_rowcount(result)
+                            if rc > 0:
+                                total += rc
                         affected += total
                         continue
                     else:
                         update_stmt = text(
-                            f"UPDATE {table_name} SET relation = :new_relation, description = :description "
-                            "WHERE source = :source AND target = :target AND relation = :relation "
+                            f"UPDATE {table_name} SET description = :description "
+                            "WHERE relation = :relation "
                             "AND file_path = :file_path"
                         )
                         result = await session.execute(
                             update_stmt,
                             {
-                                "new_relation": new_relation,
-                                "description": relationship.description,
-                                "source": source,
-                                "target": target,
                                 "relation": relation,
+                                "description": relationship.description,
                                 "file_path": scoped["file_path"],
                             },
                         )
@@ -470,8 +489,9 @@ async def _update_relation_tables(
                                     "doc_id": doc_id,
                                 },
                             )
-                            if result.rowcount and result.rowcount > 0:
-                                total += int(result.rowcount)
+                            rc = _get_rowcount(result)
+                            if rc > 0:
+                                total += rc
                         affected += total
                         continue
                     else:
@@ -490,8 +510,9 @@ async def _update_relation_tables(
                             },
                         )
 
-                if result.rowcount and result.rowcount > 0:
-                    affected += int(result.rowcount)
+                rc = _get_rowcount(result)
+                if rc > 0:
+                    affected += rc
             except Exception as exc:
                 logger.warning(
                     "Relation table sync failed",
@@ -528,8 +549,9 @@ async def _delete_node_related_relations(node: NodeMutationPayload, scoped: Dict
                                 "entity_name": entity_name,
                             },
                         )
-                        if result.rowcount and result.rowcount > 0:
-                            total += int(result.rowcount)
+                        rc = _get_rowcount(result)
+                        if rc > 0:
+                            total += rc
                     affected += total
                     continue
 
@@ -544,8 +566,9 @@ async def _delete_node_related_relations(node: NodeMutationPayload, scoped: Dict
                         "entity_name": entity_name,
                     },
                 )
-                if result.rowcount and result.rowcount > 0:
-                    affected += int(result.rowcount)
+                rc = _get_rowcount(result)
+                if rc > 0:
+                    affected += rc
             except Exception as exc:
                 logger.warning(
                     "Relation cleanup for node delete failed",
@@ -557,11 +580,15 @@ async def _delete_node_related_relations(node: NodeMutationPayload, scoped: Dict
 
 
 async def _apply_mutation(payload: MutateKnowledgeGraphRequest) -> Tuple[Dict[str, Any], List[str]]:
+    file_path = payload.scope.file_path if payload.scope else None
+    source_id = payload.scope.source_id if payload.scope else None
+    full_doc_id = payload.scope.full_doc_id if payload.scope else None
+
     scoped = await _validate_workspace_scope(
         workspace_id=payload.workspace_id,
-        file_path=payload.scope.file_path,
-        source_id=payload.scope.source_id,
-        full_doc_id=payload.scope.full_doc_id,
+        file_path=file_path,
+        source_id=source_id,
+        full_doc_id=full_doc_id,
     )
 
     warnings: List[str] = []
@@ -617,9 +644,11 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
     correlation_id = context.correlation_id
     user_id = get_user_id(req)
 
-    payload, error_response = parse_request(req, MutateKnowledgeGraphRequest)
-    if error_response:
-        return error_response
+    raw_payload, error_response = parse_request(req, MutateKnowledgeGraphRequest)
+    if error_response or not isinstance(raw_payload, MutateKnowledgeGraphRequest):
+        return error_response or create_error_response("Invalid request payload", status_code=400)
+
+    payload: MutateKnowledgeGraphRequest = raw_payload
 
     try:
         await require_workspace_admin_curator(

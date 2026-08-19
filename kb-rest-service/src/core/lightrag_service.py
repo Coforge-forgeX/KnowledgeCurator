@@ -1,7 +1,7 @@
 """LightRAG service for knowledge base operations"""
 import os
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc
@@ -18,7 +18,7 @@ except Exception:  # pragma: no cover - optional dependency fallback
     llm_router_config_store = None
 
 from .config import settings
-from .exceptions import ConfigurationException, LightRAGException
+from .exceptions import ConfigurationException, LightRAGException, ValidationException
 from .logging import get_logger
 
 logger = get_logger(__name__)
@@ -32,21 +32,26 @@ class LightRAGService:
     and managing document indexing with shared storage configuration.
     """
 
-    def __init__(self, working_dir: Optional[str] = None, workspace: Optional[str] = None):
+    def __init__(self, workspace: str, working_dir: Optional[str] = None):
         """
         Initialize LightRAG service.
 
         Args:
+            workspace: Workspace identifier for multi-tenancy in Neo4j/PostgreSQL (REQUIRED)
             working_dir: Working directory for LightRAG data
-            workspace: Workspace identifier for multi-tenancy in Neo4j/PostgreSQL
         """
+        if not workspace or not workspace.strip():
+            raise ValidationException(
+                message="workspace parameter is required for LightRAGService"
+            )
+
         serverless_mode = bool(getattr(settings.database, "SERVERLESS", True))
         configured_working_dir = working_dir or settings.lightrag.LIGHTRAG_WORKING_DIR
         if serverless_mode and not working_dir:
             configured_working_dir = os.path.join(tempfile.gettempdir(), "lightrag_data")
 
         self.working_dir = configured_working_dir
-        self.workspace = workspace
+        self.workspace = workspace.strip()
         self._rag: Optional[LightRAG] = None
         self._initialized = False
         self._runtime_workspace_id: Optional[int] = None
@@ -103,7 +108,7 @@ class LightRAGService:
         try:
             config = llm_router_config_store.get_effective_configuration(
                 self._runtime_workspace_id,
-                self._runtime_agent_id,
+                self._runtime_agent_id or 1,
             )
             if not config:
                 return None
@@ -164,10 +169,10 @@ class LightRAGService:
                         deployment=azure_deployment_name,
                     )
                     return build_azure_openai_chat_completion_func(
-                        api_key=azure_api_key,
-                        api_base=azure_api_base,
-                        api_version=azure_api_version,
-                        deployment=azure_deployment_name,
+                        api_key=str(azure_api_key or ""),
+                        api_base=str(azure_api_base or ""),
+                        api_version=str(azure_api_version or ""),
+                        deployment=str(azure_deployment_name or ""),
                     )
             else:
                 logger.warning(
@@ -201,10 +206,10 @@ class LightRAGService:
         )
 
         return build_azure_openai_chat_completion_func(
-            api_key=azure_api_key,
-            api_base=azure_api_base,
-            api_version=azure_api_version,
-            deployment=azure_deployment_name,
+            api_key=str(azure_api_key or ""),
+            api_base=str(azure_api_base or ""),
+            api_version=str(azure_api_version or ""),
+            deployment=str(azure_deployment_name or ""),
         )
 
     def _build_embedding_func(self) -> EmbeddingFunc:
@@ -233,13 +238,18 @@ class LightRAGService:
                 embedding_dim=settings.lightrag.EMBEDDING_DIM,
                 max_token_size=settings.lightrag.MAX_TOKEN_SIZE,
                 func=build_azure_openai_embedding_func(
-                    api_key=azure_api_key,
-                    api_base=azure_api_base,
-                    api_version=azure_api_version,
-                    deployment=azure_deployment,
+                    api_key=str(azure_api_key or ""),
+                    api_base=str(azure_api_base or ""),
+                    api_version=str(azure_api_version or ""),
+                    deployment=str(azure_deployment or ""),
                     dimensions=settings.lightrag.EMBEDDING_DIM,
                 ),
             )
+
+        raise ConfigurationException(
+            message="Azure OpenAI Embedding configuration is incomplete",
+            config_key="AZURE_OPENAI_EMBEDDING_MODEL",
+        )
 
 
     async def initialize(self) -> None:
@@ -291,9 +301,9 @@ class LightRAGService:
                     config_key="NEO4J_DATABASE_NEO4J_*",
                 )
 
-            os.environ["NEO4J_URI"] = neo4j_uri
-            os.environ["NEO4J_USERNAME"] = neo4j_user
-            os.environ["NEO4J_PASSWORD"] = neo4j_password
+            os.environ["NEO4J_URI"] = str(neo4j_uri)
+            os.environ["NEO4J_USERNAME"] = str(neo4j_user)
+            os.environ["NEO4J_PASSWORD"] = str(neo4j_password)
 
             logger.debug(
                 "Neo4j connection configured",
@@ -382,7 +392,8 @@ class LightRAGService:
             self._rag = LightRAG(**lightrag_kwargs)
 
             # Initialize storages
-            await self._rag.initialize_storages()
+            if self._rag is not None:
+                await self._rag.initialize_storages()
 
             self._initialized = True
             self._runtime_signature = current_signature
@@ -441,10 +452,13 @@ class LightRAGService:
                 agent_id=self._runtime_agent_id,
             )
 
+            if self._rag is None:
+                raise LightRAGException(message="LightRAG instance is not initialized", operation="query")
+
             # Execute query - LightRAG returns string answer or dict with answer+context
             result = await self._rag.aquery(
                 query,
-                param=QueryParam(mode=mode, only_need_context=only_need_context, **kwargs)
+                param=QueryParam(mode=cast(Any, mode), only_need_context=only_need_context, **kwargs)
             )
 
             # If only_need_context=True, result is the context itself
@@ -516,9 +530,12 @@ class LightRAGService:
                 agent_id=self._runtime_agent_id,
             )
 
+            if self._rag is None:
+                raise LightRAGException(message="LightRAG instance is not initialized", operation="query_data")
+
             result = await self._rag.aquery_data(
                 query,
-                param=QueryParam(mode=mode, **kwargs)
+                param=QueryParam(mode=cast(Any, mode), **kwargs)
             )
 
             if isinstance(result, dict):
@@ -575,9 +592,12 @@ class LightRAGService:
                 agent_id=self._runtime_agent_id,
             )
 
+            if self._rag is None:
+                raise LightRAGException(message="LightRAG instance is not initialized", operation="query_llm")
+
             result = await self._rag.aquery_llm(
                 query,
-                param=QueryParam(mode=mode, **kwargs)
+                param=QueryParam(mode=cast(Any, mode), **kwargs)
             )
 
             if isinstance(result, dict):
@@ -630,12 +650,16 @@ class LightRAGService:
             if metadata and isinstance(metadata, dict):
                 file_path = metadata.get("file_path")
 
+            if self._rag is None:
+                raise LightRAGException(message="LightRAG instance is not initialized", operation="insert")
+
             if file_path:
                 normalized_file_path = str(file_path).replace("\\", "/")
                 await self._rag.ainsert(input=text, file_paths=[normalized_file_path])
             else:
                 try:
-                    await self._rag.ainsert(text, metadata=metadata)
+                    insert_kwargs: Dict[str, Any] = {"metadata": metadata} if metadata else {}
+                    await self._rag.ainsert(text, **insert_kwargs)
                 except TypeError:
                     # Fallback for LightRAG versions that don't support metadata parameter.
                     logger.warning("LightRAG version doesn't support metadata in ainsert, inserting without metadata")
@@ -670,23 +694,26 @@ class LightRAGService:
         try:
             logger.info("Deleting document from LightRAG", doc_id=doc_id)
 
+            if self._rag is None:
+                raise LightRAGException(message="LightRAG instance is not initialized", operation="delete")
+
             deleted = False
+            rag_inst = self._rag
             # Primary path for current LightRAG versions.
-            if hasattr(self._rag, "adelete_by_doc_id"):
+            if hasattr(rag_inst, "adelete_by_doc_id"):
                 try:
-                    await self._rag.adelete_by_doc_id(doc_id)
+                    await getattr(rag_inst, "adelete_by_doc_id")(doc_id)
                     deleted = True
                 except TypeError:
-                    # Some versions may expect a named parameter.
-                    await self._rag.adelete_by_doc_id(doc_id=doc_id)
+                    await getattr(rag_inst, "adelete_by_doc_id")(doc_id=doc_id)
                     deleted = True
             # Compatibility path for older variants that expose `adelete_by_doc_ids`.
-            elif hasattr(self._rag, "adelete_by_doc_ids"):
+            elif hasattr(rag_inst, "adelete_by_doc_ids"):
                 try:
-                    await self._rag.adelete_by_doc_ids([doc_id])
+                    await getattr(rag_inst, "adelete_by_doc_ids")([doc_id])
                     deleted = True
                 except TypeError:
-                    await self._rag.adelete_by_doc_ids(doc_ids=[doc_id])
+                    await getattr(rag_inst, "adelete_by_doc_ids")(doc_ids=[doc_id])
                     deleted = True
             else:
                 raise LightRAGException(
@@ -741,9 +768,19 @@ class LightRAGService:
                 })
         return sources
 
-    async def get_knowledge_graph(self) -> Dict[str, Any]:
+    async def get_knowledge_graph(
+        self,
+        node_label: Optional[str] = None,
+        max_depth: int = 2,
+        max_nodes: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
-        Get the knowledge graph from LightRAG.
+        Get the knowledge graph from LightRAG or direct Neo4j query.
+
+        Args:
+            node_label: Optional label/entity name to center the subgraph query around. If None or "*", gets global graph.
+            max_depth: Depth of graph traversal (default: 2)
+            max_nodes: Maximum number of nodes to return
 
         Returns:
             Dict containing nodes and edges of the knowledge graph
@@ -755,47 +792,177 @@ class LightRAGService:
             await self.initialize()
 
         try:
-            logger.info("Retrieving knowledge graph")
+            logger.info("Retrieving knowledge graph", node_label=node_label, workspace=self.workspace)
 
-            # Access the graph storage from LightRAG
-            nodes = []
-            edges = []
+            nodes: List[Dict[str, Any]] = []
+            edges: List[Dict[str, Any]] = []
 
-            # If using Neo4j, query it directly via the Neo4j driver
-            from src.core.neo4j_driver import get_neo4j_driver
+            # Option 1: Primary path for Neo4j database - query Neo4j directly using workspace label for true element_id and full properties
+            try:
+                from src.core.neo4j_driver import get_neo4j_driver
+                neo4j_driver = get_neo4j_driver()
+                if not neo4j_driver._driver:
+                    await neo4j_driver.connect()
 
-            neo4j_driver = get_neo4j_driver()
+                workspace_label = (self.workspace or "base").strip().replace("`", "``")
+                limit_val = max_nodes or 1000
+                target_label = (node_label or "*").strip()
 
-            # Query all nodes
-            node_query = """
-            MATCH (n)
-            RETURN n.id as id, labels(n) as labels, properties(n) as properties
-            LIMIT 1000
-            """
-            node_results = await neo4j_driver.execute_query(node_query, {})
-            for record in node_results:
-                nodes.append({
-                    "id": record["id"],
-                    "labels": record["labels"],
-                    "properties": record["properties"],
-                })
+                if target_label != "*":
+                    cypher_query = f"""
+                    MATCH (n:`{workspace_label}`)
+                    WHERE n.entity_id = $node_label OR n.entity_name = $node_label
+                    OPTIONAL MATCH (n)-[r]-(m:`{workspace_label}`)
+                    RETURN elementId(n) as node_eid, labels(n) as node_labels, properties(n) as node_props,
+                           elementId(r) as rel_eid, type(r) as rel_type, properties(r) as rel_props,
+                           elementId(m) as target_eid, labels(m) as target_labels, properties(m) as target_props
+                    LIMIT $limit
+                    """
+                    results = await neo4j_driver.execute_query(cypher_query, {"node_label": target_label, "limit": limit_val})
+                else:
+                    cypher_query = f"""
+                    MATCH (n:`{workspace_label}`)
+                    OPTIONAL MATCH (n)-[r]->(m:`{workspace_label}`)
+                    RETURN elementId(n) as node_eid, labels(n) as node_labels, properties(n) as node_props,
+                           elementId(r) as rel_eid, type(r) as rel_type, properties(r) as rel_props,
+                           elementId(m) as target_eid, labels(m) as target_labels, properties(m) as target_props
+                    LIMIT $limit
+                    """
+                    results = await neo4j_driver.execute_query(cypher_query, {"limit": limit_val})
 
-            # Query all relationships
-            edge_query = """
-            MATCH (a)-[r]->(b)
-            RETURN a.id as source, type(r) as type, b.id as target, properties(r) as properties
-            LIMIT 1000
-            """
-            edge_results = await neo4j_driver.execute_query(edge_query, {})
-            for record in edge_results:
-                edges.append({
-                    "source": record["source"],
-                    "target": record["target"],
-                    "type": record["type"],
-                    "properties": record["properties"],
-                })
+                seen_nodes: set[str] = set()
+                seen_edges: set[str] = set()
 
-            logger.info("Retrieved knowledge graph", node_count=len(nodes), edge_count=len(edges))
+                for rec in results:
+                    n_eid = rec.get("node_eid")
+                    if n_eid and str(n_eid) not in seen_nodes:
+                        seen_nodes.add(str(n_eid))
+                        props = rec.get("node_props") or {}
+                        n_labels = rec.get("node_labels") or []
+                        nodes.append({
+                            "id": str(n_eid),
+                            "element_id": str(n_eid),
+                            "labels": n_labels,
+                            "entity_name": props.get("entity_id") or props.get("entity_name") or (n_labels[0] if n_labels else str(n_eid)),
+                            "entity_type": props.get("entity_type") or "UNKNOWN",
+                            "created_at": props.get("created_at") or props.get("create_time"),
+                            "description": props.get("description"),
+                            "file_path": props.get("file_path") or props.get("source_file"),
+                            "source_id": props.get("source_id") or props.get("chunk_id"),
+                            "properties": props,
+                        })
+
+                    m_eid = rec.get("target_eid")
+                    if m_eid and str(m_eid) not in seen_nodes:
+                        seen_nodes.add(str(m_eid))
+                        m_props = rec.get("target_props") or {}
+                        m_labels = rec.get("target_labels") or []
+                        nodes.append({
+                            "id": str(m_eid),
+                            "element_id": str(m_eid),
+                            "labels": m_labels,
+                            "entity_name": m_props.get("entity_id") or m_props.get("entity_name") or (m_labels[0] if m_labels else str(m_eid)),
+                            "entity_type": m_props.get("entity_type") or "UNKNOWN",
+                            "created_at": m_props.get("created_at") or m_props.get("create_time"),
+                            "description": m_props.get("description"),
+                            "file_path": m_props.get("file_path") or m_props.get("source_file"),
+                            "source_id": m_props.get("source_id") or m_props.get("chunk_id"),
+                            "properties": m_props,
+                        })
+
+                    r_eid = rec.get("rel_eid")
+                    if r_eid and str(r_eid) not in seen_edges and n_eid and m_eid:
+                        seen_edges.add(str(r_eid))
+                        r_props = rec.get("rel_props") or {}
+                        n_props = rec.get("node_props") or {}
+                        m_props = rec.get("target_props") or {}
+                        n_name = n_props.get("entity_id") or n_props.get("entity_name") or str(n_eid)
+                        m_name = m_props.get("entity_id") or m_props.get("entity_name") or str(m_eid)
+                        edges.append({
+                            "id": str(r_eid),
+                            "element_id": str(r_eid),
+                            "source": str(n_name),
+                            "target": str(m_name),
+                            "relation": r_props.get("relation") or rec.get("rel_type") or "related_to",
+                            "type": rec.get("rel_type") or r_props.get("relation") or "related_to",
+                            "created_at": r_props.get("created_at") or r_props.get("create_time"),
+                            "description": r_props.get("description"),
+                            "file_path": r_props.get("file_path") or r_props.get("source_file"),
+                            "keywords": r_props.get("keywords"),
+                            "source_id": r_props.get("source_id") or r_props.get("chunk_id"),
+                            "weight": r_props.get("weight"),
+                            "properties": r_props,
+                        })
+
+                if nodes or edges:
+                    logger.info("Retrieved knowledge graph via Neo4j driver", node_count=len(nodes), edge_count=len(edges))
+                    return {
+                        "nodes": nodes,
+                        "edges": edges,
+                        "node_count": len(nodes),
+                        "edge_count": len(edges),
+                    }
+            except Exception as neo_err:
+                logger.warning("Direct Neo4j query failed or unavailable, falling back to LightRAG graph", error=str(neo_err))
+
+            # Option 2: Fallback path - call LightRAG in-memory graph if direct Neo4j query yielded nothing
+            if self._rag is not None:
+                try:
+                    target_label = (node_label or "*").strip()
+                    kg_kwargs: Dict[str, Any] = {"node_label": target_label, "max_depth": max_depth}
+                    if max_nodes is not None:
+                        kg_kwargs["max_nodes"] = max_nodes
+                    kg = await self._rag.get_knowledge_graph(**kg_kwargs)
+                    raw_nodes = getattr(kg, "nodes", []) or []
+                    raw_edges = getattr(kg, "edges", []) or []
+
+                    for n in raw_nodes:
+                        n_id = str(getattr(n, "id", "") or "")
+                        n_props = getattr(n, "properties", {}) or {}
+                        n_labels = getattr(n, "labels", []) or []
+                        nodes.append({
+                            "id": n_id,
+                            "element_id": n_id,
+                            "labels": n_labels,
+                            "entity_name": n_props.get("entity_id") or (n_labels[0] if n_labels else n_id),
+                            "entity_type": n_props.get("entity_type") or "UNKNOWN",
+                            "created_at": n_props.get("created_at") or n_props.get("create_time"),
+                            "description": n_props.get("description"),
+                            "file_path": n_props.get("file_path"),
+                            "source_id": n_props.get("source_id"),
+                            "properties": n_props,
+                        })
+
+                    for e in raw_edges:
+                        e_id = str(getattr(e, "id", "") or "")
+                        e_props = getattr(e, "properties", {}) or {}
+                        edges.append({
+                            "id": e_id,
+                            "element_id": e_id,
+                            "source": str(getattr(e, "source", "") or ""),
+                            "target": str(getattr(e, "target", "") or ""),
+                            "relation": e_props.get("relation") or str(getattr(e, "type", "") or "related_to"),
+                            "type": str(getattr(e, "type", "") or "related_to"),
+                            "created_at": e_props.get("created_at") or e_props.get("create_time"),
+                            "description": e_props.get("description"),
+                            "file_path": e_props.get("file_path"),
+                            "keywords": e_props.get("keywords"),
+                            "source_id": e_props.get("source_id"),
+                            "weight": e_props.get("weight"),
+                            "properties": e_props,
+                        })
+
+                    logger.info("Retrieved knowledge graph via LightRAG fallback", node_count=len(nodes), edge_count=len(edges))
+                    return {
+                        "nodes": nodes,
+                        "edges": edges,
+                        "node_count": len(nodes),
+                        "edge_count": len(edges),
+                        "is_truncated": getattr(kg, "is_truncated", False),
+                    }
+                except Exception as rag_err:
+                    logger.warning("LightRAG fallback get_knowledge_graph failed", error=str(rag_err))
+
             return {
                 "nodes": nodes,
                 "edges": edges,
@@ -824,19 +991,19 @@ class LightRAGService:
 _lightrag_service_instance: Optional[LightRAGService] = None
 
 
-def get_lightrag_service(working_dir: Optional[str] = None) -> LightRAGService:
+def get_lightrag_service(workspace: str, working_dir: Optional[str] = None) -> LightRAGService:
     """
-    Get or create a singleton LightRAG service instance.
+    Get or create a LightRAG service instance for a required workspace label.
 
     Args:
+        workspace: Workspace identifier for multi-tenancy in Neo4j/PostgreSQL (REQUIRED)
         working_dir: Optional working directory override
 
     Returns:
-        LightRAGService: Singleton service instance
+        LightRAGService: Service instance
     """
-    global _lightrag_service_instance
-
-    if _lightrag_service_instance is None:
-        _lightrag_service_instance = LightRAGService(working_dir=working_dir)
-
-    return _lightrag_service_instance
+    if not workspace or not workspace.strip():
+        raise ValidationException(
+            message="workspace parameter is required for get_lightrag_service"
+        )
+    return LightRAGService(workspace=workspace.strip(), working_dir=working_dir)

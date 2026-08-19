@@ -16,8 +16,8 @@ from sqlalchemy import text
 
 from src.core.config import settings
 from src.core.database import get_async_session
-from src.core.exceptions import LightRAGException, ValidationException
-from src.core.lightrag_service import get_lightrag_service
+from src.core.exceptions import LightRAGException
+from src.core.lightrag_service import LightRAGService, get_lightrag_service
 from src.core.logging import get_logger
 from src.helpers.queue_helpers import get_indexing_queue_helper
 
@@ -31,7 +31,6 @@ class KnowledgeBaseService:
     """
 
     def __init__(self):
-        self.lightrag_service = get_lightrag_service()
         self._queue_helper = None  # Lazy-loaded only when needed
 
     @property
@@ -124,8 +123,7 @@ class KnowledgeBaseService:
                 count=len(doc_ids),
             )
 
-            working_dir = await self._get_workspace_working_dir(workspace_id)
-            self.lightrag_service.working_dir = working_dir
+            lightrag_service = await self._get_lightrag_service_for_workspace(workspace_id)
 
             # Delete documents
             successful = 0
@@ -134,7 +132,7 @@ class KnowledgeBaseService:
 
             for doc_id in doc_ids:
                 try:
-                    await self.lightrag_service.delete_by_doc_id(doc_id)
+                    await lightrag_service.delete_by_doc_id(doc_id)
                     successful += 1
                 except Exception as e:
                     failed += 1
@@ -201,11 +199,10 @@ class KnowledgeBaseService:
                 workspace_id=workspace_id,
             )
 
-            working_dir = await self._get_workspace_working_dir(workspace_id)
-            self.lightrag_service.working_dir = working_dir
+            lightrag_service = await self._get_lightrag_service_for_workspace(workspace_id)
 
             # Get KG from LightRAG
-            kg = await self.lightrag_service.get_knowledge_graph()
+            kg = await lightrag_service.get_knowledge_graph()
 
             logger.info(
                 "Fetched knowledge graph",
@@ -357,6 +354,20 @@ class KnowledgeBaseService:
 
         return working_dir
 
+    async def _get_lightrag_service_for_workspace(self, workspace_id: int) -> LightRAGService:
+        from src.helpers.workspace_helpers import get_workspace_storage_paths
+        from shared.workspace_helpers import get_workspace_identifier, get_workspace_working_dir
+
+        storage_paths = await get_workspace_storage_paths(workspace_id)
+        domain = storage_paths.get("domain") if storage_paths else None
+        kb_name = storage_paths.get("kb_name") if storage_paths else None
+
+        workspace_label = get_workspace_identifier(workspace_id, domain=domain, kb_name=kb_name)
+        base_dir = settings.lightrag.LIGHTRAG_WORKING_DIR
+        working_dir = get_workspace_working_dir(workspace_id, base_dir=base_dir, domain=domain, kb_name=kb_name)
+
+        return get_lightrag_service(workspace=workspace_label, working_dir=working_dir)
+
     async def _cleanup_lightrag_vector_rows(self, doc_id: str) -> Dict[str, int]:
         """
         Best-effort hard cleanup from LightRAG vector tables by doc_id.
@@ -367,6 +378,10 @@ class KnowledgeBaseService:
         """
         deleted = {"chunks_deleted": 0, "relations_deleted": 0}
 
+        def _get_rc(res: Any) -> int:
+            rc = getattr(res, "rowcount", 0)
+            return int(rc) if rc and rc > 0 else 0
+
         async with get_async_session() as session:
             chunk_statements = [
                 "DELETE FROM lightrag_vdb_chunks WHERE full_doc_id = :doc_id",
@@ -375,8 +390,9 @@ class KnowledgeBaseService:
             for stmt_sql in chunk_statements:
                 try:
                     result = await session.execute(text(stmt_sql), {"doc_id": doc_id})
-                    if result.rowcount and result.rowcount > 0:
-                        deleted["chunks_deleted"] += int(result.rowcount)
+                    rc = _get_rc(result)
+                    if rc > 0:
+                        deleted["chunks_deleted"] += rc
                 except Exception:
                     continue
 
@@ -389,8 +405,9 @@ class KnowledgeBaseService:
                 for stmt_sql in relation_statements:
                     try:
                         result = await session.execute(text(stmt_sql), {"doc_id": doc_id})
-                        if result.rowcount and result.rowcount > 0:
-                            deleted["relations_deleted"] += int(result.rowcount)
+                        rc = _get_rc(result)
+                        if rc > 0:
+                            deleted["relations_deleted"] += rc
                     except Exception:
                         continue
 

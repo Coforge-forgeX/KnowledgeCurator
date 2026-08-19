@@ -7,40 +7,47 @@ from src.common.payloads import BasePayload
 
 
 class GraphMutationScope(BasePayload):
-    """Scope that anchors mutation to indexed content in one workspace."""
+    """Optional scope anchoring mutation to indexed content."""
 
-    file_path: str = Field(..., min_length=1, description="Indexed file path in the target workspace")
+    file_path: Optional[str] = Field(default=None, description="Indexed file path in the target workspace")
     source_id: Optional[str] = Field(default=None, description="Optional source/chunk identifier")
     full_doc_id: Optional[str] = Field(default=None, description="Optional full document identifier")
 
-    @field_validator("file_path")
-    @classmethod
-    def normalize_file_path(cls, value: str) -> str:
-        cleaned = (value or "").strip().replace("\\", "/")
-        if not cleaned:
-            raise ValueError("file_path cannot be empty")
-        return cleaned
-
-    @field_validator("source_id", "full_doc_id")
+    @field_validator("file_path", "source_id", "full_doc_id")
     @classmethod
     def normalize_optional(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
-        cleaned = value.strip()
+        cleaned = value.strip().replace("\\", "/")
         return cleaned or None
 
 
 class NodeMutationPayload(BasePayload):
-    """Node-level mutation data."""
+    """Simplified node-level mutation payload."""
 
-    entity_name: str = Field(..., min_length=1, description="Current entity name (match key for update/delete)")
-    new_entity_name: Optional[str] = Field(default=None, min_length=1, description="New entity name for rename")
-    entity_type: Optional[str] = Field(default=None, description="Entity type")
+    element_id: Optional[str] = Field(default=None, description="Neo4j node element ID (elementId)")
+    elementId: Optional[str] = Field(default=None, description="Alias for element_id")
+    entity_id: Optional[str] = Field(default=None, description="Entity ID/name property in Neo4j")
+    entity_name: Optional[str] = Field(default=None, description="Alias for entity_id")
     description: Optional[str] = Field(default=None, description="Entity description")
-    source_id: Optional[str] = Field(default=None, description="Optional source/chunk ID on the node")
-    additional_properties: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    entity_type: Optional[str] = Field(default=None, description="Entity type (optional for create)")
+    is_custom: Optional[bool] = Field(default=True, description="Flag indicating externally added entity")
 
-    @field_validator("entity_name", "new_entity_name", "entity_type", "description", "source_id")
+    @model_validator(mode="before")
+    @classmethod
+    def populate_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "elementId" in data and not data.get("element_id"):
+                data["element_id"] = data["elementId"]
+            elif "element_id" in data and not data.get("elementId"):
+                data["elementId"] = data["element_id"]
+            if "entity_name" in data and not data.get("entity_id"):
+                data["entity_id"] = data["entity_name"]
+            elif "entity_id" in data and not data.get("entity_name"):
+                data["entity_name"] = data["entity_id"]
+        return data
+
+    @field_validator("element_id", "elementId", "entity_id", "entity_name", "description", "entity_type")
     @classmethod
     def normalize_text_fields(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -50,17 +57,27 @@ class NodeMutationPayload(BasePayload):
 
 
 class RelationshipMutationPayload(BasePayload):
-    """Relationship-level mutation data."""
+    """Simplified relationship-level mutation payload."""
 
-    source: str = Field(..., min_length=1, description="Source entity name")
-    target: str = Field(..., min_length=1, description="Target entity name")
-    relation: str = Field(..., min_length=1, description="Current relation value (match key for update/delete)")
-    new_relation: Optional[str] = Field(default=None, min_length=1, description="New relation value for update")
-    description: Optional[str] = Field(default=None, description="Relationship description")
-    source_id: Optional[str] = Field(default=None, description="Optional source/chunk ID")
-    additional_properties: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    element_id: Optional[str] = Field(default=None, description="Neo4j relationship element ID (elementId)")
+    elementId: Optional[str] = Field(default=None, description="Alias for element_id")
+    description: Optional[str] = Field(default=None, description="Relationship description (only field editable for update)")
+    relation: Optional[str] = Field(default=None, description="Relationship type (for create/delete)")
+    source: Optional[str] = Field(default=None, description="Source entity name (for create/delete)")
+    target: Optional[str] = Field(default=None, description="Target entity name (for create/delete)")
+    is_custom: Optional[bool] = Field(default=True, description="Flag indicating externally added relationship")
 
-    @field_validator("source", "target", "relation", "new_relation", "description", "source_id")
+    @model_validator(mode="before")
+    @classmethod
+    def populate_element_id_alias(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "elementId" in data and not data.get("element_id"):
+                data["element_id"] = data["elementId"]
+            elif "element_id" in data and not data.get("elementId"):
+                data["elementId"] = data["element_id"]
+        return data
+
+    @field_validator("element_id", "elementId", "relation", "description", "source", "target")
     @classmethod
     def normalize_text_fields(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -75,18 +92,28 @@ class MutateKnowledgeGraphRequest(BasePayload):
     workspace_id: int = Field(..., gt=0, description="Workspace ID")
     action: Literal["create", "update", "delete"] = Field(..., description="Mutation action")
     target: Literal["node", "relationship"] = Field(..., description="Mutation target")
-    scope: GraphMutationScope
+    scope: Optional[GraphMutationScope] = Field(default=None, description="Optional scope")
     node: Optional[NodeMutationPayload] = Field(default=None)
     relationship: Optional[RelationshipMutationPayload] = Field(default=None)
 
     @model_validator(mode="after")
     def validate_target_payload(self):
-        if self.target == "node" and self.node is None:
-            raise ValueError("node payload is required when target='node'")
-        if self.target == "relationship" and self.relationship is None:
-            raise ValueError("relationship payload is required when target='relationship'")
-        if self.target == "node" and self.relationship is not None:
-            raise ValueError("relationship payload must be omitted when target='node'")
-        if self.target == "relationship" and self.node is not None:
-            raise ValueError("node payload must be omitted when target='relationship'")
+        if self.target == "node":
+            if self.node is None:
+                raise ValueError("node payload is required when target='node'")
+            if self.action == "update":
+                eid = self.node.element_id or self.node.elementId
+                if not eid or not str(eid).strip():
+                    raise ValueError("element_id (or elementId) is required for updating a node")
+            if self.relationship is not None:
+                raise ValueError("relationship payload must be omitted when target='node'")
+        if self.target == "relationship":
+            if self.relationship is None:
+                raise ValueError("relationship payload is required when target='relationship'")
+            if self.action == "update":
+                eid = self.relationship.element_id or self.relationship.elementId
+                if not eid or not str(eid).strip():
+                    raise ValueError("element_id (or elementId) is required for updating a relationship")
+            if self.node is not None:
+                raise ValueError("node payload must be omitted when target='relationship'")
         return self

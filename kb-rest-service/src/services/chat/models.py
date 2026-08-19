@@ -26,8 +26,8 @@ class AccessContext:
 
     @property
     def additional_kbs(self) -> Optional[List[str]]:
-        if len(self.all_kb_titles) > 1:
-            return self.all_kb_titles[1:]
+        if not self.is_kg and self.all_kb_titles:
+            return [t for t in self.all_kb_titles if t]
         return None
 
 

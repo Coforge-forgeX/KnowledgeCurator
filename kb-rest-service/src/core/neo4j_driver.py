@@ -1,6 +1,6 @@
 """Neo4j database driver for KB REST service"""
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from neo4j import AsyncDriver, AsyncGraphDatabase, AsyncSession
 
@@ -92,7 +92,7 @@ class Neo4jDriver:
             raise
 
     @asynccontextmanager
-    async def session(self, database: Optional[str] = None) -> AsyncSession:
+    async def session(self, database: Optional[str] = None) -> AsyncGenerator[AsyncSession, None]:
         """
         Create an async context manager for Neo4j sessions.
 
@@ -136,15 +136,15 @@ class Neo4jDriver:
             Exception: If query execution fails
         """
         if not self._driver:
-            raise RuntimeError("Driver not connected. Call connect() first.")
-
-        try:
-            # Health check for serverless environments
-            await self.verify_connectivity()
-        except Exception as e:
-            logger.warning("Neo4j connection lost, reconnecting", error=e)
-            await self.close()
             await self.connect()
+        else:
+            try:
+                # Health check for serverless environments
+                await self.verify_connectivity()
+            except Exception as e:
+                logger.warning("Neo4j connection lost, reconnecting", error=e)
+                await self.close()
+                await self.connect()
 
         try:
             async with self.session(database=database) as session:
@@ -178,7 +178,15 @@ class Neo4jDriver:
             Exception: If query execution fails
         """
         if not self._driver:
-            raise RuntimeError("Driver not connected. Call connect() first.")
+            await self.connect()
+        else:
+            try:
+                # Health check for serverless environments
+                await self.verify_connectivity()
+            except Exception as e:
+                logger.warning("Neo4j connection lost, reconnecting", error=e)
+                await self.close()
+                await self.connect()
 
         try:
             async with self.session(database=database) as session:
@@ -213,7 +221,15 @@ class Neo4jDriver:
             Exception: If query execution fails
         """
         if not self._driver:
-            raise RuntimeError("Driver not connected. Call connect() first.")
+            await self.connect()
+        else:
+            try:
+                # Health check for serverless environments
+                await self.verify_connectivity()
+            except Exception as e:
+                logger.warning("Neo4j connection lost, reconnecting", error=e)
+                await self.close()
+                await self.connect()
 
         try:
             async with self.session(database=database) as session:
