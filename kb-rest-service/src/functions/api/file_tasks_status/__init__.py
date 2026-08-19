@@ -62,9 +62,9 @@ def _normalize_get_payload(req: AbstractRequest) -> dict:
 def _to_status_row(task: FileTask) -> dict:
     file_name = os.path.basename(task.file_path) if task.file_path else None
     return {
-        "file_task_id": task.id,
+        "task_id": task.id,
         "workspace_id": task.workspace_id,
-        "file_name": file_name,
+        "file": file_name,
         "file_path": task.file_path,
         "status": task.status,
         "created_at": str(task.created_at) if task.created_at else None,
@@ -134,7 +134,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
                 "requested_file_tasks_id": payload.file_tasks_id or [],
                 "workspace_id": payload.workspace_id,
                 "count": len(rows),
-                "statuses": rows,
+                "results": rows,
             },
             correlation_id=context.correlation_id,
         )
