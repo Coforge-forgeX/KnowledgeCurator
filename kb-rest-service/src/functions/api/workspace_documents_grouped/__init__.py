@@ -318,34 +318,30 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
 
                 doc["file_id"] = file_id
 
-        response_groups: List[Dict[str, Any]] = []
-        for bucket in buckets.values():
-            docs: List[Dict[str, Any]] = bucket["documents"]
-            is_workspace_group = bucket["group_key"] == f"workspace:{workspace_id}"
-            if not docs and not is_workspace_group:
-                continue
-            docs.sort(key=lambda d: str(d.get("file_name") or "").lower())
-            response_groups.append(
-                {
-                    "key": bucket["group_key"],
-                    "label": bucket["group_label"],
-                    "kb_id": bucket["kb_id"],
-                    "count": len(docs),
-                    "total": len(docs),
-                    "documents": docs,
-                }
-            )
+        workspace_docs: List[Dict[str, Any]] = []
+        kb_docs: List[Dict[str, Any]] = []
 
-        response_groups.sort(key=lambda g: str(g["key"]))
-        overall_total = sum(int(group["total"]) for group in response_groups)
+        for bucket_key, bucket in buckets.items():
+            docs: List[Dict[str, Any]] = bucket["documents"]
+            if bucket_key == f"workspace:{workspace_id}":
+                workspace_docs = docs
+            elif bucket_key.startswith("kb:"):
+                kb_docs.extend(docs)
+
+        workspace_docs.sort(key=lambda d: str(d.get("file_name") or "").lower())
+        kb_docs.sort(key=lambda d: str(d.get("file_name") or "").lower())
+
+        total = len(kb_docs) + len(workspace_docs)
+        group_count = len([g for g in buckets.values() if g["documents"]])
 
         return create_success_response(
             message="Workspace documents retrieved successfully",
             data={
                 "workspace_id": workspace_id,
-                "group_count": len(response_groups),
-                "total": overall_total,
-                "groups": response_groups,
+                "kb": kb_docs,
+                "workspace": workspace_docs,
+                "total": total,
+                "group_count": group_count,
             },
             correlation_id=context.correlation_id,
         )
