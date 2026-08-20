@@ -97,73 +97,93 @@ class FetchGraphRequest(BaseModel):
 
 
 class GraphNodeModel(BaseModel):
-    """Single graph node/entity"""
-    element_id: Optional[str] = Field(None, description="Neo4j element ID")
-    entity_name: str = Field(..., description="Name of the entity")
-    entity_type: str = Field(..., description="Type of the entity")
-    created_at: Optional[Any] = Field(None, description="Creation timestamp")
-    description: Optional[str] = Field(None, description="Description of the entity")
-    file_path: Optional[Any] = Field(None, description="Source file path(s)")
-    source_id: Optional[Any] = Field(None, description="Source chunk ID(s)")
+    """Single graph node"""
+    id: str = Field(..., description="Node ID (value after last colon)")
+    element_id: Optional[str] = Field(None, description="Full Neo4j element ID")
+    labels: List[str] = Field(default_factory=list, description="Labels for the node")
+    properties: Dict[str, Any] = Field(default_factory=dict, description="Node properties")
 
 
-class GraphRelationshipModel(BaseModel):
-    """Single graph relationship/edge"""
-    element_id: Optional[str] = Field(None, description="Neo4j element ID for relationship")
-    source: str = Field(..., description="Source entity name")
-    target: str = Field(..., description="Target entity name")
-    relation: str = Field(..., description="Relationship type")
-    created_at: Optional[Any] = Field(None, description="Creation timestamp")
-    description: Optional[str] = Field(None, description="Relationship description")
-    file_path: Optional[Any] = Field(None, description="Source file path(s)")
-    keywords: Optional[Any] = Field(None, description="Relationship keywords")
-    source_id: Optional[Any] = Field(None, description="Source chunk ID(s)")
-    weight: Optional[Any] = Field(None, description="Relationship weight")
+class GraphEdgeModel(BaseModel):
+    """Single graph edge"""
+    id: str = Field(..., description="Edge ID (value after last colon)")
+    element_id: Optional[str] = Field(None, description="Full Neo4j element ID")
+    type: str = Field(default="DIRECTED", description="Edge type")
+    source: str = Field(..., description="Source node ID")
+    target: str = Field(..., description="Target node ID")
+    properties: Dict[str, Any] = Field(default_factory=dict, description="Edge properties")
+
+# Alias for backward compatibility if imported elsewhere
+GraphRelationshipModel = GraphEdgeModel
 
 
 class FilteredGraphDataModel(BaseModel):
-    """Filtered graph data with only relevant nodes and relationships"""
-    entities: List[GraphNodeModel] = Field(default_factory=list, description="Filtered entities/nodes")
-    relationships: List[GraphRelationshipModel] = Field(default_factory=list, description="Filtered relationships/edges")
+    """Filtered graph data with nodes, edges, knowledge bases, and metadata"""
+    knowledge_bases: List[str] = Field(default_factory=list, description="Knowledge bases from which answer/graph was retrieved")
+    nodes: List[GraphNodeModel] = Field(default_factory=list, description="Filtered graph nodes")
+    edges: List[GraphEdgeModel] = Field(default_factory=list, description="Filtered graph edges")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
 class FetchGraphResponse(BaseModel):
     """Response model for fetch_graph endpoint"""
 
-    graph_data: FilteredGraphDataModel = Field(..., description="Filtered graph data")
+    knowledge_bases: List[str] = Field(default_factory=list, description="Knowledge bases from which answer/graph was retrieved")
+    nodes: List[GraphNodeModel] = Field(default_factory=list, description="Filtered graph nodes")
+    edges: List[GraphEdgeModel] = Field(default_factory=list, description="Filtered graph edges")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     query: str = Field(..., description="Original query")
     workspace_id: int = Field(..., description="Workspace ID")
+    graph_only: bool = Field(default=False, description="Whether graph_only mode was enabled")
     cached: bool = Field(..., description="Whether result was from cache")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "graph_data": {
-                    "entities": [
-                        {
-                            "entity_name": "Asset Management",
-                            "entity_type": "Concept",
-                            "description": "Process of managing financial assets",
-                            "source_id": "chunk_1",
-                            "file_path": "documents/asset_guide.pdf"
+                "knowledge_bases": [
+                    "Other/Demo Instances/New knowledgebase 12"
+                ],
+                "nodes": [
+                    {
+                        "id": "21",
+                        "labels": ["Product Data"],
+                        "properties": {
+                            "file_path": "Other/Demo Instances/New knowledgebase 12/OOSD 1 1 (1).docx",
+                            "entity_type": "data",
+                            "truncate": "",
+                            "description": "Product Data is information persisted during order creation.",
+                            "created_at": 1786082306,
+                            "source_id": "chunk-6962bb82e73d6ef4e82c18ce0d6e3398",
+                            "entity_id": "Product Data"
                         }
-                    ],
-                    "relationships": [
-                        {
-                            "source": "Asset Management",
-                            "target": "Portfolio",
-                            "relation": "manages",
-                            "description": "Asset management manages portfolios"
-                        }
-                    ],
-                    "metadata": {
-                        "total_entities": 1,
-                        "total_relationships": 1
                     }
+                ],
+                "edges": [
+                    {
+                        "id": "32",
+                        "type": "DIRECTED",
+                        "source": "0",
+                        "target": "30",
+                        "properties": {
+                            "file_path": "Other/Demo Instances/New knowledgebase 12/OOSD 1 1 (1).docx",
+                            "truncate": "",
+                            "keywords": "process initiation,refund handling",
+                            "weight": 1,
+                            "description": "Refund Process is triggered during refund handling in the Order Workflow.",
+                            "created_at": 1786082312,
+                            "source_id": "chunk-6962bb82e73d6ef4e82c18ce0d6e3398"
+                        }
+                    }
+                ],
+                "metadata": {
+                    "total_nodes": 1,
+                    "total_edges": 1
                 },
-                "query": "What is asset management?",
+                "query": "What is product data?",
                 "workspace_id": 123,
+                "graph_only": False,
                 "cached": False
             }
         }
+
+ 

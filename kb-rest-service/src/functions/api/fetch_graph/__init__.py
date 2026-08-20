@@ -21,6 +21,7 @@ from src.core.redis import redis_manager
 from src.functions.api.fetch_graph.payloads import (
     FetchGraphRequest,
     FilteredGraphDataModel,
+    GraphEdgeModel,
     GraphNodeModel,
     GraphRelationshipModel,
 )
@@ -1066,22 +1067,34 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             if cached_data:
                 try:
                     cached_result = json.loads(cached_data)
-                    cache_elapsed = time.time() - start_time
+                    cached_nodes = cached_result.get("nodes", []) if isinstance(cached_result, dict) else []
+                    cached_edges = cached_result.get("edges", []) if isinstance(cached_result, dict) else []
 
-                    logger.info(
-                        "Fetch graph completed from cache",
-                        correlation_id=correlation_id,
-                        workspace_id=workspace_id,
-                        cache_hit=True,
-                        response_time_ms=round(cache_elapsed * 1000, 2),
-                    )
+                    if not cached_nodes and not cached_edges:
+                        logger.info(
+                            "Evicting empty graph cache entry so request queries fresh graph",
+                            cache_key=cache_key,
+                            workspace_id=workspace_id,
+                        )
+                        redis_manager.delete(cache_key)
+                        cached_result = None
+                    else:
+                        cache_elapsed = time.time() - start_time
 
-                    return create_success_response(
-                        message="Graph data retrieved successfully (cached)",
-                        data=cached_result,
-                        status_code=200,
-                        correlation_id=correlation_id
-                    )
+                        logger.info(
+                            "Fetch graph completed from cache",
+                            correlation_id=correlation_id,
+                            workspace_id=workspace_id,
+                            cache_hit=True,
+                            response_time_ms=round(cache_elapsed * 1000, 2),
+                        )
+
+                        return create_success_response(
+                            message="Graph data retrieved successfully (cached)",
+                            data=cached_result,
+                            status_code=200,
+                            correlation_id=correlation_id
+                        )
                 except Exception as e:
                     logger.warning(f"Failed to parse cached graph data: {e}")
                     cached_result = None
@@ -1220,26 +1233,139 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         # ===========================================
         # STEP 7: Build Response
         # ===========================================
+        kb_targets: List[str] = [kb_name]
+        if not is_kg:
+            kb_targets.extend(_resolve_additional_kb_paths(kb_name, additional_kbs))
+
+        knowledge_bases: List[str] = []
+        for target in kb_targets:
+            t = str(target).strip()
+            if not t:
+                continue
+            if domain and not t.startswith(f"{domain}/"):
+                knowledge_bases.append(f"{domain}/{t}")
+            else:
+                knowledge_bases.append(t)
+
+        nodes_list: List[GraphNodeModel] = []
+        node_id_map: Dict[str, str] = {}
+
+        for idx, e in enumerate(filtered_entities):
+            raw_element_id = str(e.get("element_id") or e.get("id") or _ensure_entity_id(e, idx))
+            short_id = raw_element_id.split(":")[-1] if ":" in raw_element_id else raw_element_id
+
+            entity_name = _extract_entity_name(e, idx)
+            entity_type = _extract_entity_type(e)
+            file_path = _extract_entity_file_path(e) or ""
+            source_id = _extract_entity_source_id(e) or ""
+            created_at = _extract_prop(e, "created_at") or _extract_prop(e, "create_time") or ""
+            description = _extract_prop(e, "description") or ""
+            truncate = _extract_prop(e, "truncate") or ""
+
+            raw_labels = e.get("labels")
+            clean_labels = []
+            if isinstance(raw_labels, list):
+                clean_labels = [
+                    str(lbl).strip()
+                    for lbl in raw_labels
+                    if str(lbl).strip() and str(lbl).strip().lower() not in ("knowledgegraph", "knowledge graph", "knowledge_graph")
+                ]
+
+            if clean_labels:
+                labels = clean_labels
+            elif entity_name:
+                labels = [entity_name]
+            elif entity_type and entity_type.lower() != "unknown":
+                labels = [entity_type]
+            else:
+                labels = ["Entity"]
+
+            properties: Dict[str, Any] = {
+                "file_path": file_path,
+                "entity_type": entity_type,
+                "truncate": truncate,
+                "description": description,
+                "created_at": created_at,
+                "source_id": source_id,
+                "entity_id": entity_name,
+            }
+
+            existing_props = e.get("properties")
+            if isinstance(existing_props, dict):
+                for k, v in existing_props.items():
+                    if k not in properties:
+                        properties[k] = v
+
+            node_model = GraphNodeModel(
+                id=short_id,
+                element_id=raw_element_id,
+                labels=labels,
+                properties=properties,
+            )
+            nodes_list.append(node_model)
+
+            for key in (raw_element_id, short_id, entity_name, e.get("entity_id"), e.get("element_id"), e.get("id")):
+                if key and str(key).strip():
+                    k_str = str(key).strip()
+                    node_id_map[k_str] = short_id
+                    node_id_map[k_str.lower()] = short_id
+
+        edges_list: List[GraphEdgeModel] = []
+        for idx, r in enumerate(filtered_relationships):
+            raw_edge_element_id = str(r.get("element_id") or r.get("id") or _ensure_relationship_id(r))
+            short_edge_id = raw_edge_element_id.split(":")[-1] if ":" in raw_edge_element_id else raw_edge_element_id
+
+            raw_src, raw_dst = _resolve_relationship_endpoints_for_response(r, filtered_entities)
+
+            src_id = node_id_map.get(raw_src) or node_id_map.get(raw_src.lower()) or raw_src
+            dst_id = node_id_map.get(raw_dst) or node_id_map.get(raw_dst.lower()) or raw_dst
+
+            edge_type = str(r.get("type") or r.get("relation") or _extract_prop(r, "type") or "DIRECTED")
+            file_path = _extract_relationship_file_path(r) or ""
+            source_id = _extract_relationship_source_id(r) or ""
+            created_at = _extract_prop(r, "created_at") or _extract_prop(r, "create_time") or ""
+            description = _extract_prop(r, "description") or ""
+            truncate = _extract_prop(r, "truncate") or ""
+            keywords = _extract_prop(r, "keywords") or ""
+            weight = _extract_prop(r, "weight")
+            if weight is None:
+                weight = 1
+
+            edge_properties: Dict[str, Any] = {
+                "file_path": file_path,
+                "truncate": truncate,
+                "keywords": keywords,
+                "weight": weight,
+                "description": description,
+                "created_at": created_at,
+                "source_id": source_id,
+            }
+
+            existing_props = r.get("properties")
+            if isinstance(existing_props, dict):
+                for k, v in existing_props.items():
+                    if k not in edge_properties:
+                        edge_properties[k] = v
+
+            edge_model = GraphEdgeModel(
+                id=short_edge_id,
+                element_id=raw_edge_element_id,
+                type=edge_type,
+                source=src_id,
+                target=dst_id,
+                properties=edge_properties,
+            )
+            edges_list.append(edge_model)
+
         graph_data = FilteredGraphDataModel(
-            entities=[
-                GraphNodeModel(
-                    element_id=str(e.get("element_id") or e.get("id") or _ensure_entity_id(e, idx)),
-                    entity_name=_extract_entity_name(e),
-                    entity_type=_extract_entity_type(e),
-                    created_at=_extract_prop(e, "created_at") or _extract_prop(e, "create_time"),
-                    description=_extract_prop(e, "description"),
-                    file_path=_extract_entity_file_path(e),
-                    source_id=_extract_entity_source_id(e),
-                )
-                for idx, e in enumerate(filtered_entities)
-            ],
-            relationships=[
-                _build_graph_relationship_model(r, filtered_entities)
-                for r in filtered_relationships
-            ],
+            knowledge_bases=knowledge_bases,
+            nodes=nodes_list,
+            edges=edges_list,
             metadata={
-                "total_entities": len(filtered_entities),
-                "total_relationships": len(filtered_relationships),
+                "total_nodes": len(nodes_list),
+                "total_edges": len(edges_list),
+                "total_entities": len(nodes_list),
+                "total_relationships": len(edges_list),
                 "original_entity_count": len(entities),
                 "original_relationship_count": len(relationships),
                 "graph_source": (context_data.get("metadata", {}) if isinstance(context_data, dict) else {}).get("source"),
@@ -1248,22 +1374,35 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
         )
 
         response_data = {
-            "graph_data": graph_data.dict(),
+            "knowledge_bases": knowledge_bases,
+            "nodes": [n.dict() for n in nodes_list],
+            "edges": [e.dict() for e in edges_list],
+            "metadata": graph_data.metadata,
             "query": query,
             "workspace_id": workspace_id,
             "graph_only": graph_only,
             "cached": False
         }
 
+
         # ===========================================
-        # STEP 8: Cache Result
+        # STEP 8: Cache Result (Only if graph data contains nodes or edges)
         # ===========================================
-        if redis_manager.is_available and getattr(settings.cache, 'REDIS_ENABLED', True):
+        has_results = bool(nodes_list or edges_list)
+        if has_results and redis_manager.is_available and getattr(settings.cache, 'REDIS_ENABLED', True):
+            cached_payload = {**response_data, "cached": True}
             redis_manager.setex(
                 cache_key,
                 GRAPH_CACHE_TTL_SECONDS,
-                json.dumps(response_data)
+                json.dumps(cached_payload)
             )
+        else:
+            logger.info(
+                "Skipping cache write for graph request because no nodes/edges were returned",
+                workspace_id=workspace_id,
+                has_results=has_results,
+            )
+
 
         total_elapsed = time.time() - start_time
 

@@ -55,12 +55,6 @@ async def get_workspace_storage_paths(workspace_id: int) -> Optional[Dict[str, s
                 logger.warning("Workspace not found", workspace_id=workspace_id)
                 return None
 
-            # Initialize with default values
-            industry_name = "general"
-            sub_industry_name = "general"
-            kb_title = ""
-            all_kb_titles = []
-
             # Query for workspace-industry-kb mapping with joins
             # Fetch ALL mappings for non-KG workspaces with multiple KBs
             mapping_stmt = (
@@ -82,31 +76,41 @@ async def get_workspace_storage_paths(workspace_id: int) -> Optional[Dict[str, s
             mapping_result = await session.execute(mapping_stmt)
             mapping_rows = mapping_result.fetchall()
 
-            if mapping_rows:
-                # Use first row for primary paths (indexing)
-                first_row = mapping_rows[0]
-                industry_name = first_row.industry_name or "general"
-                sub_industry_name = first_row.subindustry_name or "general"
-                kb_title = first_row.title or ""
-
-                # Collect all KB titles for multi-KB querying
-                all_kb_titles = [row.title for row in mapping_rows if row.title]
-                all_kb_ids = [row.id for row in mapping_rows if row.id]
-
-                logger.debug(
-                    "Fetched workspace metadata",
-                    workspace_id=workspace_id,
-                    industry=industry_name,
-                    sub_industry=sub_industry_name,
-                    kb=kb_title,
-                    total_kbs=len(all_kb_titles)
+            if not mapping_rows:
+                logger.error(
+                    "No industry mapping found in database for workspace",
+                    workspace_id=workspace_id
                 )
-            else:
-                logger.warning(
-                    "No industry mapping found for workspace, using defaults",
+                return None
+
+            # Use first row for primary paths (indexing)
+            first_row = mapping_rows[0]
+            industry_name = first_row.industry_name
+            sub_industry_name = first_row.subindustry_name
+            kb_title = first_row.title or ""
+
+            if not industry_name or not sub_industry_name:
+                logger.error(
+                    "Industry or sub-industry name missing in database for workspace",
                     workspace_id=workspace_id,
-                    defaults={"industry": industry_name, "sub_industry": sub_industry_name}
+                    industry_name=industry_name,
+                    sub_industry_name=sub_industry_name
                 )
+                return None
+
+            # Collect all KB titles for multi-KB querying
+            all_kb_titles = [row.title for row in mapping_rows if row.title]
+            all_kb_ids = [row.id for row in mapping_rows if row.id and row.id != 0]
+
+            logger.debug(
+                "Fetched workspace metadata from database",
+                workspace_id=workspace_id,
+                industry=industry_name,
+                sub_industry=sub_industry_name,
+                kb=kb_title,
+                total_kbs=len(all_kb_titles)
+            )
+
 
             # Build paths using shared function
             kg_container = settings.storage.STORAGE_CONTAINER_NAME
