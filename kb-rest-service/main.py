@@ -61,6 +61,7 @@ from src.functions.api.workspace_documents_grouped.payloads import WorkspaceDocu
 from src.functions.api.delete_files_by_id.payloads import DeleteFilesByIdRequest
 from src.functions.api.delete_all_indexed_documents.payloads import DeleteAllIndexedDocumentsRequest
 from src.functions.api.fetch_graph.payloads import FetchGraphRequest, FetchGraphResponse
+from src.functions.api.extract_keywords.payloads import ExtractKeywordsRequest, ExtractKeywordsResponse
 from src.functions.api.mutate_knowledge_graph.payloads import MutateKnowledgeGraphRequest
 from src.functions.api.sharepoint.payloads import (
     TestSharePointConnectionRequest,
@@ -828,7 +829,19 @@ async def fetch_graph_data(request: Request, payload: FetchGraphRequest):
     request.state.parsed_payload = payload
     return await invoke_handler(request, "fetch_graph")
 
+@api_router.post(
+    "/kb/extract-keywords",
+    tags=["Knowledge Base"],
+    summary="Extract Keywords from Query",
+    description="Extract relevant node labels matching user query given candidate node labels context",
+    response_model=ExtractKeywordsResponse,
+)
+async def extract_keywords(request: Request, payload: ExtractKeywordsRequest):
+    """Extract relevant node labels matching user query from candidate node labels."""
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "extract_keywords")
 
+ 
 @api_router.get(
     "/chat/start",
     tags=["Chat"],

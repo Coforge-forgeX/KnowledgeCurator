@@ -54,6 +54,8 @@ ROUTE_TO_HANDLER = {
     ("GET", "/api/v2/config/get"): "get_config",
     ("POST", "/api/v2/config/update"): "update_config",
 
+    ("POST", "/api/v2/kb/extract-keywords"): "extract_keywords",
+
 }
 
 

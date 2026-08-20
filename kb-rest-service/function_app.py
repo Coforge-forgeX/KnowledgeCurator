@@ -161,3 +161,7 @@ async def get_config(req: func.HttpRequest, context: func.Context) -> func.HttpR
 @app.route(route="api/v2/config/update", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 async def update_config(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
+
+@app.route(route="api/v2/kb/extract-keywords", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def extract_keywords(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)

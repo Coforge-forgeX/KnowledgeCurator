@@ -61,6 +61,7 @@ HANDLER_MODULE_PATHS: Dict[str, str] = {
     "get_knowledge_graph": "src.functions.api.get_knowledge_graph",
     "fetch_graph": "src.functions.api.fetch_graph",
     "mutate_knowledge_graph": "src.functions.api.mutate_knowledge_graph",
+    "extract_keywords": "src.functions.api.extract_keywords",
 
     # Chat / Conversation session management
     "chat_start_conversation": "src.functions.api.start_conversation",
