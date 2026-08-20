@@ -17,6 +17,8 @@ from kbcurator.utils.session_history_manager import (
 )
 from common_adapters.trustai import  TrustAIDatabaseManager
 from common_adapters.trustai.workspace_integration import TrustAIWorkspaceIntegration
+from .scheduler import start_scheduler, scheduler
+
 sharepoint_client_manager = None
 user_config_manager = None
 trustai_workspace_integration = None
@@ -57,8 +59,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
     mongo_client = get_mongodb_client()
     global r, sharepoint_client_manager, user_config_manager, session, trustai_workspace_integration, trustai_db_manager
     try:
+        
         # Initialize other services
         logging.info("🔧 Initializing services...")
+        
+        # Start worker scheduler job for trustai aggregation tables.
+        start_scheduler()
+        logger.info("Start scheduler for trustai_analytics...")
         
         logging.debug("Initializing Redis cache...")
         CacheFactory.initialize()  # (optional, usually called automatically)
@@ -84,16 +91,18 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
         logging.info("  ✅ Trust AI Database & integration initialized")
         
         # Sync existing workspaces with TrustAI (backward compatibility)
-        try:
-            from kbcurator.tools.user_management_system import sync_trustai_workspaces
-            await sync_trustai_workspaces()
-        except Exception as sync_error:
-            logging.error(f"  ⚠️ TrustAI workspace sync failed: {sync_error}")
+        # try:
+        #     from kbcurator.tools.user_management_system import sync_trustai_workspaces
+        #     await sync_trustai_workspaces()
+        # except Exception as sync_error:
+        #     logging.error(f"  ⚠️ TrustAI workspace sync failed: {sync_error}")
     except Exception as e:
         logging.error(f"✗ Startup initialization failed: {e}")
     try:
         yield
     finally:
+        # shutdown scheduler job
+        scheduler.shutdown()
         # Close MongoDB connection on shutdown
         logging.info("🔧 Shutting down lifespan, closing MongoDB...")
         mongo_client.close()
