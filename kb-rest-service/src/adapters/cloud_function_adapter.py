@@ -51,6 +51,9 @@ ROUTE_TO_HANDLER = {
 
     # Workspace Document Management
     ("POST", "/api/v2/workspaces/download-zip"): "workspace_download_zip",
+    ("GET", "/api/v2/config/get"): "get_config",
+    ("POST", "/api/v2/config/update"): "update_config",
+
 }
 
 
