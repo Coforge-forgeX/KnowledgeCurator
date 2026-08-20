@@ -152,3 +152,12 @@ async def sharepoint_extract_data(req: func.HttpRequest, context: func.Context) 
 @app.route(route="api/v2/workspaces/download-zip", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 async def workspace_download_zip(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     return await _handle(req, context)
+
+@app.route(route="api/v2/config/get", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST", "GET"])
+async def get_config(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)
+
+
+@app.route(route="api/v2/config/update", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
+async def update_config(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    return await _handle(req, context)

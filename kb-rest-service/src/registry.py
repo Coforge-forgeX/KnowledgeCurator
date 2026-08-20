@@ -80,6 +80,10 @@ HANDLER_MODULE_PATHS: Dict[str, str] = {
 
     # Workspace Document Management
     "workspace_download_zip": "src.functions.api.workspace_download_zip",
+
+    # User Configuration Management
+    "get_config": "src.functions.api.get_config",
+    "update_config": "src.functions.api.update_config",
 }
 
 # Cache for loaded handlers (lazy loading + memoization)

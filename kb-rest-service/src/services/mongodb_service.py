@@ -6,8 +6,8 @@ Handles conversation sessions, messages, and context storage.
 import asyncio
 import os
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Union
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from bson import ObjectId
@@ -95,6 +95,7 @@ class MongoDBService:
 
     SESSION_COLLECTION = "kb_session"
     CHAT_HISTORY_COLLECTION = "kb_chat_history"
+    USER_CONFIG_COLLECTION = "kb_user_config"
 
     def __init__(self):
         self._client: Optional[AsyncIOMotorClient] = None
@@ -176,6 +177,11 @@ class MongoDBService:
     def chat_history(self):
         """Chat history collection"""
         return self.db[self.CHAT_HISTORY_COLLECTION]
+
+    @property
+    def user_config(self):
+        """user config collection"""
+        return self.db[self.USER_CONFIG_COLLECTION]
 
     # ========================================================================
     # Session Management
@@ -747,6 +753,145 @@ class MongoDBService:
                 message=f"Failed to get message page: {str(e)}",
                 operation="get_messages_page",
             )
+
+    # ========================================================================
+    # User Configuration Management
+    # ========================================================================
+
+    async def get_user_config(
+        self,
+        workspace_id: Union[int, str],
+        user_id: Union[int, str],
+        fields: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get user configuration from MongoDB for workspace_id and user_id.
+
+        Args:
+            workspace_id: Workspace identifier
+            user_id: User identifier
+            fields: Optional list of field keys to retrieve
+
+        Returns:
+            Dict containing requested configuration key-values
+        """
+        try:
+            query = {
+                "workspace_id": _id_match(workspace_id),
+                "user_id": _id_match(user_id),
+            }
+            doc = await self.user_config.find_one(query)
+            if doc:
+                doc = _json_safe(doc)
+                doc.pop("_id", None)
+                doc.pop("created_at", None)
+                doc.pop("updated_at", None)
+                if fields is None:
+                    return doc
+                else:
+                    return {field: doc.get(field) for field in fields}
+            else:
+                if fields is not None:
+                    return {field: None for field in fields}
+                else:
+                    return {}
+        except Exception as e:
+            logger.error("Failed to get user config", error=e, workspace_id=workspace_id, user_id=user_id)
+            raise DatabaseException(
+                message=f"Failed to fetch user configuration: {str(e)}",
+                operation="get_user_config",
+            )
+
+    async def set_user_config(
+        self,
+        workspace_id: Union[int, str],
+        user_id: Union[int, str],
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Update existing fields or create user configuration in workspace.
+
+        Args:
+            workspace_id: Workspace identifier
+            user_id: Authenticated user identifier
+            config: Key-value updates dictionary
+
+        Returns:
+            Operation result dictionary
+        """
+        try:
+            filter_query = {
+                "workspace_id": _id_match(workspace_id),
+                "user_id": _id_match(user_id),
+            }
+            now = datetime.now(timezone.utc)
+            # Filter reserved / internal fields
+            clean_config = {
+                k: v for k, v in config.items()
+                if k not in ("_id", "created_at", "user_id")
+            }
+            update_query = {
+                "$set": {**clean_config, "updated_at": now.isoformat()},
+                "$setOnInsert": {
+                    "created_at": now.isoformat(),
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                },
+            }
+            result = await self.user_config.update_one(filter_query, update_query, upsert=True)
+            if result.upserted_id:
+                return {
+                    "status": "success",
+                    "operation": "created",
+                    "upserted_id": str(result.upserted_id),
+                }
+            else:
+                return {
+                    "status": "success",
+                    "operation": "updated",
+                    "matched_count": result.matched_count,
+                    "modified_count": result.modified_count,
+                }
+        except Exception as e:
+            logger.error("Failed to set user config", error=e, workspace_id=workspace_id, user_id=user_id)
+            raise DatabaseException(
+                message=f"Failed to store user configuration: {str(e)}",
+                operation="set_user_config",
+            )
+
+    async def get_recent_sessions_by_ttl(
+        self,
+        workspace_id: Union[int, str],
+        user_id: Union[int, str],
+        ttl_seconds: float = 3600.0,
+    ) -> List[str]:
+        """
+        Fetch recent active session IDs for user/workspace within TTL.
+        """
+        try:
+            cutoff_time = datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)
+            pipeline = [
+                {
+                    "$match": {
+                        "workspace_id": _id_match(workspace_id),
+                        "user_id": _id_match(user_id),
+                        "timestamp": {"$gte": cutoff_time},
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$session_id",
+                        "latest_timestamp": {"$max": "$timestamp"},
+                    }
+                },
+                {"$sort": {"latest_timestamp": -1}},
+            ]
+            cursor = self.chat_history.aggregate(pipeline)
+            sessions = await cursor.to_list(length=100)
+            return [str(s["_id"]) for s in sessions if s.get("_id")]
+        except Exception as e:
+            logger.error("Failed to get recent sessions by TTL", error=e)
+            return []
 
 
 # ============================================================================

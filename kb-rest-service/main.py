@@ -74,6 +74,11 @@ from src.functions.api.workspace_download_zip.payloads import (
     WorkspaceDownloadZipRequest,
     WorkspaceDownloadZipResponse,
 )
+from src.functions.api.config.payloads import (
+    GetConfigRequest,
+    UpdateConfigRequest,
+    ConfigResponse,
+)
 from src.models.chat_models import (
     CancelChatRequest,
     CancelChatResponse,
@@ -998,6 +1003,30 @@ async def workspace_download_zip(request: Request, payload: WorkspaceDownloadZip
     request.state.parsed_payload = payload
     return await invoke_handler(request, "workspace_download_zip")
 
+@api_router.post(
+    "/config/get",
+    tags=["Configuration Management"],
+    summary="Get User Configuration",
+    description="Retrieve configuration key-values for workspace. user_id extracted from JWT.",
+    response_model=ConfigResponse,
+)
+async def get_user_config(request: Request, payload: GetConfigRequest):
+    """Get user configuration fields."""
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "get_config")
+
+
+@api_router.post(
+    "/config/update",
+    tags=["Configuration Management"],
+    summary="Update User Configuration",
+    description="Update user configuration fields in MongoDB and sync active session configs in Redis.",
+    response_model=ConfigResponse,
+)
+async def update_user_config(request: Request, payload: UpdateConfigRequest):
+    """Update user configuration fields."""
+    request.state.parsed_payload = payload
+    return await invoke_handler(request, "update_config")
 
 # ============================================================================
 # Register API Router
