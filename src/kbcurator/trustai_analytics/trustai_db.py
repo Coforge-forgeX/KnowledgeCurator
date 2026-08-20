@@ -23,7 +23,8 @@ from .model.db_model import (
     Base,
     AnalyticsWorkerState,
     AnalyticsWorkerExecutionHistory,
-
+    
+    AnalyticsEventFact,
     WorkspaceSummary,
     AgentSummary,
     UserSummary,
@@ -36,6 +37,7 @@ from .model.db_model import (
 
 WORKER_LOCKS = {
     "analytics_worker": 1001,
+    "fact_analytics_worker": 1002
 }
 
 
@@ -89,7 +91,7 @@ class TrustaiAnalyticsDB:
         )
 
         # Create analytics tables
-        self.initialize_trustai_summary_tables()
+        self.initialize_trustai_fact_tables()
 
         # Reflect existing source tables
         self.metadata = MetaData()
@@ -111,6 +113,18 @@ class TrustaiAnalyticsDB:
     # Analytics table initialization
     # ------------------------------------------------------------------
 
+    def initialize_trustai_fact_tables(self):
+
+        Base.metadata.create_all(
+            bind=self.engine,
+            tables=[
+                AnalyticsEventFact.__table__,
+                GuardrailOutcomeSummary.__table__,
+                AnalyticsWorkerState.__table__,
+                AnalyticsWorkerExecutionHistory.__table__,
+            ],
+        )
+        
     def initialize_trustai_summary_tables(self):
         Base.metadata.create_all(
             bind=self.engine
@@ -784,22 +798,8 @@ class TrustaiAnalyticsDB:
         ).scalar()
 
         print(f"Stage Rows = {count}")
-        
-        session.execute(
-            text("""
-                SELECT *
-                FROM analytics_event_stage
-                LIMIT 1
-            """)
-        )
 
         metadata = MetaData()
-
-        # stage_table = Table(
-        #     "analytics_event_stage",
-        #     metadata,
-        #     autoload_with=session.bind,
-        # )
         
         stage_table = Table(
             "analytics_event_stage",
@@ -809,297 +809,38 @@ class TrustaiAnalyticsDB:
 
         return stage_table
 
-    # def get_base_event_cte(
-    # 	self,
-    # 	session,
-    # 	start_event_id: int,
-    # 	end_event_id: int,
-    # ):
-    # 	guardrail_agg = (
-    # 		session.query(
-    # 			self.GuardrailEventResultLog.event_id.label(
-    # 				"event_id"
-    # 			),
-    # 			self.GuardrailEventResultLog.guardrail_type.label(
-    # 				"guardrail_type"
-    # 			),
+    def get_event_fact_rows(
+        self,
+        session,
+        stage_table,
+    ):
+        rows = (
+            session.query(
+                stage_table.c.event_id,
+                stage_table.c.bucket_start_timestamp,
+                stage_table.c.created_on,
+                stage_table.c.app_name,
+                stage_table.c.user_id,
+                stage_table.c.agent_id,
+                stage_table.c.llm_type,
+                stage_table.c.duration,
+                stage_table.c.outcome,
+                stage_table.c.llm_input_tokens,
+                stage_table.c.llm_output_tokens,
+                stage_table.c.llm_total_tokens,
+                stage_table.c.ig_input_tokens,
+                stage_table.c.ig_output_tokens,
+                stage_table.c.ig_total_tokens,
+                stage_table.c.og_input_tokens,
+                stage_table.c.og_output_tokens,
+                stage_table.c.og_total_tokens,
+            )
+            .all()
+        )
 
-    # 			func.sum(
-    # 				case(
-    # 					(
-    # 						self.GuardrailEventResultLog.results[
-    # 							"detail"
-    # 						]["outcome"].astext.in_(
-    # 							["Success", "Skipped"]
-    # 						),
-    # 						1,
-    # 					),
-    # 					else_=0,
-    # 				)
-    # 			).label("pass_count"),
+        return self.rows_to_dict(rows)
 
-    # 			func.sum(
-    # 				case(
-    # 					(
-    # 						self.GuardrailEventResultLog.results[
-    # 							"detail"
-    # 						]["outcome"].astext.in_(
-    # 							["Fail", "Error"]
-    # 						),
-    # 						1,
-    # 					),
-    # 					else_=0,
-    # 				)
-    # 			).label("block_count"),
 
-    # 			func.sum(
-    # 				case(
-    # 					(
-    # 						self.GuardrailEventResultLog.results[
-    # 							"detail"
-    # 						]["outcome"].astext
-    # 						== "Warning",
-    # 						1,
-    # 					),
-    # 					else_=0,
-    # 				)
-    # 			).label("warn_count"),
-
-    # 			func.sum(
-    # 				func.coalesce(
-    # 					cast(
-    # 						self.GuardrailEventResultLog.results[
-    # 							"usage"
-    # 						]["input_tokens"].astext,
-    # 						BigInteger,
-    # 					),
-    # 					0,
-    # 				)
-    # 			).label(
-    # 				"guardrail_input_tokens"
-    # 			),
-
-    # 			func.sum(
-    # 				func.coalesce(
-    # 					cast(
-    # 						self.GuardrailEventResultLog.results[
-    # 							"usage"
-    # 						]["output_tokens"].astext,
-    # 						BigInteger,
-    # 					),
-    # 					0,
-    # 				)
-    # 			).label(
-    # 				"guardrail_output_tokens"
-    # 			),
-
-    # 			func.sum(
-    # 				func.coalesce(
-    # 					cast(
-    # 						self.GuardrailEventResultLog.results[
-    # 							"usage"
-    # 						]["total_tokens"].astext,
-    # 						BigInteger,
-    # 					),
-    # 					0,
-    # 				)
-    # 			).label(
-    # 				"guardrail_total_tokens"
-    # 			),
-    # 		)
-    # 		.filter(
-    # 			self.GuardrailEventResultLog.event_id >= start_event_id
-    # 		)
-    # 		.filter(
-    # 			self.GuardrailEventResultLog.event_id <= end_event_id
-    # 		)
-    # 		.group_by(
-    # 			self.GuardrailEventResultLog.event_id,
-    # 			self.GuardrailEventResultLog.guardrail_type,
-    # 		)
-    # 		.cte("guardrail_agg")
-    # 	)
-
-    # 	input_guardrail_agg = (
-    # 		session.query(guardrail_agg)
-    # 		.filter(
-    # 			guardrail_agg.c.guardrail_type == "input"
-    # 		)
-    # 		.cte("input_guardrail_agg")
-    # 	)
-
-    # 	output_guardrail_agg = (
-    # 		session.query(guardrail_agg)
-    # 		.filter(
-    # 			guardrail_agg.c.guardrail_type == "output"
-    # 		)
-    # 		.cte("output_guardrail_agg")
-    # 	)
-
-    # 	event_cte = (
-    # 		session.query(
-    # 			self.GuardrailEventLog.id.label(
-    # 				"event_id"
-    # 			),
-
-    # 			self.get_bucket_expr().label(
-    # 				"bucket_start_timestamp"
-    # 			),
-
-    # 			self.Applications.app_name.label(
-    # 				"app_name"
-    # 			),
-
-    # 			self.GuardrailEventLog.user_id.label(
-    # 				"user_id"
-    # 			),
-
-    # 			func.coalesce(
-    # 				self.GuardrailEventLog.additional_info[
-    # 					"X-Agent-Id"
-    # 				].astext,
-    # 				None,
-    # 			).label(
-    # 				"agent_id"
-    # 			),
-
-    # 			self.GuardrailEventLog.llm_type.label(
-    # 				"llm_type"
-    # 			),
-
-    # 			self.GuardrailEventLog.created_on.label(
-    # 				"created_on"
-    # 			),
-
-    # 			self.GuardrailEventLog.duration.label(
-    # 				"duration"
-    # 			),
-
-    # 			case(
-    # 				(
-    # 					func.length(
-    # 						func.coalesce(
-    # 							self.GuardrailEventLog.blocked_by,
-    # 							"",
-    # 						)
-    # 					)
-    # 					> 0,
-    # 					"Block",
-    # 				),
-    # 				(
-    # 					(
-    # 						func.coalesce(
-    # 							input_guardrail_agg.c.warn_count,
-    # 							0,
-    # 						)
-    # 						+
-    # 						func.coalesce(
-    # 							output_guardrail_agg.c.warn_count,
-    # 							0,
-    # 						)
-    # 					)
-    # 					> 0,
-    # 					"Warn",
-    # 				),
-    # 				else_="Pass",
-    # 			).label(
-    # 				"outcome"
-    # 			),
-
-    # 			func.coalesce(
-    # 				self.LLMDetails.input_tokens,
-    # 				0,
-    # 			).label(
-    # 				"llm_input_tokens"
-    # 			),
-
-    # 			func.coalesce(
-    # 				self.LLMDetails.output_tokens,
-    # 				0,
-    # 			).label(
-    # 				"llm_output_tokens"
-    # 			),
-
-    # 			func.coalesce(
-    # 				self.LLMDetails.total_tokens,
-    # 				0,
-    # 			).label(
-    # 				"llm_total_tokens"
-    # 			),
-
-    # 			func.coalesce(
-    # 				input_guardrail_agg.c.guardrail_input_tokens,
-    # 				0,
-    # 			).label(
-    # 				"ig_input_tokens"
-    # 			),
-
-    # 			func.coalesce(
-    # 				input_guardrail_agg.c.guardrail_output_tokens,
-    # 				0,
-    # 			).label(
-    # 				"ig_output_tokens"
-    # 			),
-
-    # 			func.coalesce(
-    # 				input_guardrail_agg.c.guardrail_total_tokens,
-    # 				0,
-    # 			).label(
-    # 				"ig_total_tokens"
-    # 			),
-
-    # 			func.coalesce(
-    # 				output_guardrail_agg.c.guardrail_input_tokens,
-    # 				0,
-    # 			).label(
-    # 				"og_input_tokens"
-    # 			),
-
-    # 			func.coalesce(
-    # 				output_guardrail_agg.c.guardrail_output_tokens,
-    # 				0,
-    # 			).label(
-    # 				"og_output_tokens"
-    # 			),
-
-    # 			func.coalesce(
-    # 				output_guardrail_agg.c.guardrail_total_tokens,
-    # 				0,
-    # 			).label(
-    # 				"og_total_tokens"
-    # 			),
-    # 		)
-    # 		.join(
-    # 			self.Applications,
-    # 			self.GuardrailEventLog.app_id
-    # 			== self.Applications.app_id,
-    # 		)
-    # 		.outerjoin(
-    # 			self.LLMDetails,
-    # 			self.GuardrailEventLog.id
-    # 			== self.LLMDetails.event_id,
-    # 		)
-    # 		.outerjoin(
-    # 			input_guardrail_agg,
-    # 			self.GuardrailEventLog.id
-    # 			== input_guardrail_agg.c.event_id,
-    # 		)
-    # 		.outerjoin(
-    # 			output_guardrail_agg,
-    # 			self.GuardrailEventLog.id
-    # 			== output_guardrail_agg.c.event_id,
-    # 		)
-    # 		.filter(
-    # 			self.GuardrailEventLog.id >= start_event_id
-    # 		)
-    # 		.filter(
-    # 			self.GuardrailEventLog.id <= end_event_id
-    # 		)
-    # 		.cte("event_cte")
-    # 	)
-
-    # 	return event_cte
-    
     def get_workspace_agent_user_summary_rows(
         self,
         session,

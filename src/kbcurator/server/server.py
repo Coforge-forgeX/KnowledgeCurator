@@ -65,7 +65,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
         
         # Start worker scheduler job for trustai aggregation tables.
         start_scheduler()
-        logger.info("Start scheduler for trustai_analytics...")
+        logging.info("Start scheduler for trustai_analytics...")
         
         logging.debug("Initializing Redis cache...")
         CacheFactory.initialize()  # (optional, usually called automatically)

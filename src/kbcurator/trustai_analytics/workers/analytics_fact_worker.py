@@ -18,17 +18,17 @@ from trustai_analytics.model.db_model import (
 
 logger = logging.getLogger(__name__)
 
-WORKER_NAME = "ANALYTICS_AGGREGATION_WORKER"
+WORKER_NAME = "ANALYTICS_FACT_WORKER"
 
 BATCH_SIZE = 10000
 LAG_MINUTES = 2
 MAX_BATCHES_PER_RUN = 100
 
 
-def run_analytics_worker():
+def run_analytics_fact_worker():
 
     print("=" * 80)
-    print("ANALYTICS WORKER STARTED")
+    print("ANALYTICS FACT WORKER STARTED")
     print("=" * 80)
 
     worker_run_time = datetime.utcnow()
@@ -55,7 +55,7 @@ def run_analytics_worker():
 
         if not analytics_db.acquire_worker_lock(
             session,
-            "analytics_worker",
+            "fact_analytics_worker",
         ):
             logger.info(
                 "Worker lock already held. Exiting."
@@ -167,184 +167,6 @@ def run_analytics_worker():
                 ],
             )
 
-            #
-            # Workspace Agent User Summary
-            #
-
-            workspace_agent_user_rows = (
-                analytics_db.get_workspace_agent_user_summary_rows(
-                    session,
-                    stage_table,
-                )
-            )
-
-            analytics_db.bulk_aggregate_upsert(
-                session,
-                WorkspaceAgentUserSummary,
-                workspace_agent_user_rows,
-                [
-                    "app_name",
-                    "agent_id",
-                    "user_id",
-                    "bucket_start_timestamp",
-                ],
-            )
-
-            #
-            # Workspace Summary
-            #
-
-            workspace_rows = (
-                analytics_db.get_workspace_summary_rows(
-                    session,
-                    stage_table,
-                )
-            )
-
-            analytics_db.bulk_aggregate_upsert(
-                session,
-                WorkspaceSummary,
-                workspace_rows,
-                [
-                    "app_name",
-                    "bucket_start_timestamp",
-                ],
-            )
-
-            #
-            # Agent Summary
-            #
-
-            agent_rows = (
-                analytics_db.get_agent_summary_rows(
-                    session,
-                    stage_table,
-                )
-            )
-
-            analytics_db.bulk_aggregate_upsert(
-                session,
-                AgentSummary,
-                agent_rows,
-                [
-                    "app_name",
-                    "agent_id",
-                    "bucket_start_timestamp",
-                ],
-            )
-
-            #
-            # User Summary
-            #
-
-            user_rows = (
-                analytics_db.get_user_summary_rows(
-                    session,
-                    stage_table,
-                )
-            )
-
-            analytics_db.bulk_aggregate_upsert(
-                session,
-                UserSummary,
-                user_rows,
-                [
-                    "app_name",
-                    "user_id",
-                    "bucket_start_timestamp",
-                ],
-            )
-
-            #
-            # Block Warn Pass Summary
-            #
-
-            block_warn_pass_rows = (
-                analytics_db.get_block_warn_pass_rows(
-                    session,
-                    stage_table,
-                )
-            )
-
-            analytics_db.bulk_aggregate_upsert(
-                session,
-                BlockWarnPassSummary,
-                block_warn_pass_rows,
-                [
-                    "app_name",
-                    "agent_id",
-                    "user_id",
-                    "bucket_start_timestamp",
-                ],
-            )
-
-            #
-            # User Activity Summary
-            #
-
-            user_activity_rows = (
-                analytics_db.get_user_activity_rows(
-                    session,
-                    stage_table,
-                )
-            )
-
-            analytics_db.bulk_upsert(
-                session,
-                UserActivitySummary,
-                user_activity_rows,
-                [
-                    "app_name",
-                    "user_id",
-                    "bucket_start_timestamp",
-                ],
-            )
-
-            #
-            # Agent Activity Summary
-            #
-
-            agent_activity_rows = (
-                analytics_db.get_agent_activity_rows(
-                    session,
-                    stage_table,
-                )
-            )
-
-            analytics_db.bulk_upsert(
-                session,
-                AgentActivitySummary,
-                agent_activity_rows,
-                [
-                    "app_name",
-                    "agent_id",
-                    "bucket_start_timestamp",
-                ],
-            )
-
-            #
-            # Model Token Summary
-            #
-
-            model_token_rows = (
-                analytics_db.get_model_token_summary_rows(
-                    session,
-                    stage_table,
-                )
-            )
-
-            analytics_db.bulk_aggregate_upsert(
-                session,
-                ModelTokenSummary,
-                model_token_rows,
-                [
-                    "app_name",
-                    "user_id",
-                    "agent_id",
-                    "llm_type",
-                    "bucket_start_timestamp",
-                ],
-            )
 
             #
             # Guardrail Outcome Summary

@@ -276,6 +276,120 @@ class UserSummary(Base):
             name="uq_user_summary"
         ),
     )
+    
+class AnalyticsEventFact(Base):
+    __tablename__ = "analytics_event_fact"
+
+    event_id = Column(
+        BigInteger,
+        primary_key=True,
+    )
+
+    bucket_start_timestamp = Column(
+        DateTime,
+        nullable=False,
+        index=True,
+    )
+
+    created_on = Column(
+        DateTime,
+        nullable=False,
+        index=True,
+    )
+
+    app_name = Column(
+        String(255),
+        nullable=False,
+        index=True,
+    )
+
+    user_id = Column(
+        String(255),
+        nullable=True,
+        index=True,
+    )
+
+    agent_id = Column(
+        String(255),
+        nullable=True,
+        index=True,
+    )
+
+    llm_type = Column(
+        String(255),
+        nullable=True,
+        index=True,
+    )
+
+    duration = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    outcome = Column(
+        String(20),
+        nullable=False,
+        index=True,
+    )
+
+    llm_input_tokens = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    llm_output_tokens = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    llm_total_tokens = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    ig_input_tokens = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    ig_output_tokens = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    ig_total_tokens = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    og_input_tokens = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    og_output_tokens = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    og_total_tokens = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+    
+    # __table_args__ = (
+        
+    # )
 
 
 class BlockWarnPassSummary(Base):
