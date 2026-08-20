@@ -1,5 +1,5 @@
-from datetime import datetime
-import time
+from datetime import datetime, timedelta
+import logging
 
 from trustai_analytics.trustai_db import analytics_db
 
@@ -12,41 +12,39 @@ from trustai_analytics.model.db_model import (
     AgentActivitySummary,
     ModelTokenSummary,
     GuardrailOutcomeSummary,
+    WorkspaceAgentUserSummary,
 )
 
-import logging
-from datetime import datetime
-logging.basicConfig(
-    level=logging.INFO,
-    format=(
-        "%(asctime)s | %(levelname)s | "
-        "%(name)s | %(message)s"
-    ),
-)
 logger = logging.getLogger(__name__)
 
 WORKER_NAME = "ANALYTICS_AGGREGATION_WORKER"
 
 BATCH_SIZE = 10000
+LAG_MINUTES = 2
+MAX_BATCHES_PER_RUN = 100
 
 
 def run_analytics_worker():
-    
+
     print("=" * 80)
     print("ANALYTICS WORKER STARTED")
     print("=" * 80)
 
-    run_started_at = datetime.utcnow()
+    worker_run_time = datetime.utcnow()
+
+    processing_cutoff = (
+        worker_run_time
+        - timedelta(minutes=LAG_MINUTES)
+    )
 
     logger.info(
-        "Analytics worker started. worker=%s",
+        "Analytics worker started. "
+        "worker=%s cutoff=%s",
         WORKER_NAME,
+        processing_cutoff,
     )
 
     session = analytics_db.Session()
-
-    checkpoint = 0
-    end_event_id = 0
 
     try:
 
@@ -69,346 +67,358 @@ def run_analytics_worker():
 
         analytics_db.create_worker_state_if_missing(
             session,
-            WORKER_NAME
+            WORKER_NAME,
         )
 
-        checkpoint = analytics_db.get_checkpoint(
-            session,
-            WORKER_NAME
-        )
+        batch_number = 0
 
-        max_event_id = (
-            analytics_db.get_current_max_event_id()
-        )
+        while True:
 
-        logger.info(
-            "Checkpoint=%s MaxEventId=%s",
-            checkpoint,
-            max_event_id,
-        )
+            if batch_number >= MAX_BATCHES_PER_RUN:
 
-        if max_event_id <= checkpoint:
+                logger.warning(
+                    "Maximum batches reached. "
+                    "batch_count=%s",
+                    batch_number,
+                )
+
+                break
+
+            checkpoint = (
+                analytics_db.get_checkpoint(
+                    session,
+                    WORKER_NAME,
+                )
+            )
+
+            max_event_id = (
+                analytics_db.get_max_processible_event_id(
+                    session,
+                    processing_cutoff,
+                )
+            )
+
             logger.info(
-                "No new events to process."
+                "Checkpoint=%s MaxEventId=%s",
+                checkpoint,
+                max_event_id,
             )
-            return
 
-        start_event_id = checkpoint + 1
+            if max_event_id <= checkpoint:
 
-        end_event_id = min(
-            checkpoint + BATCH_SIZE,
-            max_event_id,
-        )
+                logger.info(
+                    "No more events to process."
+                )
 
-        logger.info(
-            "Processing event range [%s - %s]",
-            start_event_id,
-            end_event_id,
-        )
+                break
 
-        backlog_before = (
-            max_event_id - checkpoint
-        )
+            run_started_at = datetime.utcnow()
 
-        logger.info(
-            "Creating analytics staging table."
-        )
+            start_event_id = checkpoint + 1
 
-        stage_table = (
-            analytics_db.create_event_stage_table(
-                session,
+            end_event_id = min(
+                checkpoint + BATCH_SIZE,
+                max_event_id,
+            )
+
+            backlog_before = (
+                max_event_id - checkpoint
+            )
+
+            logger.info(
+                "Processing batch=%s range=[%s-%s]",
+                batch_number + 1,
                 start_event_id,
                 end_event_id,
             )
-        )
 
-        logger.info(
-            "Stage table created successfully."
-        )
+            #
+            # Create Stage Table
+            #
 
-        #
-        # Workspace Summary
-        #
-
-        workspace_rows = (
-            analytics_db.get_workspace_summary_rows(
-                session,
-                stage_table,
+            stage_table = (
+                analytics_db.create_event_stage_table(
+                    session,
+                    start_event_id,
+                    end_event_id,
+                )
             )
-        )
 
-        logger.info(
-            "WorkspaceSummary rows=%s",
-            len(workspace_rows),
-        )
+            #
+            # Workspace Agent User Summary
+            #
 
-        analytics_db.bulk_aggregate_upsert(
-            session,
-            WorkspaceSummary,
-            workspace_rows,
-            [
-                "app_name",
-                "bucket_start_timestamp",
-            ],
-        )
-
-        #
-        # Agent Summary
-        #
-
-        agent_rows = (
-            analytics_db.get_agent_summary_rows(
-                session,
-                stage_table,
+            workspace_agent_user_rows = (
+                analytics_db.get_workspace_agent_user_summary_rows(
+                    session,
+                    stage_table,
+                )
             )
-        )
 
-        logger.info(
-            "AgentSummary rows=%s",
-            len(agent_rows),
-        )
-
-        analytics_db.bulk_aggregate_upsert(
-            session,
-            AgentSummary,
-            agent_rows,
-            [
-                "app_name",
-                "agent_id",
-                "bucket_start_timestamp",
-            ],
-        )
-
-        #
-        # User Summary
-        #
-
-        user_rows = (
-            analytics_db.get_user_summary_rows(
+            analytics_db.bulk_aggregate_upsert(
                 session,
-                stage_table,
+                WorkspaceAgentUserSummary,
+                workspace_agent_user_rows,
+                [
+                    "app_name",
+                    "agent_id",
+                    "user_id",
+                    "bucket_start_timestamp",
+                ],
             )
-        )
 
-        logger.info(
-            "UserSummary rows=%s",
-            len(user_rows),
-        )
+            #
+            # Workspace Summary
+            #
 
-        analytics_db.bulk_aggregate_upsert(
-            session,
-            UserSummary,
-            user_rows,
-            [
-                "app_name",
-                "user_id",
-                "bucket_start_timestamp",
-            ],
-        )
+            workspace_rows = (
+                analytics_db.get_workspace_summary_rows(
+                    session,
+                    stage_table,
+                )
+            )
 
-        #
-        # BlockWarnPass Summary
-        #
-
-        block_warn_pass_rows = (
-            analytics_db.get_block_warn_pass_rows(
+            analytics_db.bulk_aggregate_upsert(
                 session,
-                stage_table,
+                WorkspaceSummary,
+                workspace_rows,
+                [
+                    "app_name",
+                    "bucket_start_timestamp",
+                ],
             )
-        )
 
-        logger.info(
-            "BlockWarnPassSummary rows=%s",
-            len(block_warn_pass_rows),
-        )
+            #
+            # Agent Summary
+            #
 
-        analytics_db.bulk_aggregate_upsert(
-            session,
-            BlockWarnPassSummary,
-            block_warn_pass_rows,
-            [
-                "app_name",
-                "agent_id",
-                "user_id",
-                "bucket_start_timestamp",
-            ],
-        )
+            agent_rows = (
+                analytics_db.get_agent_summary_rows(
+                    session,
+                    stage_table,
+                )
+            )
 
-        #
-        # User Activity
-        #
-
-        user_activity_rows = (
-            analytics_db.get_user_activity_rows(
+            analytics_db.bulk_aggregate_upsert(
                 session,
-                stage_table,
+                AgentSummary,
+                agent_rows,
+                [
+                    "app_name",
+                    "agent_id",
+                    "bucket_start_timestamp",
+                ],
             )
-        )
 
-        logger.info(
-            "UserActivitySummary rows=%s",
-            len(user_activity_rows),
-        )
+            #
+            # User Summary
+            #
 
-        analytics_db.bulk_upsert(
-            session,
-            UserActivitySummary,
-            user_activity_rows,
-            [
-                "app_name",
-                "user_id",
-                "bucket_start_timestamp",
-            ],
-        )
+            user_rows = (
+                analytics_db.get_user_summary_rows(
+                    session,
+                    stage_table,
+                )
+            )
 
-        #
-        # Agent Activity
-        #
-
-        agent_activity_rows = (
-            analytics_db.get_agent_activity_rows(
+            analytics_db.bulk_aggregate_upsert(
                 session,
-                stage_table,
+                UserSummary,
+                user_rows,
+                [
+                    "app_name",
+                    "user_id",
+                    "bucket_start_timestamp",
+                ],
             )
-        )
 
-        logger.info(
-            "AgentActivitySummary rows=%s",
-            len(agent_activity_rows),
-        )
+            #
+            # Block Warn Pass Summary
+            #
 
-        analytics_db.bulk_upsert(
-            session,
-            AgentActivitySummary,
-            agent_activity_rows,
-            [
-                "app_name",
-                "agent_id",
-                "bucket_start_timestamp",
-            ],
-        )
+            block_warn_pass_rows = (
+                analytics_db.get_block_warn_pass_rows(
+                    session,
+                    stage_table,
+                )
+            )
 
-        #
-        # Model Token Summary
-        #
-
-        model_token_rows = (
-            analytics_db.get_model_token_summary_rows(
+            analytics_db.bulk_aggregate_upsert(
                 session,
-                stage_table,
+                BlockWarnPassSummary,
+                block_warn_pass_rows,
+                [
+                    "app_name",
+                    "agent_id",
+                    "user_id",
+                    "bucket_start_timestamp",
+                ],
             )
-        )
 
-        logger.info(
-            "ModelTokenSummary rows=%s",
-            len(model_token_rows),
-        )
+            #
+            # User Activity Summary
+            #
 
-        analytics_db.bulk_aggregate_upsert(
-            session,
-            ModelTokenSummary,
-            model_token_rows,
-            [
-                "app_name",
-                "user_id",
-                "agent_id",
-                "llm_type",
-                "bucket_start_timestamp",
-            ],
-        )
+            user_activity_rows = (
+                analytics_db.get_user_activity_rows(
+                    session,
+                    stage_table,
+                )
+            )
 
-        #
-        # Guardrail Outcome Summary
-        #
-
-        guardrail_rows = (
-            analytics_db.get_guardrail_outcome_summary_rows(
+            analytics_db.bulk_upsert(
                 session,
-                start_event_id,
-                end_event_id,
+                UserActivitySummary,
+                user_activity_rows,
+                [
+                    "app_name",
+                    "user_id",
+                    "bucket_start_timestamp",
+                ],
             )
-        )
+
+            #
+            # Agent Activity Summary
+            #
+
+            agent_activity_rows = (
+                analytics_db.get_agent_activity_rows(
+                    session,
+                    stage_table,
+                )
+            )
+
+            analytics_db.bulk_upsert(
+                session,
+                AgentActivitySummary,
+                agent_activity_rows,
+                [
+                    "app_name",
+                    "agent_id",
+                    "bucket_start_timestamp",
+                ],
+            )
+
+            #
+            # Model Token Summary
+            #
+
+            model_token_rows = (
+                analytics_db.get_model_token_summary_rows(
+                    session,
+                    stage_table,
+                )
+            )
+
+            analytics_db.bulk_aggregate_upsert(
+                session,
+                ModelTokenSummary,
+                model_token_rows,
+                [
+                    "app_name",
+                    "user_id",
+                    "agent_id",
+                    "llm_type",
+                    "bucket_start_timestamp",
+                ],
+            )
+
+            #
+            # Guardrail Outcome Summary
+            #
+
+            guardrail_rows = (
+                analytics_db.get_guardrail_outcome_summary_rows(
+                    session,
+                    start_event_id,
+                    end_event_id,
+                )
+            )
+
+            analytics_db.bulk_aggregate_upsert(
+                session,
+                GuardrailOutcomeSummary,
+                guardrail_rows,
+                [
+                    "app_name",
+                    "user_id",
+                    "agent_id",
+                    "eval_name",
+                    "bucket_start_timestamp",
+                ],
+            )
+
+            run_completed_at = datetime.utcnow()
+
+            run_duration_ms = int(
+                (
+                    run_completed_at
+                    - run_started_at
+                ).total_seconds()
+                * 1000
+            )
+
+            rows_processed = (
+                end_event_id
+                - start_event_id
+                + 1
+            )
+
+            backlog_after = max(
+                0,
+                max_event_id
+                - end_event_id,
+            )
+
+            analytics_db.update_worker_checkpoint(
+                session=session,
+                worker_name=WORKER_NAME,
+                last_processed_event_id=end_event_id,
+                last_processed_timestamp=run_completed_at,
+                rows_processed=rows_processed,
+                backlog_items=backlog_after,
+                last_run_duration_ms=run_duration_ms,
+                status="SUCCESS",
+                error_message=None,
+            )
+
+            analytics_db.insert_worker_execution_history(
+                session=session,
+                worker_name=WORKER_NAME,
+                run_started_at=run_started_at,
+                run_completed_at=run_completed_at,
+                start_checkpoint=checkpoint,
+                end_checkpoint=end_event_id,
+                rows_processed=rows_processed,
+                backlog_before=backlog_before,
+                backlog_after=backlog_after,
+                run_duration_ms=run_duration_ms,
+                status="SUCCESS",
+                error_message=None,
+            )
+
+            session.commit()
+
+            logger.info(
+                "Batch committed. "
+                "batch=%s rows=%s backlog_after=%s",
+                batch_number + 1,
+                rows_processed,
+                backlog_after,
+            )
+
+            batch_number += 1
+
+            if end_event_id >= max_event_id:
+
+                logger.info(
+                    "Reached watermark cutoff."
+                )
+
+                break
 
         logger.info(
-            "GuardrailOutcomeSummary rows=%s",
-            len(guardrail_rows),
-        )
-
-        analytics_db.bulk_aggregate_upsert(
-            session,
-            GuardrailOutcomeSummary,
-            guardrail_rows,
-            [
-                "app_name",
-                "user_id",
-                "agent_id",
-                "eval_name",
-                "bucket_start_timestamp",
-            ],
-        )
-
-        run_completed_at = datetime.utcnow()
-
-        run_duration_ms = int(
-            (
-                run_completed_at -
-                run_started_at
-            ).total_seconds() * 1000
-        )
-
-        rows_processed = (
-            end_event_id - checkpoint
-        )
-
-        backlog_after = max(
-            0,
-            max_event_id - end_event_id,
-        )
-
-        logger.info(
-            "Updating worker checkpoint. "
-            "rows_processed=%s backlog_after=%s",
-            rows_processed,
-            backlog_after,
-        )
-
-        analytics_db.update_worker_checkpoint(
-            session=session,
-            worker_name=WORKER_NAME,
-            last_processed_event_id=end_event_id,
-            last_processed_timestamp=run_completed_at,
-            rows_processed=rows_processed,
-            backlog_items=backlog_after,
-            last_run_duration_ms=run_duration_ms,
-            status="SUCCESS",
-            error_message=None,
-        )
-
-        analytics_db.insert_worker_execution_history(
-            session=session,
-            worker_name=WORKER_NAME,
-            run_started_at=run_started_at,
-            run_completed_at=run_completed_at,
-            start_checkpoint=checkpoint,
-            end_checkpoint=end_event_id,
-            rows_processed=rows_processed,
-            backlog_before=backlog_before,
-            backlog_after=backlog_after,
-            run_duration_ms=run_duration_ms,
-            status="SUCCESS",
-            error_message=None,
-        )
-
-        logger.info(
-            "Committing transaction."
-        )
-
-        session.commit()
-
-        logger.info(
-            "Analytics worker completed successfully. "
-            "Duration=%sms",
-            run_duration_ms,
+            "Analytics worker completed successfully."
         )
 
     except Exception:
@@ -424,6 +434,7 @@ def run_analytics_worker():
     finally:
 
         try:
+
             analytics_db.release_worker_lock(
                 session,
                 "analytics_worker",
@@ -434,6 +445,7 @@ def run_analytics_worker():
             )
 
         except Exception:
+
             logger.exception(
                 "Failed to release worker lock."
             )

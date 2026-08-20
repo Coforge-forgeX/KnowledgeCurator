@@ -12,6 +12,86 @@ from sqlalchemy.sql import func
 
 Base = declarative_base()
 
+class WorkspaceAgentUserSummary(Base):
+    __tablename__ = "workspace_agent_user_summary"
+
+    id = Column(BigInteger, primary_key=True)
+
+    app_name = Column(String(255), nullable=False)
+
+    agent_id = Column(String(255), nullable=True)
+
+    user_id = Column(String(255), nullable=False)
+
+    bucket_start_timestamp = Column(
+        DateTime,
+        nullable=False,
+    )
+
+    request_count = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    pass_count = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    warn_count = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    block_count = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    llm_input_tokens = Column(BigInteger, nullable=False, default=0)
+    llm_output_tokens = Column(BigInteger, nullable=False, default=0)
+    llm_total_tokens = Column(BigInteger, nullable=False, default=0)
+
+    ig_input_tokens = Column(BigInteger, nullable=False, default=0)
+    ig_output_tokens = Column(BigInteger, nullable=False, default=0)
+    ig_total_tokens = Column(BigInteger, nullable=False, default=0)
+
+    og_input_tokens = Column(BigInteger, nullable=False, default=0)
+    og_output_tokens = Column(BigInteger, nullable=False, default=0)
+    og_total_tokens = Column(BigInteger, nullable=False, default=0)
+
+    total_response_time_ms = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    min_response_time_ms = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    max_response_time_ms = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "app_name",
+            "agent_id",
+            "user_id",
+            "bucket_start_timestamp",
+            name="uq_ws_agent_user_bucket",
+        ),
+    )
+
 class WorkspaceSummary(Base):
     __tablename__ = "workspace_summary"
 

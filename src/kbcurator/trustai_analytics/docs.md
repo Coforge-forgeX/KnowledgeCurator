@@ -1335,3 +1335,18 @@ Let's create end to end solution.
 -- ORDER BY id DESC
 -- limit 1000;
 
+# SQL TO DROP ALL THE ABOVE TABLES
+
+-- DROP TABLE IF EXISTS
+--     workspace_agent_user_summary,
+--     workspace_summary,
+--     agent_summary,
+--     user_summary,
+--     block_warn_pass_summary,
+--     guardrail_outcome_summary,
+--     user_activity_summary,
+--     agent_activity_summary,
+--     model_token_summary,
+--     analytics_worker_state,
+--     analytics_worker_execution_history
+-- CASCADE;

@@ -4,6 +4,53 @@ from pydantic import BaseModel, ConfigDict
 
 class ORMBaseSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict
+
+
+class WorkspaceAgentUserSummarySchema(ORMBaseSchema):
+
+    model_config = ConfigDict(
+        from_attributes=True
+    )
+
+    id: int | None = None
+
+    app_name: str
+
+    agent_id: str | None = None
+
+    user_id: str
+
+    bucket_start_timestamp: datetime
+
+    request_count: int
+
+    pass_count: int
+
+    warn_count: int
+
+    block_count: int
+
+    llm_input_tokens: int
+    llm_output_tokens: int
+    llm_total_tokens: int
+
+    ig_input_tokens: int
+    ig_output_tokens: int
+    ig_total_tokens: int
+
+    og_input_tokens: int
+    og_output_tokens: int
+    og_total_tokens: int
+
+    total_response_time_ms: int
+
+    min_response_time_ms: int
+
+    max_response_time_ms: int
 
 class WorkspaceSummarySchema(ORMBaseSchema):
     app_name: str

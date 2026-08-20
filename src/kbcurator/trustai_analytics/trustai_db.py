@@ -302,6 +302,25 @@ class TrustaiAnalyticsDB:
         state.status = status
 
         state.error_message = error_message
+        
+    def get_max_processible_event_id(
+        self,
+        session,
+        processing_cutoff: datetime,
+    ):
+        return (
+            session.query(
+                func.max(
+                    self.GuardrailEventLog.id
+                )
+            )
+            .filter(
+                self.GuardrailEventLog.created_on
+                <= processing_cutoff
+            )
+            .scalar()
+            or 0
+        )
             
     def get_current_max_event_id(self) -> int:
 
@@ -1080,6 +1099,145 @@ class TrustaiAnalyticsDB:
     # 	)
 
     # 	return event_cte
+    
+    def get_workspace_agent_user_summary_rows(
+        self,
+        session,
+        stage_table,
+    ):
+        query = (
+            session.query(
+                stage_table.c.app_name,
+
+                stage_table.c.agent_id,
+
+                stage_table.c.user_id,
+
+                stage_table.c.bucket_start_timestamp,
+
+                func.count().label(
+                    "request_count"
+                ),
+
+                func.sum(
+                    case(
+                        (
+                            stage_table.c.outcome == "Pass",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label(
+                    "pass_count"
+                ),
+
+                func.sum(
+                    case(
+                        (
+                            stage_table.c.outcome == "Warn",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label(
+                    "warn_count"
+                ),
+
+                func.sum(
+                    case(
+                        (
+                            stage_table.c.outcome == "Block",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label(
+                    "block_count"
+                ),
+
+                func.sum(
+                    stage_table.c.llm_input_tokens
+                ).label(
+                    "llm_input_tokens"
+                ),
+
+                func.sum(
+                    stage_table.c.llm_output_tokens
+                ).label(
+                    "llm_output_tokens"
+                ),
+
+                func.sum(
+                    stage_table.c.llm_total_tokens
+                ).label(
+                    "llm_total_tokens"
+                ),
+
+                func.sum(
+                    stage_table.c.ig_input_tokens
+                ).label(
+                    "ig_input_tokens"
+                ),
+
+                func.sum(
+                    stage_table.c.ig_output_tokens
+                ).label(
+                    "ig_output_tokens"
+                ),
+
+                func.sum(
+                    stage_table.c.ig_total_tokens
+                ).label(
+                    "ig_total_tokens"
+                ),
+
+                func.sum(
+                    stage_table.c.og_input_tokens
+                ).label(
+                    "og_input_tokens"
+                ),
+
+                func.sum(
+                    stage_table.c.og_output_tokens
+                ).label(
+                    "og_output_tokens"
+                ),
+
+                func.sum(
+                    stage_table.c.og_total_tokens
+                ).label(
+                    "og_total_tokens"
+                ),
+
+                func.sum(
+                    stage_table.c.duration
+                ).label(
+                    "total_response_time_ms"
+                ),
+
+                func.min(
+                    stage_table.c.duration
+                ).label(
+                    "min_response_time_ms"
+                ),
+
+                func.max(
+                    stage_table.c.duration
+                ).label(
+                    "max_response_time_ms"
+                ),
+            )
+            .group_by(
+                stage_table.c.app_name,
+                stage_table.c.agent_id,
+                stage_table.c.user_id,
+                stage_table.c.bucket_start_timestamp,
+            )
+        )
+
+        return self.rows_to_dict(
+            query.all()
+        )
 
     def get_workspace_summary_rows(
         self,
