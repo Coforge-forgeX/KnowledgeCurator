@@ -277,6 +277,8 @@ class UserSummary(Base):
         ),
     )
     
+
+    
 class AnalyticsEventFact(Base):
     __tablename__ = "analytics_event_fact"
 
@@ -489,6 +491,88 @@ class GuardrailOutcomeSummary(Base):
             name="uq_guardrail_outcome_summary"
         ),
     )
+    
+
+class GuardrailOutcomeFact(Base):
+    __tablename__ = "guardrail_outcome_fact"
+
+    id = Column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    source_event_id = Column(
+        BigInteger,
+        nullable=False,
+    )
+
+    app_name = Column(
+        String(255),
+        nullable=False,
+        index=True,
+    )
+
+    user_id = Column(
+        String(512),
+        nullable=False,
+        index=True,
+    )
+
+    agent_id = Column(
+        String(255),
+        nullable=False,
+        index=True,
+    )
+
+    eval_name = Column(
+        String(255),
+        nullable=False,
+        index=True,
+    )
+
+    outcome = Column(
+        String(20),
+        nullable=False,
+        index=True,
+    )  # Warn | Block
+
+    created_on = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_event_id",
+            "eval_name",
+            name="uq_guardrail_outcome_fact",
+        ),
+    )
+
+    # __table_args__ = (
+    #     Index(
+    #         "idx_gof_eval_created",
+    #         "eval_name",
+    #         "created_on"
+    #     ),
+    #     Index(
+    #         "idx_gof_app_created",
+    #         "app_name",
+    #         "created_on"
+    #     ),
+    #     Index(
+    #         "idx_gof_agent_created",
+    #         "agent_id",
+    #         "created_on"
+    #     ),
+    #     Index(
+    #         "idx_gof_user_created",
+    #         "user_id",
+    #         "created_on"
+    #     ),
+    # )
     
 
 class UserActivitySummary(Base):

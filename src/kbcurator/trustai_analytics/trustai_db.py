@@ -33,6 +33,7 @@ from .model.db_model import (
     AgentActivitySummary,
     ModelTokenSummary,
     GuardrailOutcomeSummary,
+    GuardrailOutcomeFact
 )
 
 WORKER_LOCKS = {
@@ -119,7 +120,7 @@ class TrustaiAnalyticsDB:
             bind=self.engine,
             tables=[
                 AnalyticsEventFact.__table__,
-                GuardrailOutcomeSummary.__table__,
+                GuardrailOutcomeFact.__table__,
                 AnalyticsWorkerState.__table__,
                 AnalyticsWorkerExecutionHistory.__table__,
             ],
@@ -1748,6 +1749,95 @@ class TrustaiAnalyticsDB:
         result = query.all()
 
         return self.rows_to_dict(result)
+    
+    def get_guardrail_outcome_rows(
+        self,
+        session,
+        start_event_id: int,
+        end_event_id: int,
+    ):
+        agent_id_expr = (
+            self.GuardrailEventLog.additional_info[
+                "X-Agent-Id"
+            ].astext
+        )
+
+        outcome_case = case(
+            (
+                self.GuardrailEventResultLog.results[
+                    "detail"
+                ]["outcome"].astext.in_(
+                    ["Fail", "Error"]
+                ),
+                "Block",
+            ),
+            (
+                self.GuardrailEventResultLog.results[
+                    "detail"
+                ]["outcome"].astext
+                == "Warning",
+                "Warn",
+            ),
+            else_=None,
+        )
+
+        query = (
+            session.query(
+                self.GuardrailEventLog.id.label(
+                    "source_event_id"
+                ),
+                
+                self.Applications.app_name.label(
+                    "app_name"
+                ),
+
+                self.GuardrailEventLog.user_id.label(
+                    "user_id"
+                ),
+
+                agent_id_expr.label(
+                    "agent_id"
+                ),
+
+                self.GuardrailEventResultLog.eval_name.label(
+                    "eval_name"
+                ),
+
+                self.GuardrailEventLog.created_on.label(
+                    "created_on"
+                ),
+
+                outcome_case.label(
+                    "outcome"
+                ),
+            )
+            .join(
+                self.GuardrailEventLog,
+                self.GuardrailEventResultLog.event_id
+                == self.GuardrailEventLog.id,
+            )
+            .join(
+                self.Applications,
+                self.GuardrailEventLog.app_id
+                == self.Applications.app_id,
+            )
+            .filter(
+                self.GuardrailEventLog.id >= start_event_id
+            )
+            .filter(
+                self.GuardrailEventLog.id <= end_event_id
+            )
+            .filter(
+                outcome_case.isnot(None)
+            )
+            .filter(
+                agent_id_expr.isnot(None)
+            )
+        )
+
+        return self.rows_to_dict(
+            query.all()
+        )
    
 
 analytics_db = TrustaiAnalyticsDB()

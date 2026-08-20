@@ -4,15 +4,7 @@ import logging
 from trustai_analytics.trustai_db import analytics_db
 
 from trustai_analytics.model.db_model import (
-    WorkspaceSummary,
-    AgentSummary,
-    UserSummary,
-    BlockWarnPassSummary,
-    UserActivitySummary,
-    AgentActivitySummary,
-    ModelTokenSummary,
-    GuardrailOutcomeSummary,
-    WorkspaceAgentUserSummary,
+    GuardrailOutcomeFact,
     AnalyticsEventFact
 )
 
@@ -173,23 +165,20 @@ def run_analytics_fact_worker():
             #
 
             guardrail_rows = (
-                analytics_db.get_guardrail_outcome_summary_rows(
+                analytics_db.get_guardrail_outcome_rows(
                     session,
                     start_event_id,
                     end_event_id,
                 )
             )
 
-            analytics_db.bulk_aggregate_upsert(
+            analytics_db.bulk_upsert(
                 session,
-                GuardrailOutcomeSummary,
+                GuardrailOutcomeFact,
                 guardrail_rows,
                 [
-                    "app_name",
-                    "user_id",
-                    "agent_id",
+                    "source_event_id",
                     "eval_name",
-                    "bucket_start_timestamp",
                 ],
             )
 
