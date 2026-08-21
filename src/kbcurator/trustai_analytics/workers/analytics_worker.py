@@ -1,9 +1,9 @@
 from datetime import datetime, timedelta
 import logging
 
-from trustai_analytics.trustai_db import analytics_db
+from kbcurator.trustai_analytics.trustai_db import analytics_db
 
-from trustai_analytics.model.db_model import (
+from kbcurator.trustai_analytics.model.db_model import (
     WorkspaceSummary,
     AgentSummary,
     UserSummary,

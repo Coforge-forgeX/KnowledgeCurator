@@ -39,12 +39,12 @@ from fastmcp.tools.tool import ToolResult
 from cachetools import TTLCache
 from cachetools import cached
 
-from trustai_analytics.model.db_model import (
+from kbcurator.trustai_analytics.model.db_model import (
     AnalyticsEventFact,
     GuardrailOutcomeFact,
 )
 
-from trustai_analytics.trustai_db import (
+from kbcurator.trustai_analytics.trustai_db import (
     analytics_db,
 )
 
