@@ -1,7 +1,7 @@
 # scheduler.py
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from trustai_analytics.workers.analytics_fact_worker import run_analytics_fact_worker
+from kbcurator.trustai_analytics.workers.analytics_fact_worker import run_analytics_fact_worker
 from datetime import datetime
 
 scheduler = BackgroundScheduler()
