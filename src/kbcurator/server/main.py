@@ -904,8 +904,6 @@ class CookieWrapperApp:
 
 # Wrap the MCP app with the cookie layer
 http_app = CookieWrapperApp(base_app)
-from .cors import wrap_with_dev_cors
-http_app = wrap_with_dev_cors(http_app)
 
 # ---------------------------
 # Server startup
