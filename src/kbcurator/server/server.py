@@ -91,7 +91,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
         logging.info("  ✅ Trust AI Database & integration initialized")
         
         if os.getenv("USE_TRUSTAI","false") == "true":
-            Sync existing workspaces with TrustAI (backward compatibility)
+            # Sync existing workspaces with TrustAI (backward compatibility)
             try:
                 from kbcurator.tools.user_management_system import sync_trustai_workspaces
                 await sync_trustai_workspaces()
