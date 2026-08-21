@@ -29,6 +29,9 @@ from kbcurator.utils.access_validation import (
 from kbcurator.utils.request_context import request_var
 from common_adapters.trustai.exceptions import GuardrailBlockedException
 
+# Basic input validation (empty / symbol-only prompts)
+from common_adapters.input_validation import is_valid_user_prompt
+
 # Cancellation support (used by UI Stop button via `cancel_conversation` MCP tool)
 from common_adapters.cancel_convesation import (
     CancelledError,
@@ -1248,6 +1251,10 @@ async def message_gpt(
     user_id = int(user_id)
     role_id = int(role_id)
     agent_id = int(agent_id)
+
+    # Block empty / symbol-only prompts early (do not call LLM)
+    if not is_valid_user_prompt(user_message):
+        return {"error": "Invalid input. Please enter a valid message."}
 
     try:
         token = get_http_headers(include_all=True).get('authorization',"") or get_http_headers().get('Authorization',"")
