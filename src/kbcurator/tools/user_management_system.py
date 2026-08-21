@@ -1795,7 +1795,7 @@ async def update_workspace(payload):
                 # Don't fail workspace update if LLM config fails, just log it
 
         # Sync TrustAI tables if workspace has TrustAI integration
-        if if os.getenv("USE_TRUSTAI","false") == "true" and agent_ids is not None and server.trustai_workspace_integration and server.trustai_db_manager:
+        if os.getenv("USE_TRUSTAI","false") == "true" and agent_ids is not None and server.trustai_workspace_integration and server.trustai_db_manager:
             try:
                 # Check if workspace has TrustAI configuration
                 trustai_config = server.trustai_db_manager.get_workspace_config(str(workspace_id))
