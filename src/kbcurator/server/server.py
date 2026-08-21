@@ -6,7 +6,27 @@ import logging
 import os
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
-load_dotenv()
+
+
+def _load_env_robust() -> None:
+    """Load environment variables robustly for local + deployed runs.
+
+    This module can be imported from different working directories.
+    Prefer KnowledgeCurator/.env when present.
+    """
+    candidates = []
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.abspath(os.path.join(here, "../../../.env")))  # KnowledgeCurator/.env
+    candidates.append(os.path.abspath(os.path.join(os.getcwd(), ".env")))
+    candidates.append(os.path.abspath(os.path.join(os.getcwd(), "../.env")))
+    for path in candidates:
+        if os.path.exists(path):
+            load_dotenv(path, override=True)
+            return
+    load_dotenv(override=True)
+
+
+_load_env_robust()
 from common_adapters.langfuse_instrumentation import flush as langfuse_flush
 from common_adapters.sharepoint import SharePointClientManagerAsync
 from common_adapters.cache import CacheFactory
