@@ -1050,7 +1050,7 @@ def get_workspace_metrics(
                 }
             )
 
-        return metrics
+        return {"metrics": metrics}
 
     finally:
 
@@ -1324,7 +1324,7 @@ def get_agent_metrics(
                 }
             )
 
-        return metrics
+        return {"metrics":metrics}
 
     finally:
         ctx["trustai_session"].close()
@@ -1618,7 +1618,7 @@ def get_user_metrics(
                 }
             )
 
-        return metrics
+        return {"metrics": metrics}
 
     finally:
 
@@ -1713,15 +1713,16 @@ def get_block_warn_pass_metrics(
             .all()
         )
 
-        return [
-            {
-                "date": row.activity_date.isoformat(),
-                "pass": row.pass_count or 0,
-                "warn": row.warn_count or 0,
-                "block": row.block_count or 0,
-            }
-            for row in rows
-        ]
+        return {"metrics": [
+                {
+                    "date": row.activity_date.isoformat(),
+                    "pass": row.pass_count or 0,
+                    "warn": row.warn_count or 0,
+                    "block": row.block_count or 0,
+                }
+                for row in rows
+            ]
+        }
 
     finally:
 
@@ -1852,7 +1853,7 @@ def get_llm_model_token_and_request_metrics(
                 }
             )
 
-        return metrics
+        return {"metrics": metrics}
 
     finally:
 
@@ -1998,44 +1999,45 @@ def get_guardrail_detection_metrics(
             for row in rows
         )
 
-        return [
-            {
-                "guardrail_name":
-                    row.eval_name,
+        return {"metrics": [
+                {
+                    "guardrail_name":
+                        row.eval_name,
 
-                "total_warn_count":
-                    int(
-                        row.total_warn_count or 0
-                    ),
-
-                "total_block_count":
-                    int(
-                        row.total_block_count or 0
-                    ),
-
-                "total_detect_count":
-                    int(
-                        row.total_detect_count or 0
-                    ),
-
-                "detect_percentage":
-                    round(
-                        (
-                            float(
-                                row.total_detect_count or 0
-                            )
-                            * 100.0
-                            / float(
-                                overall_detect_count
-                            )
+                    "total_warn_count":
+                        int(
+                            row.total_warn_count or 0
                         ),
-                        2,
-                    )
-                    if overall_detect_count > 0
-                    else 0,
-            }
-            for row in rows
-        ]
+
+                    "total_block_count":
+                        int(
+                            row.total_block_count or 0
+                        ),
+
+                    "total_detect_count":
+                        int(
+                            row.total_detect_count or 0
+                        ),
+
+                    "detect_percentage":
+                        round(
+                            (
+                                float(
+                                    row.total_detect_count or 0
+                                )
+                                * 100.0
+                                / float(
+                                    overall_detect_count
+                                )
+                            ),
+                            2,
+                        )
+                        if overall_detect_count > 0
+                        else 0,
+                }
+                for row in rows
+            ]
+        }
 
     finally:
 
