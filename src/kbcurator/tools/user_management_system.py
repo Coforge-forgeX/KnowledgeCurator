@@ -1189,25 +1189,25 @@ async def create_workspace(payload):
             print(f"[Transaction] Failed to add workspace mappings: {mapping_error}")
             raise Exception(f"Failed to add workspace mappings: {str(mapping_error)}")
         
-        
-        #workspace registration with trustai
-        if not trustai_config:
-            trustai_config = DEFAULT_TRUSTAI_CONFIG(workspace_id)
+        if os.getenv("USE_TRUSTAI","false") == "true":
+            #workspace registration with trustai
+            if not trustai_config:
+                trustai_config = DEFAULT_TRUSTAI_CONFIG(workspace_id)
+                
+            agent_ids = fields.get('agent_ids') or []
+            db_url = get_postgres_connection_string()
+            # print(f"trustai_config\n:{trustai_config}")
+            if not db_url:
+                print("POSTGRESQL environment vairables not configured!!!")
+                raise ValueError("POSTGRESQL environment vairables not configured!!! Please check you env variable and try again...")
+            try:
+                trustai_config['application']['name'] = workspace_id
+                print(f"[updated] trustai_config\n:{trustai_config}")
+                response = await register_workspace_with_trustai(workspace_id,trustai_config,db_url,agent_ids,creator_id)
             
-        agent_ids = fields.get('agent_ids') or []
-        db_url = get_postgres_connection_string()
-        # print(f"trustai_config\n:{trustai_config}")
-        if not db_url:
-            print("POSTGRESQL environment vairables not configured!!!")
-            raise ValueError("POSTGRESQL environment vairables not configured!!! Please check you env variable and try again...")
-        try:
-            trustai_config['application']['name'] = workspace_id
-            print(f"[updated] trustai_config\n:{trustai_config}")
-            response = await register_workspace_with_trustai(workspace_id,trustai_config,db_url,agent_ids,creator_id)
-        
-        except Exception as e:
-            print(f"Error while registering workspace with TRUSTAI: {e}")
-            raise Exception("Failed to create the workspace. Please try again.")
+            except Exception as e:
+                print(f"Error while registering workspace with TRUSTAI: {e}")
+                raise Exception("Failed to create the workspace. Please try again.")
             
         session.commit()
 
@@ -1795,7 +1795,7 @@ async def update_workspace(payload):
                 # Don't fail workspace update if LLM config fails, just log it
 
         # Sync TrustAI tables if workspace has TrustAI integration
-        if agent_ids is not None and server.trustai_workspace_integration and server.trustai_db_manager:
+        if if os.getenv("USE_TRUSTAI","false") == "true" and agent_ids is not None and server.trustai_workspace_integration and server.trustai_db_manager:
             try:
                 # Check if workspace has TrustAI configuration
                 trustai_config = server.trustai_db_manager.get_workspace_config(str(workspace_id))
