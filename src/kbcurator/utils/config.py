@@ -2,11 +2,14 @@
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
+import os
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Do not rely on current working directory; resolve env file relative to this module.
+        env_file=os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.env")),
         env_file_encoding="utf-8",
+        env_ignore_empty=False,
         extra="ignore",
     )
 
@@ -16,10 +19,12 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str = Field(..., validation_alias="POSTGRESQL_DATABASE_HOST")
     POSTGRES_PORT: int = Field(5432, validation_alias="POSTGRESQL_DATABASE_PORT")
     POSTGRES_DB: str = Field(..., validation_alias="POSTGRESQL_DATABASE_DATABASE")
+    TRUSTAI_DB: str = Field(..., validation_alias="TRUSTAI_DEV_DB")
     POSTGRES_USER: str = Field(..., validation_alias="POSTGRESQL_DATABASE_USER")
     POSTGRES_PASSWORD: str = Field(..., validation_alias="POSTGRESQL_DATABASE_PASSWORD")
     POSTGRES_TABLE_WORKSPACE: str = Field("workspace_master", validation_alias="POSTGRESQL_DATABASE_WORKSPACE_TABLE")
     POSTGRES_TABLE_USER: str = Field("user_details", validation_alias="POSTGRESQL_DATABASE_USER_TABLE")
+    
 
     # MongoDB
     MONGODB_DATABASE_URI: Optional[str] = Field(None, env="MONGODB_DATABASE_URI")
@@ -126,5 +131,11 @@ class Settings(BaseSettings):
     SIMILARITY_SEARCH_SIM_SEARCH_K: Optional[int] = Field(None, env="SIMILARITY_SEARCH_SIM_SEARCH_K")
     RETRIEVER_RETRIEVER_SEARCH_TYPE: Optional[str] = Field(None, env="RETRIEVER_RETRIEVER_SEARCH_TYPE")
     RETRIEVER_RETRIEVER_K: Optional[int] = Field(None, env="RETRIEVER_RETRIEVER_K")
+
+    # =====================
+    # Global Workspace (always-visible)
+    # =====================
+    GLOBAL_WORKSPACE_ID: Optional[int] = Field(None, env="GLOBAL_WORKSPACE_ID")
+    GLOBAL_PUBLIC_WORKSPACE_ID: Optional[str] = Field(None, env="GLOBAL_PUBLIC_WORKSPACE_ID")
 
 settings = Settings()

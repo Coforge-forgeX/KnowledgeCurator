@@ -695,18 +695,21 @@ def _assign_user_to_workspace(user_id: int, workspace_id: int) -> None:
             cur.execute(
                 """
                 INSERT INTO public.workspace_users_mapping
-                    (workspace_id, user_id, is_active, created_date, last_updated)
-                VALUES (%s, %s, TRUE, %s, %s)
+                    (workspace_id, user_id, role_id, is_active, created_date, last_updated)
+                VALUES (%s, %s, %s, TRUE, %s, %s)
                 ON CONFLICT DO NOTHING
                 """,
-                (workspace_id, user_id, now, now),
+                (workspace_id, user_id, 1, now, now),
             )
             conn.commit()
 
 
-def _create_user_with_workspace(email: str, workspace_id: int) -> Dict[str, Any]:
-    """
-    Create a new user row and assign them to workspace_id in a single transaction.
+def _create_user_with_workspace(email: str, workspace_id: int, extra_workspace_id: Optional[int] = None) -> Dict[str, Any]:
+    """Create a new user row and assign workspaces in a single transaction.
+
+    - Always assigns the user to workspace_id.
+    - If extra_workspace_id is provided, also assigns the user to that workspace.
+
     Returns the newly created user dict.
     Raises on any database error (caller must handle).
     """
@@ -726,7 +729,7 @@ def _create_user_with_workspace(email: str, workspace_id: int) -> Dict[str, Any]
             )
             user = dict(cur.fetchone())
 
-            # Assign to dummy workspace — idempotent so re-runs are safe
+            # Assign to initial workspace — idempotent so re-runs are safe
             cur.execute(
                 """
                 INSERT INTO public.workspace_users_mapping
@@ -736,6 +739,18 @@ def _create_user_with_workspace(email: str, workspace_id: int) -> Dict[str, Any]
                 """,
                 (workspace_id, user["user_id"], 1, now, now),
             )
+
+            # Also assign to extra workspace (global default) in the same transaction
+            if extra_workspace_id is not None:
+                cur.execute(
+                    """
+                    INSERT INTO public.workspace_users_mapping
+                        (workspace_id, user_id, role_id, is_active, created_date, last_updated)
+                    VALUES (%s, %s, %s, TRUE, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (extra_workspace_id, user["user_id"], 1, now, now),
+                )
             conn.commit()
 
     return user

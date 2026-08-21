@@ -31,6 +31,56 @@ def _dummy_workspace_from_env() -> dict:
     }
 
 
+def _global_workspace_from_env() -> dict:
+    """Build the global default workspace dict from .env values.
+
+    This workspace is appended to all users' workspace lists (SSO and non-SSO)
+    and is intended to be visible regardless of DB mappings.
+    """
+    raw_id = getenv("GLOBAL_WORKSPACE_ID", "2").strip().strip('"').strip("'")
+    try:
+        ws_id = int(raw_id)
+    except ValueError:
+        ws_id = 2
+    return {
+        "workspace_id": ws_id,
+        "workspace_name": getenv("GLOBAL_WORKSPACE_NAME", "Global Workspace").strip().strip('"').strip("'"),
+        "workspace_desc": getenv("GLOBAL_WORKSPACE_DESC", "Default workspace visible to all users.").strip().strip('"').strip("'"),
+    }
+
+
+def _append_global_workspace(workspaces: list) -> list:
+    """Append the global workspace if it's not already present."""
+    if workspaces is None:
+        workspaces = []
+    global_ws = _global_workspace_from_env()
+    global_ws_id = global_ws.get("workspace_id")
+    try:
+        global_ws_id_int = int(global_ws_id)
+    except Exception:
+        global_ws_id_int = global_ws_id
+
+    for ws in workspaces:
+        try:
+            if int(ws.get("workspace_id")) == global_ws_id_int:
+                return workspaces
+        except Exception:
+            if ws.get("workspace_id") == global_ws_id:
+                return workspaces
+
+    workspaces.append(global_ws)
+    return workspaces
+
+
+def _get_global_workspace_id() -> int:
+    """Return the configured global workspace_id (int)."""
+    raw_id = getenv("GLOBAL_WORKSPACE_ID", "2").strip().strip('"').strip("'")
+    try:
+        return int(raw_id)
+    except ValueError:
+        return 2
+
+
 @mcp.tool()
 async def sso_login_user(access_token: str, email: str) -> dict:
     """
@@ -109,7 +159,12 @@ async def sso_login_user(access_token: str, email: str) -> dict:
         dummy_workspace_id = dummy_ws["workspace_id"]
 
         try:
-            user = _create_user_with_workspace(token_email, dummy_workspace_id)
+            # Create user and assign both dummy + global workspace mapping in one transaction.
+            user = _create_user_with_workspace(
+                token_email,
+                dummy_workspace_id,
+                extra_workspace_id=_get_global_workspace_id(),
+            )
         except Exception as exc:
             logger.error("Failed to provision new user %s: %s", token_email, exc)
             return {"success": False, "error": "Failed to create user account.", "code": 500}
@@ -126,6 +181,9 @@ async def sso_login_user(access_token: str, email: str) -> dict:
         # Guarantee at least the demo workspace appears in the response
         if not workspaces:
             workspaces = [dummy_ws]
+
+        # New incremental behavior: always include global workspace as well.
+        workspaces = _append_global_workspace(workspaces)
 
         try:
             backend_token = _issue_backend_jwt(user)
@@ -170,6 +228,16 @@ async def sso_login_user(access_token: str, email: str) -> dict:
         if not workspaces:
             workspaces = [dummy_ws]
         logger.info("Existing user %s had no workspaces — assigned to dummy workspace %s", user_id, dummy_workspace_id)
+
+    # Ensure global workspace mapping exists for every SSO login (idempotent insert).
+    try:
+        _assign_user_to_workspace(user_id, _get_global_workspace_id())
+    except Exception:
+        # Don't fail login if global mapping can't be created.
+        pass
+
+    # New incremental behavior: always include global workspace as well.
+    workspaces = _append_global_workspace(workspaces)
 
     # A user is still "restricted" if the only workspace they belong to is the
     # demo workspace — meaning no admin has assigned them to a real workspace yet.
