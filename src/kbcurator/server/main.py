@@ -1,5 +1,63 @@
 from dotenv import load_dotenv
-load_dotenv()
+import os
+
+
+def _load_env_robust() -> None:
+    """Load environment variables robustly for local + deployed runs.
+
+    Problem: plain load_dotenv() depends on current working directory.
+    In this repo, the server may be launched from /Users/md.4.ali/Documents/PolyRepo
+    (or elsewhere), so KnowledgeCurator/.env is not guaranteed to be loaded.
+
+    Fix: look for .env in common locations deterministically and load the first hit.
+    """
+
+    # 1) Respect already-provided process env (App Service, docker, shell exports).
+    # But for local runs we DO want to load KnowledgeCurator/.env even if a parent
+    # repo .env was already loaded earlier.
+
+    candidates = []
+
+    # a) Directory containing this file: .../KnowledgeCurator/src/kbcurator/server
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.abspath(os.path.join(here, "../../../../.env")))  # KnowledgeCurator/.env
+
+    # b) Current working directory .env (some tools run from repo root)
+    candidates.append(os.path.abspath(os.path.join(os.getcwd(), ".env")))
+
+    # c) One level up from cwd (monorepo layouts)
+    candidates.append(os.path.abspath(os.path.join(os.getcwd(), "../.env")))
+
+    for path in candidates:
+        if os.path.exists(path):
+            # Override to ensure we don't accidentally keep stale values from an
+            # unrelated .env loaded earlier in the process.
+            load_dotenv(path, override=True)
+            # Also propagate GLOBAL_* into process env even if blank elsewhere.
+            return
+
+    # Fall back to default behavior (no-op if no .env)
+    load_dotenv(override=True)
+
+
+_load_env_robust()
+
+# DEBUG/ROBUSTNESS: ensure global workspace env is populated from KnowledgeCurator/.env.
+# This guards against cases where other components cleared these keys after startup.
+try:
+    _kc_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.env"))
+    if os.path.exists(_kc_env):
+        _vals = {}
+        try:
+            from dotenv import dotenv_values
+            _vals = dotenv_values(_kc_env) or {}
+        except Exception:
+            _vals = {}
+        for _k in ("GLOBAL_WORKSPACE_ID", "GLOBAL_PUBLIC_WORKSPACE_ID"):
+            if (not os.getenv(_k)) and _vals.get(_k):
+                os.environ[_k] = str(_vals.get(_k))
+except Exception:
+    pass
 from common_adapters.langfuse_instrumentation import setup_langfuse
 setup_langfuse()   
 import asyncio
@@ -360,6 +418,21 @@ async def get_workspace(request: Request):
             return JSONResponse({"error": "Workspace not found"}, status_code=404)
         
         workspace_id = ws.workspace_id
+
+        # Ensure we read global config robustly (dotenv or pydantic settings)
+        global_ws_id = None
+        try:
+            raw_global_id = (os.getenv("GLOBAL_WORKSPACE_ID") or "").strip().strip('"').strip("'")
+            global_ws_id = int(raw_global_id) if raw_global_id else None
+        except Exception:
+            global_ws_id = None
+
+        if global_ws_id is None:
+            try:
+                from kbcurator.utils.config import settings
+                global_ws_id = int(getattr(settings, 'GLOBAL_WORKSPACE_ID', None) or 0) or None
+            except Exception:
+                global_ws_id = None
         
         # Check if user has access to this workspace
         user_mapping = session.query(db.UserMap).filter(
@@ -561,6 +634,10 @@ async def get_bookmark(request: Request):
         user_id = claims.get("user_id") or claims.get("sub")
         if not user_id:
             return JSONResponse({"error": "Invalid token: no user_id"}, status_code=401)
+        try:
+            user_id = int(user_id)
+        except Exception:
+            return JSONResponse({"error": "Invalid token: user_id must be an integer"}, status_code=401)
     except Exception as e:
         return JSONResponse({"error": f"Invalid token: {str(e)}"}, status_code=401)
     
@@ -576,6 +653,24 @@ async def get_bookmark(request: Request):
             return JSONResponse({"error": "Workspace not found"}, status_code=404)
         
         workspace_id = ws.workspace_id
+
+        # Resolve global workspace id (for auto-provision access)
+        global_ws_id = None
+        try:
+            raw = (os.getenv("GLOBAL_WORKSPACE_ID") or "").strip().strip('"').strip("'")
+            global_ws_id = int(raw) if raw else None
+        except Exception:
+            global_ws_id = None
+        if global_ws_id is None:
+            try:
+                from kbcurator.utils.config import settings
+                if getattr(settings, 'GLOBAL_WORKSPACE_ID', None) is not None:
+                    global_ws_id = int(settings.GLOBAL_WORKSPACE_ID)
+            except Exception:
+                global_ws_id = None
+
+        # Global workspace is intended to be accessible to all authenticated users.
+        # If the user is missing a mapping row, create it lazily (idempotent insert).
         
         # Check if user has access to this workspace
         user_mapping = session.query(db.UserMap).filter(
@@ -583,9 +678,33 @@ async def get_bookmark(request: Request):
             db.UserMap.workspace_id == workspace_id,
             db.UserMap.is_active == True
         ).first()
-        
+
         if not user_mapping:
-            return JSONResponse({"error": "Access denied to workspace"}, status_code=403)
+            # For the configured global workspace, auto-provision access.
+            if global_ws_id is not None and int(workspace_id) == int(global_ws_id):
+                try:
+                    # Use the shared helper used by SSO/login flows.
+                    from kbcurator.utils.auth import _assign_user_to_workspace
+                    _assign_user_to_workspace(user_id, int(workspace_id))
+
+                    # Re-check to avoid false positives if insert failed or hit unexpected constraints.
+                    user_mapping = session.query(db.UserMap).filter(
+                        db.UserMap.user_id == user_id,
+                        db.UserMap.workspace_id == workspace_id,
+                        db.UserMap.is_active == True
+                    ).first()
+                except Exception as exc:
+                    # Surface the real cause to logs to debug DB constraint/permission issues.
+                    logger.exception(
+                        "Global workspace auto-mapping failed user_id=%s workspace_id=%s: %s",
+                        user_id,
+                        workspace_id,
+                        exc,
+                    )
+                    user_mapping = None
+
+            if not user_mapping:
+                return JSONResponse({"error": "Access denied to workspace"}, status_code=403)
         
         # Category mapping
         categories = session.query(db.Category).filter(db.Category.is_active == True).all()
@@ -785,7 +904,8 @@ class CookieWrapperApp:
 
 # Wrap the MCP app with the cookie layer
 http_app = CookieWrapperApp(base_app)
-
+from .cors import wrap_with_dev_cors
+http_app = wrap_with_dev_cors(http_app)
 
 # ---------------------------
 # Server startup
