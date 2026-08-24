@@ -37,7 +37,6 @@ from kbcurator.utils.session_history_manager import (
 )
 from common_adapters.trustai import  TrustAIDatabaseManager
 from common_adapters.trustai.workspace_integration import TrustAIWorkspaceIntegration
-from .scheduler import start_scheduler, scheduler
 
 sharepoint_client_manager = None
 user_config_manager = None
@@ -83,10 +82,6 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
         # Initialize other services
         logging.info("🔧 Initializing services...")
         
-        # Start worker scheduler job for trustai aggregation tables.
-        start_scheduler()
-        logging.info("Start scheduler for trustai_analytics...")
-        
         logging.debug("Initializing Redis cache...")
         CacheFactory.initialize()  # (optional, usually called automatically)
         r = CacheFactory.get_cache(prefix="kb-member-")
@@ -110,20 +105,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
         trustai_workspace_integration = TrustAIWorkspaceIntegration(trustai_db_manager)
         logging.info("  ✅ Trust AI Database & integration initialized")
         
-        if os.getenv("USE_TRUSTAI","false") == "true":
-            # Sync existing workspaces with TrustAI (backward compatibility)
-            try:
-                from kbcurator.tools.user_management_system import sync_trustai_workspaces
-                await sync_trustai_workspaces()
-            except Exception as sync_error:
-                logging.error(f"  ⚠️ TrustAI workspace sync failed: {sync_error}")
     except Exception as e:
         logging.error(f"✗ Startup initialization failed: {e}")
     try:
         yield
     finally:
-        # shutdown scheduler job
-        scheduler.shutdown()
         # Close MongoDB connection on shutdown
         logging.info("🔧 Shutting down lifespan, closing MongoDB...")
         mongo_client.close()
