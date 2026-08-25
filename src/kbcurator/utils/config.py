@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str = Field(..., validation_alias="POSTGRESQL_DATABASE_HOST")
     POSTGRES_PORT: int = Field(5432, validation_alias="POSTGRESQL_DATABASE_PORT")
     POSTGRES_DB: str = Field(..., validation_alias="POSTGRESQL_DATABASE_DATABASE")
-    TRUSTAI_DB: str = Field(..., validation_alias="TRUSTAI_DEV_DB")
     POSTGRES_USER: str = Field(..., validation_alias="POSTGRESQL_DATABASE_USER")
     POSTGRES_PASSWORD: str = Field(..., validation_alias="POSTGRESQL_DATABASE_PASSWORD")
     POSTGRES_TABLE_WORKSPACE: str = Field("workspace_master", validation_alias="POSTGRESQL_DATABASE_WORKSPACE_TABLE")
