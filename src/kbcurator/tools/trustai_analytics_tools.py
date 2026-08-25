@@ -348,12 +348,14 @@ def _get_analytics_context(
     
 
 
-
 @mcp.tool()
 @require_auth
-def get_workspace_agent_user_directory():
+def get_workspace_agent_user_directory(
+    workspace_id: int | None = None,
+):
     """
     Returns:
+
     {
         "workspaces": [
             {
@@ -375,32 +377,48 @@ def get_workspace_agent_user_directory():
             }
         ]
     }
+
+    If workspace_id is provided:
+    - Returns agents and users only for that workspace.
+    - Validates the current user has access to that workspace.
+
+    If workspace_id is None:
+    - Returns union of agents and users across all accessible workspaces.
     """
+
     _, jwt_user_id = get_current_user()
 
     session = db.Session()
+
     try:
         session.rollback()
 
-        # ------------------------------------------------------------------
-        # 1. Get all workspaces accessible to current user
-        # ------------------------------------------------------------------
-        workspace_rows = (
+        # --------------------------------------------------------------
+        # 1. Get accessible workspace(s)
+        # --------------------------------------------------------------
+        workspace_query = (
             session.query(
                 db.Workspace.workspace_id,
-                db.Workspace.workspace_name
+                db.Workspace.workspace_name,
             )
             .join(
                 db.UserMap,
-                db.UserMap.workspace_id == db.Workspace.workspace_id
+                db.UserMap.workspace_id
+                == db.Workspace.workspace_id,
             )
             .filter(
                 db.UserMap.user_id == jwt_user_id,
                 db.UserMap.is_active == True,
-                db.Workspace.is_active == True
+                db.Workspace.is_active == True,
             )
-            .all()
         )
+
+        if workspace_id is not None:
+            workspace_query = workspace_query.filter(
+                db.Workspace.workspace_id == workspace_id
+            )
+
+        workspace_rows = workspace_query.all()
 
         workspaces = [
             {
@@ -410,31 +428,37 @@ def get_workspace_agent_user_directory():
             for row in workspace_rows
         ]
 
-        workspace_ids = [row.workspace_id for row in workspace_rows]
+        workspace_ids = [
+            row.workspace_id
+            for row in workspace_rows
+        ]
 
         if not workspace_ids:
             return {
                 "workspaces": [],
                 "agents": [],
-                "users": []
+                "users": [],
             }
 
-        # ------------------------------------------------------------------
-        # 2. Get union of agents from all accessible workspaces
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # 2. Get agents
+        # --------------------------------------------------------------
         agent_rows = (
             session.query(
                 db.Agent.agent_id,
-                db.Agent.agent_name
+                db.Agent.agent_name,
             )
             .join(
                 db.AgentMap,
-                db.AgentMap.agent_id == db.Agent.agent_id
+                db.AgentMap.agent_id
+                == db.Agent.agent_id,
             )
             .filter(
-                db.AgentMap.workspace_id.in_(workspace_ids),
+                db.AgentMap.workspace_id.in_(
+                    workspace_ids
+                ),
                 db.AgentMap.is_active == True,
-                db.Agent.is_active == True
+                db.Agent.is_active == True,
             )
             .distinct(db.Agent.agent_id)
             .all()
@@ -448,24 +472,27 @@ def get_workspace_agent_user_directory():
             for row in agent_rows
         ]
 
-        # ------------------------------------------------------------------
-        # 3. Get union of users from all accessible workspaces
-        # ------------------------------------------------------------------
+        # --------------------------------------------------------------
+        # 3. Get users
+        # --------------------------------------------------------------
         user_rows = (
             session.query(
                 db.User.user_id,
                 db.User.email_id,
                 db.User.first_name,
-                db.User.last_name
+                db.User.last_name,
             )
             .join(
                 db.UserMap,
-                db.UserMap.user_id == db.User.user_id
+                db.UserMap.user_id
+                == db.User.user_id,
             )
             .filter(
-                db.UserMap.workspace_id.in_(workspace_ids),
+                db.UserMap.workspace_id.in_(
+                    workspace_ids
+                ),
                 db.UserMap.is_active == True,
-                db.User.is_active == True
+                db.User.is_active == True,
             )
             .distinct(db.User.user_id)
             .all()
@@ -475,7 +502,10 @@ def get_workspace_agent_user_directory():
             {
                 "user_id": row.user_id,
                 "user_email": row.email_id,
-                "full_name": f"{row.first_name or ''} {row.last_name or ''}".strip()
+                "full_name": (
+                    f"{row.first_name or ''} "
+                    f"{row.last_name or ''}"
+                ).strip(),
             }
             for row in user_rows
         ]
@@ -483,18 +513,21 @@ def get_workspace_agent_user_directory():
         return {
             "workspaces": workspaces,
             "agents": agents,
-            "users": users
+            "users": users,
         }
 
     except Exception as e:
         session.rollback()
-        print(f"Error in get_workspace_agent_user_directory: {e}")
+        print(
+            f"Error in "
+            f"get_workspace_agent_user_directory: {e}"
+        )
         return {
             "error": str(e)
         }
+
     finally:
-        session.close()
-        
+        session.close()  
 
 @mcp.tool()
 @require_auth
