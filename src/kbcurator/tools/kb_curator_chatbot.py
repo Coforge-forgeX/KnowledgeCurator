@@ -1254,7 +1254,7 @@ async def message_gpt(
 
     # Block empty / symbol-only prompts early (do not call LLM)
     if not is_valid_user_prompt(user_message):
-        return {"response": "Invalid input. Please enter a valid message."}
+        return {"response": "Invalid input. Please enter a valid message.", "status": "error"}
 
     try:
         token = get_http_headers(include_all=True).get('authorization',"") or get_http_headers().get('Authorization',"")
