@@ -52,6 +52,14 @@ jobs:
         az resource update \
           --ids /subscriptions/${{ env.subscription_id }}/resourceGroups/${{ env.rg_name }}/providers/Microsoft.Web/sites/${{ env.AZURE_WEBAPP_NAME }}/config/web \
           --set properties.acrUseManagedIdentityCreds=true
+    - name: Get Managed Identity Principal ID
+      id: identity
+      run: |
+         PRINCIPAL_ID=$(az webapp identity show \
+            --name ${{ env.AZURE_WEBAPP_NAME }} \
+            --resource-group ${{ env.rg_name }} \
+            --query principalId \            -o tsv)
+         echo "PRINCIPAL_ID=$PRINCIPAL_ID" >> $GITHUB_ENV
 
     - name: Set Health Check Path
       run: |
