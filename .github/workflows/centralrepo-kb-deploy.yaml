@@ -5,7 +5,7 @@ on:
    
 env:
   AZURE_WEBAPP_NAME: forgex-iac-test-kb                     
-  REGISTRY: ${{ secrets.registry }}
+  REGISTRY: forgexacr001.azurecr.io
   DOCKER_IMAGE_NAME: centralrepo-kbcurator
   rg_name: forgex-iactest
   subscription_id: ${{ secrets.subscription_id }}
