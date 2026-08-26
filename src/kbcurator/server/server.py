@@ -105,6 +105,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
         trustai_workspace_integration = TrustAIWorkspaceIntegration(trustai_db_manager)
         logging.info("  ✅ Trust AI Database & integration initialized")
         
+        # Sync existing workspaces with TrustAI (backward compatibility)
+        try:
+            from kbcurator.tools.user_management_system import sync_trustai_workspaces
+            await sync_trustai_workspaces()
+        except Exception as sync_error:
+            logging.error(f"  ⚠️ TrustAI workspace sync failed: {sync_error}")
+        
     except Exception as e:
         logging.error(f"✗ Startup initialization failed: {e}")
     try:
