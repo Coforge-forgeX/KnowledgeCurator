@@ -179,6 +179,21 @@ def parse_references_from_response(response_text: str) -> List[Dict[str, str]]:
     
     return references
 
+NO_RELEVANT_INFO_MESSAGE = "Sorry, I'm not able to provide an answer to that question.[no-context]"
+
+def _has_relevant_response(response: object, refrences: List[Dict[str, str]]) -> bool:
+    if not isinstance(response, str) or not response.strip():
+        return False
+    normalised_response = response.lower()
+    no_result_marker = (
+        "no relevant information",
+        "no relevant info",
+        "no information found",
+        "could not find relevant"
+    )
+
+    return bool(refrences) and not any(marker in normalised_response for marker in no_result_marker)
+
 
 def generate_download_url_for_file(
     domain: str, 
@@ -413,6 +428,7 @@ When handling relationships with timestamps:
 ---Response Rules---
 
 - **Format**: Use multiple paragraphs with markdown formatting and section headings.
+- **No-result behaviour**: If the Knowledge Base contains no relevant information, respond exactly with 'No relevant information found in the knowledge base.' Do not explain anything else or add citation or include Refrences section
 - **Language**: Always respond in English, regardless of the language used in the question.
 - **Emphasis**: Highlight all referenced information using **bold text**.
 - **Inline Citations**:
@@ -551,6 +567,17 @@ When handling relationships with timestamps:
                     kb_graph_refs.append(f"Knowledge Base: {kb}")
 
             # Summarize the results using LLM Router
+            parsed_refrences_by_kb = {
+                kb: parse_references_from_response(resp)
+                for kb, resp in results.items()
+                if isinstance(resp, str)
+            }
+            if not any (parsed_refrences_by_kb.values()):
+                return {
+                    "LightRAG": NO_RELEVANT_INFO_MESSAGE,
+                    "response": NO_RELEVANT_INFO_MESSAGE,
+                    "sources": [],
+                }
             summary_prompt = user_prompt
             
             for kb, resp in results.items():
@@ -586,7 +613,7 @@ When handling relationships with timestamps:
             all_parsed_refs = []
             for kb, resp in results.items():
                 if isinstance(resp, str):  # Only process string responses, skip error dicts
-                    kb_refs = parse_references_from_response(resp)
+                    kb_refs = parsed_refrences_by_kb.get(kb, [])
                     all_parsed_refs.extend(kb_refs)
             
             print(f"Parsed {len(all_parsed_refs)} references from original RAG responses")
@@ -657,6 +684,12 @@ When handling relationships with timestamps:
             print("="*80)
             
             parsed_refs = parse_references_from_response(response)
+            if not _has_relevant_response(response, parsed_refs):
+                return {
+                    "LightRAG": NO_RELEVANT_INFO_MESSAGE,
+                    "response": NO_RELEVANT_INFO_MESSAGE,
+                    "sources": [],
+                }
             print(f"✓ Parsed {len(parsed_refs)} references")
             if parsed_refs:
                 for ref in parsed_refs:
