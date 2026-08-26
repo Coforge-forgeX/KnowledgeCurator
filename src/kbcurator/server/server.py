@@ -6,7 +6,27 @@ import logging
 import os
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
-load_dotenv()
+
+
+def _load_env_robust() -> None:
+    """Load environment variables robustly for local + deployed runs.
+
+    This module can be imported from different working directories.
+    Prefer KnowledgeCurator/.env when present.
+    """
+    candidates = []
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.abspath(os.path.join(here, "../../../.env")))  # KnowledgeCurator/.env
+    candidates.append(os.path.abspath(os.path.join(os.getcwd(), ".env")))
+    candidates.append(os.path.abspath(os.path.join(os.getcwd(), "../.env")))
+    for path in candidates:
+        if os.path.exists(path):
+            load_dotenv(path, override=True)
+            return
+    load_dotenv(override=True)
+
+
+_load_env_robust()
 from common_adapters.langfuse_instrumentation import flush as langfuse_flush
 from common_adapters.sharepoint import SharePointClientManagerAsync
 from common_adapters.cache import CacheFactory
@@ -17,6 +37,7 @@ from kbcurator.utils.session_history_manager import (
 )
 from common_adapters.trustai import  TrustAIDatabaseManager
 from common_adapters.trustai.workspace_integration import TrustAIWorkspaceIntegration
+
 sharepoint_client_manager = None
 user_config_manager = None
 trustai_workspace_integration = None
@@ -57,6 +78,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
     mongo_client = get_mongodb_client()
     global r, sharepoint_client_manager, user_config_manager, session, trustai_workspace_integration, trustai_db_manager
     try:
+        
         # Initialize other services
         logging.info("🔧 Initializing services...")
         
@@ -89,6 +111,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
             await sync_trustai_workspaces()
         except Exception as sync_error:
             logging.error(f"  ⚠️ TrustAI workspace sync failed: {sync_error}")
+        
     except Exception as e:
         logging.error(f"✗ Startup initialization failed: {e}")
     try:
