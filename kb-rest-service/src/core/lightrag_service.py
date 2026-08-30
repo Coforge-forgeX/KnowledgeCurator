@@ -841,7 +841,6 @@ class LightRAGService:
                         n_labels = rec.get("node_labels") or []
                         nodes.append({
                             "id": str(n_eid),
-                            "element_id": str(n_eid),
                             "labels": n_labels,
                             "entity_name": props.get("entity_id") or props.get("entity_name") or (n_labels[0] if n_labels else str(n_eid)),
                             "entity_type": props.get("entity_type") or "UNKNOWN",
@@ -859,7 +858,6 @@ class LightRAGService:
                         m_labels = rec.get("target_labels") or []
                         nodes.append({
                             "id": str(m_eid),
-                            "element_id": str(m_eid),
                             "labels": m_labels,
                             "entity_name": m_props.get("entity_id") or m_props.get("entity_name") or (m_labels[0] if m_labels else str(m_eid)),
                             "entity_type": m_props.get("entity_type") or "UNKNOWN",
@@ -880,7 +878,6 @@ class LightRAGService:
                         m_name = m_props.get("entity_id") or m_props.get("entity_name") or str(m_eid)
                         edges.append({
                             "id": str(r_eid),
-                            "element_id": str(r_eid),
                             "source": str(n_name),
                             "target": str(m_name),
                             "relation": r_props.get("relation") or rec.get("rel_type") or "related_to",
@@ -922,7 +919,6 @@ class LightRAGService:
                         n_labels = getattr(n, "labels", []) or []
                         nodes.append({
                             "id": n_id,
-                            "element_id": n_id,
                             "labels": n_labels,
                             "entity_name": n_props.get("entity_id") or (n_labels[0] if n_labels else n_id),
                             "entity_type": n_props.get("entity_type") or "UNKNOWN",
@@ -938,7 +934,6 @@ class LightRAGService:
                         e_props = getattr(e, "properties", {}) or {}
                         edges.append({
                             "id": e_id,
-                            "element_id": e_id,
                             "source": str(getattr(e, "source", "") or ""),
                             "target": str(getattr(e, "target", "") or ""),
                             "relation": e_props.get("relation") or str(getattr(e, "type", "") or "related_to"),

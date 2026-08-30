@@ -143,7 +143,8 @@ async def _mutate_node_neo4j(
         # Update entity_name ONLY if n.entity_name already exists (do NOT add a new property if non-existing!).
         update_query = """
         MATCH (n)
-        WHERE elementId(n) = $element_id
+        WHERE (elementId(n) = $element_id AND $element_id <> '')
+           OR (elementId(n) ENDS WITH (":" + $element_id) AND $element_id <> '' AND n.entity_id = $entity_id_val)
            OR (n.entity_id = $entity_id_val AND ($file_path IS NULL OR n.file_path = $file_path))
            OR (n.entity_name = $entity_id_val AND ($file_path IS NULL OR n.file_path = $file_path))
         SET n.entity_id = CASE WHEN $entity_id_val IS NOT NULL AND $entity_id_val <> '' THEN $entity_id_val ELSE n.entity_id END,
@@ -169,6 +170,7 @@ async def _mutate_node_neo4j(
     delete_query = """
     MATCH (n)
     WHERE (elementId(n) = $element_id AND $element_id <> '')
+       OR (elementId(n) ENDS WITH (":" + $element_id) AND $element_id <> '' AND n.entity_id = $entity_id_val)
        OR (n.entity_id = $entity_id_val AND ($file_path IS NULL OR n.file_path = $file_path))
        OR (n.entity_name = $entity_id_val AND ($file_path IS NULL OR n.file_path = $file_path))
     DETACH DELETE n
@@ -219,8 +221,8 @@ async def _mutate_relationship_neo4j(
 
         create_query = """
         MATCH (s:Entity), (t:Entity)
-        WHERE (elementId(s) = $source OR s.entity_id = $source OR s.entity_name = $source)
-          AND (elementId(t) = $target OR t.entity_id = $target OR t.entity_name = $target)
+        WHERE (elementId(s) = $source OR elementId(s) ENDS WITH (":" + $source) OR s.entity_id = $source OR s.entity_name = $source)
+          AND (elementId(t) = $target OR elementId(t) ENDS WITH (":" + $target) OR t.entity_id = $target OR t.entity_name = $target)
         CREATE (s)-[r:RELATED_TO]->(t)
         SET r += $properties
         RETURN count(r) AS created_count
@@ -244,7 +246,8 @@ async def _mutate_relationship_neo4j(
         # Do NOT modify relationship endpoints or relation type.
         update_query = """
         MATCH ()-[r]->()
-        WHERE elementId(r) = $element_id
+        WHERE (elementId(r) = $element_id AND $element_id <> '')
+           OR (elementId(r) ENDS WITH (":" + $element_id) AND $element_id <> '')
            OR (r.relation = $relation AND ($file_path IS NULL OR r.file_path = $file_path))
         SET r.description = CASE WHEN $description IS NOT NULL THEN $description ELSE r.description END,
             r.update_time = CASE WHEN r.update_time IS NOT NULL THEN $current_time ELSE r.update_time END,
@@ -267,6 +270,7 @@ async def _mutate_relationship_neo4j(
     delete_query = """
     MATCH ()-[r]->()
     WHERE (elementId(r) = $element_id AND $element_id <> '')
+       OR (elementId(r) ENDS WITH (":" + $element_id) AND $element_id <> '')
        OR (r.relation = $relation AND ($file_path IS NULL OR r.file_path = $file_path))
     DELETE r
     RETURN count(r) AS deleted_count

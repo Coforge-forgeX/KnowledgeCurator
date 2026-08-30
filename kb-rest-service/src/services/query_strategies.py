@@ -514,6 +514,8 @@ class SingleKBStrategy(QueryStrategy):
             clean_answer = clean_response(response_text)
 
             chunks = self._parse_chunks(response_payload, kb)
+            if not references and not chunks:
+                clean_answer = "No relevant information found in the knowledge base."
             evidence = {
                 "chunks": self._serialize_chunks(chunks),
                 "graph": response_payload.get("_raw_context", []) if isinstance(response_payload, dict) else [],
@@ -589,6 +591,29 @@ class MultiKBStrategy(QueryStrategy):
 
             # Query all KBs in parallel
             kb_results = await self._query_all_kbs(knowledge_bases, context, prompt)
+
+            if not any(
+                parse_references(self._extract_answer_text(result))
+                or self._deserialize_chunks(result.get("_retrieved_chunks", []))
+                for result in kb_results.values()
+                if isinstance(result, dict) and "error" not in result
+            ):
+                return RAGQueryResult(
+                    answer="No relevant information found in the knowledge base.",
+                    metadata={
+                        "kbs": [kb.full_name for kb in knowledge_bases],
+                        "mode": context.mode.value,
+                        "requested_mode": context.mode.value,
+                        "effective_mode": context.mode.value,
+                        "kb_count": len(knowledge_bases),
+                        "successful_kbs": len(kb_results),
+                        "refrences_count": 0,
+                        "raw_refrences": [],
+                        "kb_results": kb_results,
+                        "chunks_by_kb": {},
+                        "graph_context_by_kb": {}
+                    },
+                )
 
             # Aggregate results using LLM
             aggregated_answer = await self._aggregate_results(

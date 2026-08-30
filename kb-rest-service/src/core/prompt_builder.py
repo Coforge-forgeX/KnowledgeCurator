@@ -98,6 +98,7 @@ When handling relationships with timestamps:
 
 - **Format**: Use multiple paragraphs with markdown formatting and section headings.
 - **Language**: Always respond in English, regardless of the language used in the question.
+- **No-result** behaviour: If the knowledge base contains no relevant information, respond exact with `No relevant information found in the knowledge base.` Do not explain the search. add markdown, or include citations or a refreces section.
 - **Emphasis**: Highlight all referenced information using **bold text**.
 - **Inline Citations**:
     - Cite the source **immediately after** the referenced information using square brackets (e.g., [1], [2]).
