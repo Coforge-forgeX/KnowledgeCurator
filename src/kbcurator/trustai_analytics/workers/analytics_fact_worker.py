@@ -11,13 +11,23 @@ from kbcurator.trustai_analytics.model.db_model import (
 logger = logging.getLogger(__name__)
 
 WORKER_NAME = "ANALYTICS_FACT_WORKER"
-
+LOCK_NAME = "fact_analytics_worker"
 BATCH_SIZE = 10000
 LAG_MINUTES = 2
 MAX_BATCHES_PER_RUN = 100
 
 
 def run_analytics_fact_worker():
+    
+    print(
+    "#########################"
+    )
+    print(
+        "DEPLOYMENT_20260827_V5"
+    )
+    print(
+        "#########################"
+    )
 
     print("=" * 80)
     print("ANALYTICS FACT WORKER STARTED")
@@ -30,11 +40,9 @@ def run_analytics_fact_worker():
         - timedelta(minutes=LAG_MINUTES)
     )
 
-    logger.info(
-        "Analytics worker started. "
-        "worker=%s cutoff=%s",
-        WORKER_NAME,
-        processing_cutoff,
+    print(
+        f"Analytics worker started. \n"
+        f"worker={WORKER_NAME} cutoff={processing_cutoff}"
     )
 
     session = analytics_db.Session()
@@ -47,7 +55,7 @@ def run_analytics_fact_worker():
 
         if not analytics_db.acquire_worker_lock(
             session,
-            "fact_analytics_worker",
+            LOCK_NAME,
         ):
             logger.info(
                 "Worker lock already held. Exiting."
@@ -269,13 +277,13 @@ def run_analytics_fact_worker():
 
         try:
 
-            analytics_db.release_worker_lock(
+            released = analytics_db.release_worker_lock(
                 session,
-                "analytics_worker",
+                LOCK_NAME,
             )
 
-            logger.info(
-                "Worker lock released."
+            print(
+                f"LOCK RELEASE RESULT = {released}"
             )
 
         except Exception:

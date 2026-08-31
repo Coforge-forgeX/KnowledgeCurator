@@ -53,6 +53,8 @@ _access_scope_cache = TTLCache(
     ttl=300,
 )
 
+def _normalize_ids(ids):
+    return [str(x) for x in ids] if ids else None
 
 @cached(_access_scope_cache)
 def _get_access_scope_cached(
@@ -143,6 +145,11 @@ def _resolve_effective_scope(
     user_ids=None,
     agent_ids=None,
 ):
+    
+    workspace_ids = _normalize_ids(workspace_ids)
+    user_ids = _normalize_ids(user_ids)
+    agent_ids = _normalize_ids(agent_ids)
+    
     (
         accessible_workspace_ids,
         accessible_user_ids,
@@ -533,8 +540,8 @@ def get_workspace_agent_user_directory(
 @require_auth
 def get_overall_metrics(
     workspace_ids: list[int] | None = None,
-    user_ids: list[str] | None = None,
-    agent_ids: list[str] | None = None,
+    user_ids: list[str | int] | None = None,
+    agent_ids: list[str | int] | None = None,
     start_date: str | None = None,
     end_date: str | None = None
 ):
@@ -739,8 +746,8 @@ def get_overall_metrics(
 @require_auth
 def get_workspace_metrics(
     workspace_ids: list[int] | None = None,
-    user_ids: list[str] | None = None,
-    agent_ids: list[str] | None = None,
+    user_ids: list[str | int] | None = None,
+    agent_ids: list[str | int] | None = None,
     start_date: str | None = None,
     end_date: str | None = None
 ):
@@ -1095,8 +1102,8 @@ def get_workspace_metrics(
 @require_auth
 def get_agent_metrics(
     workspace_ids: list[int] | None = None,
-    user_ids: list[str] | None = None,
-    agent_ids: list[str] | None = None,
+    user_ids: list[str | int] | None = None,
+    agent_ids: list[str | int] | None = None,
     start_date: str | None = None,
     end_date: str | None = None
 ):
@@ -1368,8 +1375,8 @@ def get_agent_metrics(
 @require_auth
 def get_user_metrics(
     workspace_ids: list[int] | None = None,
-    user_ids: list[str] | None = None,
-    agent_ids: list[str] | None = None,
+    user_ids: list[str | int] | None = None,
+    agent_ids: list[str | int] | None = None,
     start_date: str | None = None,
     end_date: str | None = None
 ):
@@ -1662,8 +1669,8 @@ def get_user_metrics(
 @require_auth
 def get_block_warn_pass_metrics(
     workspace_ids: list[int] | None = None,
-    user_ids: list[str] | None = None,
-    agent_ids: list[str] | None = None,
+    user_ids: list[str | int] | None = None,
+    agent_ids: list[str | int] | None = None,
     start_date: str | None = None,
     end_date: str | None = None
 ):
@@ -1767,8 +1774,8 @@ def get_block_warn_pass_metrics(
 @require_auth
 def get_llm_model_token_and_request_metrics(
     workspace_ids: list[int] | None = None,
-    user_ids: list[str] | None = None,
-    agent_ids: list[str] | None = None,
+    user_ids: list[str | int] | None = None,
+    agent_ids: list[str | int] | None = None,
     start_date: str | None = None,
     end_date: str | None = None
 ):
@@ -1898,8 +1905,8 @@ def get_llm_model_token_and_request_metrics(
 @require_auth
 def get_guardrail_detection_metrics(
     workspace_ids: list[int] | None = None,
-    user_ids: list[str] | None = None,
-    agent_ids: list[str] | None = None,
+    user_ids: list[str | int] | None = None,
+    agent_ids: list[str | int] | None = None,
     start_date: str | None = None,
     end_date: str | None = None
 ):

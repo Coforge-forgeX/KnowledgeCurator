@@ -9,7 +9,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.automap import automap_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import cast
-from sqlalchemy import case , func , BigInteger
+from sqlalchemy import case , func , BigInteger , and_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy import MetaData, Table, text
@@ -224,7 +224,7 @@ class TrustaiAnalyticsDB:
 
         lock_id = WORKER_LOCKS.get(worker_name)
 
-        session.execute(
+        result = session.execute(
             text(
                 """
                 SELECT pg_advisory_unlock(
@@ -236,6 +236,8 @@ class TrustaiAnalyticsDB:
                 "lock_id": lock_id
             }
         )
+        
+        return result.scalar()
  
     def acquire_worker_lock(
         self,
@@ -1632,17 +1634,28 @@ class TrustaiAnalyticsDB:
 
         outcome_case = case(
             (
-                self.GuardrailEventResultLog.results[
-                    "detail"
-                ]["outcome"].astext.in_(
-                    ["Fail", "Error"]
+                self.GuardrailEventResultLog.results["detail"]["outcome"].astext
+                == "Error",
+                "Block",
+            ),
+            (
+                and_(
+                    self.GuardrailEventResultLog.results["detail"]["outcome"].astext
+                    == "Fail",
+                    self.GuardrailEventResultLog.results["action"].astext == "B",
                 ),
                 "Block",
             ),
             (
-                self.GuardrailEventResultLog.results[
-                    "detail"
-                ]["outcome"].astext
+                and_(
+                    self.GuardrailEventResultLog.results["detail"]["outcome"].astext
+                    == "Fail",
+                    self.GuardrailEventResultLog.results["action"].astext != "B",
+                ),
+                "Warn",
+            ),
+            (
+                self.GuardrailEventResultLog.results["detail"]["outcome"].astext
                 == "Warning",
                 "Warn",
             ),
@@ -1764,17 +1777,28 @@ class TrustaiAnalyticsDB:
 
         outcome_case = case(
             (
-                self.GuardrailEventResultLog.results[
-                    "detail"
-                ]["outcome"].astext.in_(
-                    ["Fail", "Error"]
+                self.GuardrailEventResultLog.results["detail"]["outcome"].astext
+                == "Error",
+                "Block",
+            ),
+            (
+                and_(
+                    self.GuardrailEventResultLog.results["detail"]["outcome"].astext
+                    == "Fail",
+                    self.GuardrailEventResultLog.results["action"].astext == "B",
                 ),
                 "Block",
             ),
             (
-                self.GuardrailEventResultLog.results[
-                    "detail"
-                ]["outcome"].astext
+                and_(
+                    self.GuardrailEventResultLog.results["detail"]["outcome"].astext
+                    == "Fail",
+                    self.GuardrailEventResultLog.results["action"].astext != "B",
+                ),
+                "Warn",
+            ),
+            (
+                self.GuardrailEventResultLog.results["detail"]["outcome"].astext
                 == "Warning",
                 "Warn",
             ),
