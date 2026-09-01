@@ -65,7 +65,8 @@ def _get_access_scope_cached(
     try:
 
         workspace_ids = [
-            row.workspace_id
+            # row.workspace_id
+            str(row.workspace_id)
             for row in (
                 kb_session.query(
                     db.UserMap.workspace_id
