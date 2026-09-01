@@ -135,6 +135,7 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             additional_kbs=additional_kbs,
             agent_id=payload.agent_id,
             is_kg=is_kg,
+            container_name=str(storage_paths.get("container") or ""),
             correlation_id=correlation_id,
         )
 

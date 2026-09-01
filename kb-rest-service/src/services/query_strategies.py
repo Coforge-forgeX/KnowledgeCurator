@@ -5,6 +5,7 @@ Different strategies for executing RAG queries.
 Follows Open/Closed Principle - extensible without modification.
 """
 import asyncio
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
@@ -16,6 +17,7 @@ from src.core.prompt_builder import get_prompt_builder
 from src.core.reference_parser import clean_response, parse_references
 from src.helpers.workspace_resolver import WorkspaceResolver
 from src.models.rag_models import (
+    DocumentReference,
     EnrichedSource,
     KnowledgeBase,
     MultiKBResult,
@@ -615,22 +617,26 @@ class MultiKBStrategy(QueryStrategy):
                     },
                 )
 
-            # Aggregate results using LLM
+            global_references, citation_maps = self._build_global_references(kb_results)
+
+            # Aggregate results using one deterministic citation namespace.
             aggregated_answer = await self._aggregate_results(
                 context,
                 kb_results,
-                knowledge_bases
+                knowledge_bases,
+                citation_maps,
+                global_references,
             )
 
             # Clean aggregated answer
             clean_answer = clean_response(aggregated_answer)
 
-            # Collect all references from all KBs
-            all_references = []
-            for kb_name, result in kb_results.items():
-                if not isinstance(result, dict) or "error" not in result:
-                    refs = parse_references(self._extract_answer_text(result))
-                    all_references.extend(refs)
+            cited_labels = set(re.findall(r"\[(\d+)\]", clean_answer))
+            all_references = [
+                reference
+                for reference in global_references
+                if reference.citation_number.strip("[]") in cited_labels
+            ]
 
             # Collect chunks from all successful KBs so eval cache has full context.
             chunks: List[RetrievedChunk] = []
@@ -686,6 +692,64 @@ class MultiKBStrategy(QueryStrategy):
         except Exception as e:
             logger.error(f"Multi-KB query failed", error=e)
             raise
+
+    def _build_global_references(
+        self,
+        kb_results: Dict[str, Any],
+    ) -> tuple[List[DocumentReference], Dict[str, Dict[str, str]]]:
+        """Assign one stable citation number to each document across all KBs."""
+        references: List[DocumentReference] = []
+        citation_maps: Dict[str, Dict[str, str]] = {}
+        path_to_citation: Dict[str, str] = {}
+
+        for kb_name, result in kb_results.items():
+            if isinstance(result, dict) and "error" in result:
+                continue
+
+            citation_map: Dict[str, str] = {}
+            local_references = parse_references(self._extract_answer_text(result))
+            if not local_references and isinstance(result, dict):
+                seen_paths: set[str] = set()
+                for chunk in self._deserialize_chunks(result.get("_retrieved_chunks", [])):
+                    raw_path = str(
+                        (
+                            chunk.metadata.get("file_path")
+                            if isinstance(chunk.metadata, dict)
+                            else None
+                        )
+                        or chunk.source
+                    ).strip()
+                    normalized_path = raw_path.replace("\\", "/").strip("/")
+                    file_name = normalized_path.split("/")[-1]
+                    path_key = normalized_path.lower()
+                    if not normalized_path or "." not in file_name or path_key in seen_paths:
+                        continue
+                    seen_paths.add(path_key)
+                    local_references.append(
+                        DocumentReference(
+                            citation_number=f"[{len(local_references) + 1}]",
+                            file_path=normalized_path,
+                            file_name=file_name,
+                        )
+                    )
+
+            for reference in local_references:
+                path_key = reference.file_path.replace("\\", "/").strip("/").lower()
+                citation = path_to_citation.get(path_key)
+                if citation is None:
+                    citation = f"[{len(references) + 1}]"
+                    path_to_citation[path_key] = citation
+                    references.append(
+                        DocumentReference(
+                            citation_number=citation,
+                            file_path=reference.file_path,
+                            file_name=reference.file_name,
+                        )
+                    )
+                citation_map[reference.citation_number] = citation
+            citation_maps[kb_name] = citation_map
+
+        return references, citation_maps
 
     async def _query_all_kbs(
         self,
@@ -863,7 +927,9 @@ class MultiKBStrategy(QueryStrategy):
         self,
         context: QueryContext,
         kb_results: Dict[str, Any],
-        knowledge_bases: List[KnowledgeBase]
+        knowledge_bases: List[KnowledgeBase],
+        citation_maps: Dict[str, Dict[str, str]],
+        global_references: List[DocumentReference],
     ) -> str:
         """
         Aggregate KB results intelligently.
@@ -881,6 +947,13 @@ class MultiKBStrategy(QueryStrategy):
             if not isinstance(result, dict) or "error" not in result:
                 answer = self._extract_answer_text(result)
                 if answer and answer.strip() and not answer.startswith("Sorry, I'm not able"):
+                    answer = clean_response(answer)
+                    citation_map = citation_maps.get(kb_name, {})
+                    answer = re.sub(
+                        r"\[(\d+)\]",
+                        lambda match: citation_map.get(match.group(0), ""),
+                        answer,
+                    )
                     successful_results.append({
                         "kb": kb_name,
                         "answer": answer.strip()
@@ -916,7 +989,14 @@ class MultiKBStrategy(QueryStrategy):
         for idx, result in enumerate(successful_results, 1):
             aggregation_prompt += f"\n### Source {idx}: {result['kb']}\n{result['answer']}\n"
 
-        aggregation_prompt += """
+        reference_mapping = "\n".join(
+            f"{reference.citation_number} {reference.file_path}"
+            for reference in global_references
+        )
+        aggregation_prompt += f"""
+
+    **Authoritative citation mapping:**
+    {reference_mapping}
 
 **Task:**
 Please synthesize these answers into a single, coherent response following these rules:
@@ -927,6 +1007,9 @@ Please synthesize these answers into a single, coherent response following these
 5. Keep the response clear, well-structured, and comprehensive
 6. Maintain all important details from each source
 7. Use markdown formatting for better readability
+8. Preserve the citation numbers already attached to facts exactly; never renumber them
+9. Use only citation numbers from the authoritative mapping above
+10. Do not add a References section; the API returns the mapping separately
 
 **Synthesized Answer:**"""
 

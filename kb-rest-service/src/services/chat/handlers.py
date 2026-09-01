@@ -204,6 +204,7 @@ class SearchModeHandler(ModeHandler):
             additional_kbs=access.additional_kbs,
             agent_id=payload.agent_id,
             is_kg=access.is_kg,
+            container_name=access.container_name,
         )
 
         response_text = (

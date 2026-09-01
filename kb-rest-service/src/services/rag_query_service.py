@@ -54,7 +54,9 @@ class SourceEnricher:
         domain: str,
         kb_name: str,
         workspace_id: Optional[int] = None,
-        role_id: Optional[int] = None
+        role_id: Optional[int] = None,
+        container_name: Optional[str] = None,
+        fallback_container_names: Optional[List[str]] = None,
     ) -> Optional[EnrichedSource]:
         """
         Enrich reference with download URL.
@@ -84,22 +86,39 @@ class SourceEnricher:
             )
 
             # Check if file exists using storage adapter
-            exists = await self.storage.blob_exists(blob_path)
-            if not exists:
+            candidate_containers = list(
+                dict.fromkeys(
+                    name
+                    for name in [container_name, *(fallback_container_names or [])]
+                    if name
+                )
+            )
+            storages = (
+                [get_storage_adapter(container_override=name) for name in candidate_containers]
+                if candidate_containers
+                else [self.storage]
+            )
+            storage = None
+            for candidate_storage in storages:
+                if await candidate_storage.blob_exists(blob_path):
+                    storage = candidate_storage
+                    break
+
+            if storage is None:
                 logger.warning(
                     f"File not found for reference: {reference.file_path}",
                     blob_path=blob_path,
-                    provider=self.storage.provider_name,
+                    containers=candidate_containers,
                 )
                 return None
 
             # Generate download URL using storage adapter
-            download_url = await self._generate_download_url(blob_path)
+            download_url = await self._generate_download_url(blob_path, storage)
 
             enriched = EnrichedSource(
                 file_name=f"{reference.citation_number} {reference.file_name}",
                 download_url=download_url,
-                container_name=self.storage.container_name,
+                container_name=storage.container_name,
                 blob_path=blob_path,
                 download_name=reference.file_name,
                 citation=reference.citation_number
@@ -127,6 +146,11 @@ class SourceEnricher:
         role_id: Optional[int]
     ) -> str:
         """Build blob storage path for file"""
+        normalized_file_path = (file_path or "").strip().replace("\\", "/").strip("/")
+        normalized_domain = (domain or "").strip().strip("/")
+        if normalized_domain and normalized_file_path.lower().startswith(f"{normalized_domain.lower()}/"):
+            return normalized_file_path
+
         # Extract original KB name (without workspace suffix)
         original_kb_name = kb_name.split('/')[0] if '/' in kb_name else kb_name
 
@@ -137,21 +161,22 @@ class SourceEnricher:
             parts.append(str(workspace_id))
 
         # Handle file_path (might be just filename or include path)
-        if '/' in file_path:
+        if '/' in normalized_file_path:
             # Full path provided - use as is
-            parts.append(file_path)
+            parts.append(normalized_file_path)
         else:
             # Just filename - append directly
-            parts.append(file_path)
+            parts.append(normalized_file_path)
 
         return '/'.join(parts)
 
-    async def _generate_download_url(self, blob_path: str) -> str:
+    async def _generate_download_url(self, blob_path: str, storage=None) -> str:
         """Generate signed download URL using storage adapter (provider-agnostic)"""
         try:
             # Use storage adapter to generate download URL
             # Works for Azure SAS, AWS presigned, GCP signed URLs
-            url = await self.storage.generate_download_url(
+            storage = storage or self.storage
+            url = await storage.generate_download_url(
                 filename=blob_path,
                 expiry_minutes=525600  # 1 year (365 * 24 * 60)
             )
@@ -159,7 +184,7 @@ class SourceEnricher:
             logger.debug(
                 "Generated download URL",
                 blob_path=blob_path,
-                provider=self.storage.provider_name,
+                provider=storage.provider_name,
             )
 
             return url
@@ -214,6 +239,7 @@ class RAGQueryService:
         knowledge_bases: Optional[List[str]] = None,
         agent_id: Optional[int] = None,
         is_kg: Optional[bool] = None,
+        container_name: Optional[str] = None,
     ) -> RAGQueryResult:
         """
         Execute RAG query with full orchestration.
@@ -272,12 +298,18 @@ class RAGQueryService:
 
             # Enrich sources with download URLs
             if self.source_enricher and "raw_references" in result.metadata:
+                fallback_containers = []
+                kg_container = str(settings.storage.STORAGE_CONTAINER_NAME or "")
+                if not is_kg and kg_container and kg_container != container_name:
+                    fallback_containers.append(kg_container)
                 result.sources = await self._enrich_sources(
                     result.metadata["raw_references"],
                     domain,
                     kb_name,
                     workspace_id,
-                    role_id
+                    role_id,
+                    container_name,
+                    fallback_containers,
                 )
 
             logger.info(
@@ -426,7 +458,9 @@ class RAGQueryService:
         domain: str,
         kb_name: str,
         workspace_id: int,
-        role_id: int
+        role_id: int,
+        container_name: Optional[str] = None,
+        fallback_container_names: Optional[List[str]] = None,
     ) -> List[EnrichedSource]:
         """Enrich references with download URLs"""
         enriched_sources = []
@@ -437,7 +471,9 @@ class RAGQueryService:
                 domain,
                 kb_name,
                 workspace_id,
-                role_id
+                role_id,
+                container_name,
+                fallback_container_names,
             )
             if enriched:
                 enriched_sources.append(enriched)
