@@ -285,7 +285,10 @@ def _build_fact_filters(
     )
 
     end_dt = (
-        datetime.fromisoformat(end_date)
+        datetime.combine(
+            datetime.fromisoformat(end_date).date(),
+            time.max
+        )
         if end_date
         else datetime.utcnow()
     )
@@ -1901,7 +1904,7 @@ def get_llm_model_token_and_request_metrics(
         ctx["trustai_session"].close()
         ctx["kb_session"].close()
         
-        
+       
 @mcp.tool()
 @require_auth
 def get_guardrail_detection_metrics(
@@ -1937,6 +1940,7 @@ def get_guardrail_detection_metrics(
         end_date= end_date
     )
     
+    
     start_dt = (
         datetime.combine(
             datetime.fromisoformat(start_date).date(),
@@ -1950,7 +1954,10 @@ def get_guardrail_detection_metrics(
     )
 
     end_dt = (
-        datetime.fromisoformat(end_date)
+        datetime.combine(
+            datetime.fromisoformat(end_date).date(),
+            time.max
+        )
         if end_date
         else datetime.utcnow()
     )
@@ -2024,7 +2031,8 @@ def get_guardrail_detection_metrics(
                     ctx["agent_ids"]
                 )
             )
-
+            
+        
         rows = (
             query.group_by(
                 GuardrailOutcomeFact.eval_name
