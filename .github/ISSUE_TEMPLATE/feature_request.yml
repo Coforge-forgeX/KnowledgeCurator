@@ -1,6 +1,6 @@
 name: Feature Request
 description: Request a new capability or enhancement for the Knowledge Base platform.
-title: "[FEATURE] "
+title: "[FEATURE]: "
 labels:
   - enhancement
 
@@ -20,17 +20,6 @@ body:
       label: Problem Statement
       description: What problem are we trying to solve?
       placeholder: Users cannot filter search results by document source.
-    validations:
-      required: true
-
-  - type: textarea
-    id: proposed_solution
-    attributes:
-      label: Proposed Solution
-      description: Describe the desired solution.
-      placeholder: Add a source filter to the KB search experience.
-    validations:
-      required: true
 
   - type: textarea
     id: alternatives
@@ -48,16 +37,11 @@ body:
         - KB APIs
         - Indexer
         - Search
-        - SharePoint Integration
-        - Agent Integration
+        - Integration
         - Database
-        - RBAC
         - UI
-        - Analytics
         - Deployment
         - Other
-    validations:
-      required: true
 
   - type: dropdown
     id: priority
@@ -80,8 +64,6 @@ body:
         - Users can filter search results by source
         - API supports source filtering
         - Existing functionality remains unaffected
-    validations:
-      required: true
 
   - type: textarea
     id: business_impact
