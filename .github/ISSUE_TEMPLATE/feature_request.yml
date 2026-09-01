@@ -10,6 +10,7 @@ body:
     attributes:
       label: Feature Summary
       description: Briefly describe the requested feature.
+      placeholder: Describe the feature in one or two sentences.
     validations:
       required: true
 
@@ -23,10 +24,11 @@ body:
       required: true
 
   - type: textarea
-    id: proposal
+    id: proposed_solution
     attributes:
       label: Proposed Solution
       description: Describe the desired solution.
+      placeholder: Add a source filter to the KB search experience.
     validations:
       required: true
 
@@ -34,12 +36,14 @@ body:
     id: alternatives
     attributes:
       label: Alternatives Considered
-      description: Describe alternative approaches if any.
+      description: Describe any alternative approaches that were considered.
+      placeholder: Any workarounds or alternative solutions.
 
   - type: dropdown
     id: component
     attributes:
       label: Component
+      description: Which KB component does this affect?
       options:
         - KB APIs
         - Indexer
@@ -68,18 +72,28 @@ body:
       required: true
 
   - type: textarea
-    id: acceptance
+    id: acceptance_criteria
     attributes:
       label: Acceptance Criteria
+      description: Define the conditions for successful completion.
       placeholder: |
-        - Users can filter by source
-        - Filters are persisted across sessions
+        - Users can filter search results by source
         - API supports source filtering
+        - Existing functionality remains unaffected
     validations:
       required: true
 
   - type: textarea
-    id: impact
+    id: business_impact
     attributes:
-      label: Expected Benefits
-      description: Describe business and user value.
+      label: Business Impact
+      description: Describe the expected value or impact.
+      placeholder: Improves discoverability and reduces time spent finding relevant content.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues to ensure this feature has not already been requested.
+          required: true
