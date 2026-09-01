@@ -1,0 +1,85 @@
+name: Feature Request
+description: Request a new capability or enhancement for the Knowledge Base platform.
+title: "[FEATURE] "
+labels:
+  - enhancement
+
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Feature Summary
+      description: Briefly describe the requested feature.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem are we trying to solve?
+      placeholder: Users cannot filter search results by document source.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe the desired solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe alternative approaches if any.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - KB APIs
+        - Indexer
+        - Search
+        - SharePoint Integration
+        - Agent Integration
+        - Database
+        - RBAC
+        - UI
+        - Analytics
+        - Deployment
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P1 - Critical
+        - P2 - High
+        - P3 - Medium
+        - P4 - Low
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      placeholder: |
+        - Users can filter by source
+        - Filters are persisted across sessions
+        - API supports source filtering
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Expected Benefits
+      description: Describe business and user value.
