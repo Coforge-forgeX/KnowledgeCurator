@@ -10,10 +10,17 @@ from bson.objectid import ObjectId
 from configparser import ConfigParser
 from kbcurator.utils.blob_sas import refresh_source_url
 
-# Load .env file if it exists (for local development)
-env_path = os.path.abspath(os.path.join(os.getcwd(), '.env'))
-if os.path.exists(env_path):
-    load_dotenv(env_path)
+# Load .env robustly (cwd-independent) for local development.
+_here = os.path.dirname(os.path.abspath(__file__))
+_candidates = [
+    os.path.abspath(os.path.join(_here, "../../../.env")),  # KnowledgeCurator/.env
+    os.path.abspath(os.path.join(os.getcwd(), ".env")),
+    os.path.abspath(os.path.join(os.getcwd(), "../.env")),
+]
+for _env_path in _candidates:
+    if os.path.exists(_env_path):
+        load_dotenv(_env_path, override=True)
+        break
 
 class SessionHistoryManager:
     def __init__(self, mongo_client):
