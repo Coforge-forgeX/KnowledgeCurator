@@ -1398,9 +1398,23 @@ async def lightrag_indexing_tool(
         normalized_file_path = file_path.replace('\\', '/') if file_path else file_path
         print(f"[DEBUG] Normalized file_path: '{normalized_file_path}'")
         
-        for idx, chunk in enumerate(chunks):
-            await rag.ainsert(input=chunk, file_paths=[normalized_file_path])
-            print(f"Chunk {idx+1}/{len(chunks)} indexed for: {normalized_file_path}")
+        # Insert all chunks in a single call: one ainsert per chunk previously caused
+        # repeated kv_store_doc_status.json - stores metadata rewrites, which collide with OneDrive's
+        # background file sync/lock on Windows (WinError 5 Access is denied on rename).
+        max_attempts = 5
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await rag.ainsert(
+                    input=chunks,
+                    file_paths=[normalized_file_path] * len(chunks),
+                )
+                break
+            except PermissionError as e:
+                if attempt == max_attempts:
+                    raise
+                print(f"[WARN] ainsert attempt {attempt}/{max_attempts} hit a file lock ({e}); retrying...")
+                await asyncio.sleep(1.5 * attempt)
+        print(f"Indexed {len(chunks)} chunk(s) for: {normalized_file_path}")
         return {"status": "success", "file": normalized_file_path, "chunks": len(chunks)}
     except Exception as e:
         return {"error": str(e)}    
@@ -1416,7 +1430,9 @@ async def upload_and_index_tool(
     file_contents: Optional[List[bytes]] = None,
     domain: Optional[str] = None,
     kb_name: Optional[str] = None,
+    knowledge_bases: Optional[list] = None,
     user_id: Optional[str] = None,
+    role_id: Optional[str] = None,
     expiry_years: int = 10
 ) -> dict:
     """
@@ -1427,8 +1443,61 @@ async def upload_and_index_tool(
     - Then starts indexing in background (status 'indexing') using the same indexing logic you had
     - Updates status to 'indexed' or 'failed'
     """
+    # Normalize common placeholder values from UI payloads.
+    def _norm_opt_str(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text.lower() in {"none", "null", "undefined"}:
+            return None
+        return text
+
+    container_name = _norm_opt_str(container_name)
+    upload_path = _norm_opt_str(upload_path)
+    domain = _norm_opt_str(domain)
+    kb_name = _norm_opt_str(kb_name)
+    workspace_id = _norm_opt_str(workspace_id)
+
+    # Accept knowledge_bases in either string-list or object-list format.
+    normalized_kbs: List[str] = []
+    if isinstance(knowledge_bases, list):
+        for kb in knowledge_bases:
+            if isinstance(kb, str):
+                candidate = kb.strip()
+                if candidate:
+                    normalized_kbs.append(candidate)
+            elif isinstance(kb, dict):
+                candidate = (
+                    str(kb.get("title") or kb.get("name") or kb.get("kb_name") or "").strip()
+                )
+                if candidate:
+                    normalized_kbs.append(candidate)
+
+    # Backward-compatible defaulting when frontend omits path fields.
+    if not container_name:
+        container_name = "workspace" if workspace_id else os.getenv("AZURE_BLOB_STORAGE_CONTAINER_NAME")
+
+    if not upload_path:
+        if domain and kb_name and workspace_id:
+            upload_path = f"{domain}/{kb_name}/{workspace_id}"
+        elif domain and kb_name and normalized_kbs:
+            upload_path = f"{domain}/{kb_name}/{normalized_kbs[0]}"
+        elif domain and kb_name:
+            upload_path = f"{domain}/{kb_name}"
+        elif domain:
+            upload_path = domain
+    
+    # Validate required parameters
     if user_id is None:
         return {"status": "error", "error": "user_id cannot be null"}
+    
+    if not container_name:
+        return {"status": "error", "error": "container_name is required"}
+    
+    if not upload_path:
+        return {"status": "error", "error": "upload_path is required"}
+
+    print(f"[DEBUG] normalized knowledge_bases: {normalized_kbs}")
 
     # --- JWT-based authentication and workspace-user mapping check (copied from list_workspace_users) ---
     # Validate workspace_id presence
