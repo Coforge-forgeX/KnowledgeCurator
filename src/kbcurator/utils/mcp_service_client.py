@@ -335,6 +335,7 @@ class MCPServiceClient:
                     "file_contents": file_contents,
                     "domain": self.industry,
                     "kb_name": kb_name,
+                    "knowledge_bases": self.knowledge_bases,
                     "workspace_id": str(workspace_id),  # Convert to string for MCP tool
                     "user_id": str(user_id),  # Convert to string for MCP tool
                     "expiry_years": 10
