@@ -1,5 +1,4 @@
 name: Deploy KB REST Function (DEV)
-
 on:
   workflow_dispatch:
   push:
