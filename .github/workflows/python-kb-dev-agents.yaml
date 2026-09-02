@@ -38,8 +38,8 @@ jobs:
           --name ${{ env.AZURE_WEBAPP_NAME }} \
           --resource-group ${{ env.rg_name }}
 
-          - name: Assign AcrPull Role
-        run: |
+    - name: Assign AcrPull Role
+      run: |
           PRINCIPAL_ID=$(az webapp identity show \
             --name ${{ env.AZURE_WEBAPP_NAME }} \
             --resource-group ${{ env.rg_name }} \
@@ -54,6 +54,7 @@ jobs:
             --assignee $PRINCIPAL_ID \
             --role AcrPull \
             --scope $ACR_ID || true
+            
     - name: Build and Push Docker Image
       run: |
        docker build --no-cache -t ${{ env.REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} .
