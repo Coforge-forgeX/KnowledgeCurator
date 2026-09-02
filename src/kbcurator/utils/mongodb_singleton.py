@@ -8,7 +8,26 @@ from pymongo.server_api import ServerApi
 from typing import Optional
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+
+def _load_env_robust() -> None:
+    """Load env robustly without depending on cwd.
+
+    Keep override=True behavior here because this module historically relied on it,
+    but ensure we load the intended KnowledgeCurator/.env when present.
+    """
+    candidates = []
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.abspath(os.path.join(here, "../../../.env")))  # KnowledgeCurator/.env
+    candidates.append(os.path.abspath(os.path.join(os.getcwd(), ".env")))
+    candidates.append(os.path.abspath(os.path.join(os.getcwd(), "../.env")))
+    for path in candidates:
+        if os.path.exists(path):
+            load_dotenv(path, override=True)
+            return
+    load_dotenv(override=True)
+
+
+_load_env_robust()
 
 
 class MongoDBSingleton:
