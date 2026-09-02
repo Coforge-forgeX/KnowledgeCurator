@@ -1,14 +1,14 @@
 """
-LLM Router Tool — Admin-managed provider configuration.
+LLM Router Tool - Admin-managed provider configuration.
 
 Admin-only tools:
-    admin_configure_llm_provider   — store credentials + enable for chosen agents
-    admin_list_llm_providers       — list what is configured in this workspace
-    admin_remove_llm_provider      — deactivate a provider from the workspace
+    admin_configure_llm_provider   - store credentials + enable for chosen agents
+    admin_list_llm_providers       - list what is configured in this workspace
+    admin_remove_llm_provider      - deactivate a provider from the workspace
 
 Authenticated-user tools:
-    switch_llm_provider            — toggle between already-configured providers
-    test_llm_generation            — smoke-test the active provider
+    switch_llm_provider            - toggle between already-configured providers
+    test_llm_generation            - smoke-test the active provider
 
 Credential source: MongoDB config documents (`chatbot_db.llm_router_config`).
 Environment variables are used only to bootstrap MongoDB connectivity.
@@ -63,7 +63,7 @@ def _build_manager_from_db(workspace_id: int, agent_id: Optional[int]) -> Config
     except ValueError:
         # Return empty manager if nothing is configured (for backward compat)
         logger.warning(
-            f"No LLM provider configured â€” using empty manager "
+            f"No LLM provider configured - using empty manager "
             f"(workspace_id={workspace_id}, agent_id={agent_id})"
         )
         return ConfigurableAIManager()
@@ -150,7 +150,7 @@ async def admin_configure_llm_provider(
     For EXISTING providers: only provide the fields you want to update.
 
     Args:
-        provider:         Provider name — 'azure' or 'quasar'.
+        provider:         Provider name â€” 'azure' or 'quasar'.
         workspace_id:     Workspace to configure.
         agent_ids:        List of agent IDs to configure this model for. When provided,
                          this model will be configured ONLY for these agents (others removed).
@@ -542,7 +542,7 @@ async def admin_remove_llm_provider(
 
     provider = provider.lower().strip()
 
-    # Protect the default azure provider — it must never be fully removed
+    # Protect the default azure provider â€” it must never be fully removed
     if provider == "azure" and model is None:
         raise ToolError(
             "Cannot remove the Azure provider. "
@@ -568,7 +568,7 @@ async def admin_remove_llm_provider(
             removed_from_agents = model_assignments.get(model) or []
 
             if not updated_models:
-                # No models left — deactivate the entire provider
+                # No models left â€” deactivate the entire provider
                 workspace_provider_credentials_service.deactivate_provider_credentials(
                     workspace_id=workspace_id,
                     provider_name=provider,
@@ -603,7 +603,7 @@ async def admin_remove_llm_provider(
 
         if len(active_provider_names) <= 1:
             raise ToolError(
-                f"Cannot remove provider '{provider}' — it is the only configured provider for this workspace. "
+                f"Cannot remove provider '{provider}' â€” it is the only configured provider for this workspace. "
                 "At least one LLM provider must always remain configured."
             )
 
@@ -685,7 +685,7 @@ async def list_available_llm_providers(
             
             # Skip providers that have no active credentials in this workspace
             if not creds or not creds.get("is_active", True):
-                logger.debug(f"Provider '{provider}' listed in config but has no active credentials in workspace {workspace_id} — hiding from user.")
+                logger.debug(f"Provider '{provider}' listed in config but has no active credentials in workspace {workspace_id} â€” hiding from user.")
                 continue
             
             # Get configured models for this agent and provider
@@ -693,7 +693,7 @@ async def list_available_llm_providers(
             
             # Skip providers with no configured models for this agent
             if not agent_provider_models:
-                logger.debug(f"Provider '{provider}' has no configured models for agent {agent_id} — skipping.")
+                logger.debug(f"Provider '{provider}' has no configured models for agent {agent_id} â€” skipping.")
                 continue
             
             # Safely extract endpoint host for display

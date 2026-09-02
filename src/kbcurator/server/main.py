@@ -276,7 +276,7 @@ class SecurityAndCORSMiddleware(BaseHTTPMiddleware):
             "GET, POST, PUT, DELETE, OPTIONS, PATCH"
         )
         response.headers["Access-Control-Allow-Headers"] = (
-            "Authorization, Content-Type, Accept, X-Requested-With, mcp-protocol-version, x-skip-auth"
+            "Authorization, Content-Type, Accept, X-Requested-With, mcp-protocol-version, X-Skip-Auth"
         )
         response.headers["Access-Control-Expose-Headers"] = (
             "Authorization, Content-Type, Set-Cookie"
