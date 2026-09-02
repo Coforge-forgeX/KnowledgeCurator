@@ -1,1 +1,1 @@
-# Knowledge Curator 
+# Knowledge Curator Agent
