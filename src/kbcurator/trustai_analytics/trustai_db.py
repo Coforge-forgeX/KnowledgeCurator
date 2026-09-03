@@ -68,13 +68,21 @@ class TrustaiAnalyticsDB:
 
     def _init_db(self):
 
+        # add TRUSTAI_* env vars when your postgres instance for trustai_db is different from the UserManagementSystem,
+        # else it will fallback to default postgres instance.
+        trustai_postgres_host = os.getenv("TRUSTAI_POSTGRES_HOST") or settings.POSTGRES_HOST
+        trusati_postgres_port = os.getenv("TRUSTAI_POSTGRES_PORT") or settings.POSTGRES_PORT
+        trustai_postgres_user = os.getenv("TRUSTAI_POSTGRES_USER") or settings.POSTGRES_USER
+        trustai_postgres_password = os.getenv("TRUSTAI_POSTGRES_PASSWORD") or settings.POSTGRES_PASSWORD
+        trustai_postgres_db = os.getenv("TRUSTAI_POSTGRES_DB") or settings.TRUSTAI_DB
+
         conn_str = (
             f"postgresql+psycopg2://"
-            f"{settings.POSTGRES_USER}:"
-            f"{quote_plus(settings.POSTGRES_PASSWORD)}"
-            f"@{settings.POSTGRES_HOST}:"
-            f"{settings.POSTGRES_PORT}/"
-            f"{settings.TRUSTAI_DB}"
+            f"{trustai_postgres_user}:"
+            f"{quote_plus(trustai_postgres_password)}"
+            f"@{trustai_postgres_host}:"
+            f"{trustai_postgres_port}/"
+            f"{trustai_postgres_db}"
         )
 
         self.engine = create_engine(
