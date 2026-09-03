@@ -378,6 +378,7 @@ class LightRAGService:
                 "embedding_func": embedding_func,
                 "graph_storage": settings.lightrag.GRAPH_STORAGE_TYPE,
                 "vector_storage": settings.lightrag.VECTOR_STORAGE_TYPE,
+                "cosine_better_than_threshold": settings.lightrag.COSINE_THRESHOLD,
                 "chunk_token_size": settings.lightrag.CHUNK_TOKEN_SIZE,
                 "chunk_overlap_token_size": settings.lightrag.CHUNK_OVERLAP_TOKEN_SIZE,
                 "embedding_batch_num": settings.lightrag.EMBEDDING_BATCH_NUM,

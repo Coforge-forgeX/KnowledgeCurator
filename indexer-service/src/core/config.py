@@ -112,7 +112,7 @@ class AzureSettings(BaseSettings):
         default="kb-indexing-jobs",
         validation_alias="AZURE_INDEXING_QUEUE_NAME",
     )
-    QUEUE_POLL_INTERVAL: int = Field(default=5)
+    QUEUE_POLL_INTERVAL: int = Field(default=120, ge=60)
     WORKSPACE_CONTAINER_NAME: str = Field(default="workspace")
 
     # Azure Service Bus (recommended for production)
@@ -129,7 +129,20 @@ class AzureSettings(BaseSettings):
         env="SERVICE_BUS_SUBSCRIPTION_NAME",
     )
 
-    # Azure Document Intelligence
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+
+class OCRSettings(BaseSettings):
+    """Provider-agnostic OCR fallback configuration."""
+
+    OCR_PROVIDER: str = Field(default="azure")
+
     AZURE_DOC_INTELLIGENCE_ENDPOINT: Optional[str] = Field(
         default=None,
         validation_alias="AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT",
@@ -138,6 +151,15 @@ class AzureSettings(BaseSettings):
         default=None,
         validation_alias="AZURE_DOCUMENT_INTELLIGENCE_KEY",
     )
+
+    AWS_TEXTRACT_REGION: Optional[str] = Field(default=None)
+    AWS_TEXTRACT_ACCESS_KEY_ID: Optional[str] = Field(default=None)
+    AWS_TEXTRACT_SECRET_ACCESS_KEY: Optional[str] = Field(default=None)
+
+    GCP_DOCUMENT_AI_PROJECT_ID: Optional[str] = Field(default=None)
+    GCP_DOCUMENT_AI_LOCATION: str = Field(default="us")
+    GCP_DOCUMENT_AI_PROCESSOR_ID: Optional[str] = Field(default=None)
+    GCP_DOCUMENT_AI_CREDENTIALS_PATH: Optional[str] = Field(default=None)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -201,6 +223,7 @@ class LightRAGSettings(BaseSettings):
     CHUNK_OVERLAP_TOKEN_SIZE: int = Field(default=150, validation_alias="LIGHTRAG_CHUNK_OVERLAP_TOKEN_SIZE")
     GRAPH_STORAGE_TYPE: str = Field(default="Neo4JStorage", validation_alias="LIGHTRAG_GRAPH_STORAGE_TYPE")
     VECTOR_STORAGE_TYPE: str = Field(default="PGVectorStorage", validation_alias="LIGHTRAG_VECTOR_STORAGE_TYPE")
+    COSINE_THRESHOLD: float = Field(default=0.2, ge=0.0, le=1.0, validation_alias="COSINE_THRESHOLD")
     USE_EMBEDDING_MODEL_SUFFIX: bool = Field(default=False, validation_alias="LIGHTRAG_USE_EMBEDDING_MODEL_SUFFIX")
     EMBEDDING_TIMEOUT_SECONDS: int = Field(default=120, validation_alias="LIGHTRAG_EMBEDDING_TIMEOUT_SECONDS")
     EMBEDDING_FUNC_MAX_ASYNC: int = Field(default=4, validation_alias="LIGHTRAG_EMBEDDING_FUNC_MAX_ASYNC")
@@ -262,6 +285,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     queue: QueueSettings = Field(default_factory=QueueSettings)
     azure: AzureSettings = Field(default_factory=AzureSettings)
+    ocr: OCRSettings = Field(default_factory=OCRSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)

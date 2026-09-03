@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import inspect
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Optional, Tuple
@@ -21,17 +22,57 @@ from shared.lightrag import (
     RateLimitError,
 )
 from shared.text_extraction import (
-    DocIntelligenceConfig,
     TextExtractionError,
     TextExtractionService,
 )
+from shared.adapters.ocr import get_ocr_adapter
 
 from src.core.config import settings
 from src.core.logging import get_logger
 from sqlalchemy import select
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 
 logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def claim_indexing_job(job_id: str):
+    """Atomically claim a job across indexer instances using PostgreSQL."""
+    from src.core.database import IndexingJob, get_pg_engine
+
+    engine = await get_pg_engine()
+    async with engine.connect() as connection:
+        acquired = bool(
+            await connection.scalar(
+                text("SELECT pg_try_advisory_lock(hashtextextended(:job_id, 0))"),
+                {"job_id": job_id},
+            )
+        )
+        if acquired:
+            try:
+                state = await connection.scalar(
+                    select(IndexingJob.state).where(IndexingJob.job_id == job_id)
+                )
+                yield "completed" if state == "completed" else "acquired"
+            finally:
+                await connection.execute(
+                    text("SELECT pg_advisory_unlock(hashtextextended(:job_id, 0))"),
+                    {"job_id": job_id},
+                )
+            return
+
+    yield "busy"
+
+
+async def get_indexing_job_state(job_id: str) -> Optional[str]:
+    """Return the current persisted state for a job."""
+    from src.core.database import IndexingJob, get_async_session
+
+    async with get_async_session() as session:
+        return await session.scalar(
+            select(IndexingJob.state).where(IndexingJob.job_id == job_id)
+        )
 
 
 @lru_cache(maxsize=1)
@@ -42,11 +83,21 @@ def _get_text_extraction_service() -> TextExtractionService:
     OCR fallbacks work identically whether values arrive via .env (local) or
     Azure app settings (deployed).
     """
+    ocr_adapter = get_ocr_adapter(
+        provider=settings.ocr.OCR_PROVIDER,
+        azure_endpoint=settings.ocr.AZURE_DOC_INTELLIGENCE_ENDPOINT,
+        azure_api_key=settings.ocr.AZURE_DOC_INTELLIGENCE_KEY,
+        aws_region=settings.ocr.AWS_TEXTRACT_REGION or settings.storage.AWS_REGION,
+        aws_access_key_id=settings.ocr.AWS_TEXTRACT_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.ocr.AWS_TEXTRACT_SECRET_ACCESS_KEY,
+        gcp_project_id=settings.ocr.GCP_DOCUMENT_AI_PROJECT_ID,
+        gcp_location=settings.ocr.GCP_DOCUMENT_AI_LOCATION,
+        gcp_processor_id=settings.ocr.GCP_DOCUMENT_AI_PROCESSOR_ID,
+        gcp_credentials_path=settings.ocr.GCP_DOCUMENT_AI_CREDENTIALS_PATH,
+    )
     return TextExtractionService(
-        doc_intelligence=DocIntelligenceConfig(
-            endpoint=settings.azure.AZURE_DOC_INTELLIGENCE_ENDPOINT,
-            api_key=settings.azure.AZURE_DOC_INTELLIGENCE_KEY,
-        )
+        ocr_adapter=ocr_adapter,
+        min_text_chars=settings.processing.PDF_MIN_TEXT_CHARS,
     )
 
 
@@ -116,6 +167,7 @@ async def initialize_lightrag(domain: str, kb_name: str) -> LightRAG:
         graph_storage=settings.lightrag.GRAPH_STORAGE_TYPE,
         workspace=workspace_name,
         vector_storage=settings.lightrag.VECTOR_STORAGE_TYPE,
+        cosine_better_than_threshold=settings.lightrag.COSINE_THRESHOLD,
         chunk_token_size=settings.lightrag.CHUNK_TOKEN_SIZE,
         chunk_overlap_token_size=settings.lightrag.CHUNK_OVERLAP_TOKEN_SIZE,
         embedding_batch_num=settings.lightrag.EMBEDDING_BATCH_NUM,

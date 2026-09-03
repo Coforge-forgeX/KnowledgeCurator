@@ -3,6 +3,7 @@
 This adapter publishes and consumes messages from Azure Service Bus.
 Supports both queue mode and topic/subscription mode.
 """
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -33,6 +34,17 @@ class ServiceBusQueueMessage:
         self.message_id = message.message_id
         self.receipt_handle = message.message_id
         self.dequeue_count = message.delivery_count or 1
+        self.lock_renewal_failed = asyncio.Event()
+        self.lock_renewal_error: Optional[Exception] = None
+
+    async def report_lock_renewal_failure(self, _message, error: Exception) -> None:
+        self.lock_renewal_error = error
+        self.lock_renewal_failed.set()
+        logger.error(
+            "Service Bus message lock renewal failed (message_id=%s): %s",
+            self.message_id,
+            error,
+        )
 
     def __getattr__(self, name):
         """Delegate attribute access to underlying message."""
@@ -229,7 +241,8 @@ class AzureServiceBusAdapter:
                     self._lock_renewer.register(
                         self._receiver,
                         wrapped_msg._message,
-                        max_lock_renewal_duration=self.max_lock_renewal_duration
+                        max_lock_renewal_duration=self.max_lock_renewal_duration,
+                        on_lock_renew_failure=wrapped_msg.report_lock_renewal_failure,
                     )
 
                 entity_name = (
@@ -257,7 +270,7 @@ class AzureServiceBusAdapter:
             )
             return []
 
-    async def delete_message(self, receipt_handle: Any, pop_receipt: str = None) -> None:
+    async def delete_message(self, receipt_handle: Any, pop_receipt: str = None) -> bool:
         """Complete (acknowledge) a message.
 
         In Service Bus, completing a message removes it from the queue.
@@ -273,27 +286,34 @@ class AzureServiceBusAdapter:
             if hasattr(receipt_handle, '_message'):
                 # It's a ServiceBusQueueMessage wrapper
                 await self._receiver.complete_message(receipt_handle._message)
+                return True
             else:
-                logger.warning(
+                raise ValueError(
                     f"Cannot complete message - message object not available (receipt={receipt_handle})"
                 )
 
-        except MessageLockLostError as exc:
-            # Lock expired - message will return to queue automatically
-            # This is not a critical error; log as warning
-            logger.warning(
-                f"Message lock expired before completion - message will retry automatically "
-                f"(message_id={getattr(receipt_handle, 'message_id', 'unknown')})"
+        except MessageLockLostError:
+            logger.exception(
+                "Message lock expired before completion (message_id=%s)",
+                getattr(receipt_handle, "message_id", "unknown"),
             )
-        except Exception as exc:
-            logger.error(
-                f"Error completing message (receipt={receipt_handle}): {exc}",
-                exc_info=True,
-            )
+            raise
+        except Exception:
+            logger.exception("Error completing message (receipt=%s)", receipt_handle)
+            raise
+
+    async def abandon_message(self, receipt_handle: Any) -> bool:
+        """Release a message lock so another receive can retry it."""
+        if not self._receiver:
+            await self.initialize_receiver()
+        if not hasattr(receipt_handle, "_message"):
+            raise ValueError("Cannot abandon message without the Service Bus message object")
+        await self._receiver.abandon_message(receipt_handle._message)
+        return True
 
     async def move_to_dead_letter(
         self, receipt_handle: Any, reason: str = "MaxRetriesExceeded", error_description: str = None
-    ) -> None:
+    ) -> bool:
         """Move a message to the dead letter queue.
 
         Args:
@@ -321,22 +341,22 @@ class AzureServiceBusAdapter:
                     f"Message moved to dead letter queue "
                     f"({self.entity_type}={entity_name}, reason={reason}, message_id={receipt_handle.message_id})"
                 )
+                return True
             else:
-                logger.warning(
+                raise ValueError(
                     f"Cannot dead letter message - message object not available (receipt={receipt_handle})"
                 )
 
-        except MessageLockLostError as exc:
-            # Lock expired - message will return to queue automatically and retry
-            logger.warning(
-                f"Message lock expired before dead lettering - message will retry automatically "
-                f"(message_id={getattr(receipt_handle, 'message_id', 'unknown')}, reason={reason})"
+        except MessageLockLostError:
+            logger.exception(
+                "Message lock expired before dead lettering (message_id=%s, reason=%s)",
+                getattr(receipt_handle, "message_id", "unknown"),
+                reason,
             )
-        except Exception as exc:
-            logger.error(
-                f"Error moving message to dead letter queue (receipt={receipt_handle}): {exc}",
-                exc_info=True,
-            )
+            raise
+        except Exception:
+            logger.exception("Error moving message to dead letter queue (receipt=%s)", receipt_handle)
+            raise
 
     async def close(self) -> None:
         """Close Service Bus client, sender, and receiver."""

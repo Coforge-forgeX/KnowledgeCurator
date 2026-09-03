@@ -237,6 +237,7 @@ class OCRSettings(BaseSettings):
 
     # Provider selection
     OCR_PROVIDER: str = Field(default="azure")  # azure, aws, gcp, noop
+    PDF_MIN_TEXT_CHARS: int = Field(default=200, ge=1)
 
     # -------------------------------------------------------------------------
     # Azure Document Intelligence
@@ -333,6 +334,7 @@ class LightRAGSettings(BaseSettings):
     # Storage backend types
     VECTOR_STORAGE_TYPE: str = Field(default="PGVectorStorage")
     GRAPH_STORAGE_TYPE: str = Field(default="Neo4JStorage")
+    COSINE_THRESHOLD: float = Field(default=0.2, ge=0.0, le=1.0)
 
     # -------------------------------------------------------------------------
     # PostgreSQL for PGVectorStorage (SEPARATE from main database)

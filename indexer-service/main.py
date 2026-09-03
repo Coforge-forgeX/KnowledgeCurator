@@ -179,11 +179,18 @@ async def indexing_worker():
     """
     # Lazy imports to avoid loading heavy dependencies at startup.
     from src.queue_adapters import get_queue_adapter
-    from src.workers.indexing_job_handler import process_indexing_job
+    from src.workers.indexing_job_handler import (
+        claim_indexing_job,
+        create_or_update_indexing_job,
+        get_indexing_job_state,
+        process_indexing_job,
+        update_file_task_status,
+    )
 
     queue = get_queue_adapter()
     storage_provider_name = settings.active_storage_provider
     max_concurrent_jobs = max(1, int(settings.MAX_CONCURRENT_JOBS))
+    poll_interval = settings.azure.QUEUE_POLL_INTERVAL
 
     # Track active job tasks (not count - actual task objects)
     active_tasks: set = set()
@@ -196,6 +203,7 @@ async def indexing_worker():
         queue_provider=queue.provider_name,
         storage_provider=storage_provider_name,
         max_concurrent_jobs=max_concurrent_jobs,
+        poll_interval_seconds=poll_interval,
     )
 
     async def _process_single_message(message):
@@ -203,54 +211,128 @@ async def indexing_worker():
         try:
             job_data = message.content
             task_id = job_data.get("task_id")
-            job_id = job_data.get("job_id", str(task_id))
+            job_id = str(job_data.get("job_id") or task_id or message.message_id)
+            job_data["job_id"] = job_id
             file_path = job_data.get("file_path")
             workspace_id = job_data.get("workspace_id")
 
             # Get retry count from message (dequeue_count - 1 because first dequeue is not a retry)
             retry_count = max(0, getattr(message, 'dequeue_count', 1) - 1)
 
-            # Check if max retries exceeded
-            if retry_count >= settings.MAX_RETRIES:
-                error_msg = f"Max retries ({settings.MAX_RETRIES}) exceeded"
-                logger.error(
-                    "Moving message to dead letter queue",
+            async with claim_indexing_job(job_id) as claim_status:
+                if claim_status == "busy":
+                    logger.info("Job is already active; monitoring redelivery", job_id=job_id)
+                    renewal_event = getattr(message, "lock_renewal_failed", None)
+                    deadline = (
+                        asyncio.get_running_loop().time()
+                        + settings.MAX_LOCK_RENEWAL_DURATION
+                    )
+                    while asyncio.get_running_loop().time() < deadline:
+                        if renewal_event is not None and renewal_event.is_set():
+                            raise RuntimeError(
+                                f"Service Bus lock renewal failed while waiting for job {job_id}"
+                            )
+                        state = await get_indexing_job_state(job_id)
+                        if state == "completed":
+                            settled = await queue.delete_message(message)
+                            if settled is False:
+                                raise RuntimeError(f"Failed to settle completed job {job_id}")
+                            return
+                        if state in {"failed", "rate_limited", "lock_lost"}:
+                            abandon_message = getattr(queue, "abandon_message", None)
+                            if callable(abandon_message):
+                                await abandon_message(message)
+                            return
+                        await asyncio.sleep(poll_interval)
+                    raise RuntimeError(f"Timed out waiting for active job {job_id}")
+
+                if claim_status == "completed":
+                    logger.info("Completing already-processed redelivery", job_id=job_id)
+                    settled = await queue.delete_message(message)
+                    if settled is False:
+                        raise RuntimeError(f"Failed to settle completed job {job_id}")
+                    return
+
+                if retry_count >= settings.MAX_RETRIES:
+                    error_msg = f"Max retries ({settings.MAX_RETRIES}) exceeded"
+                    logger.error(
+                        "Moving message to dead letter queue",
+                        job_id=job_id,
+                        task_id=task_id,
+                        file_path=file_path,
+                        retry_count=retry_count,
+                        max_retries=settings.MAX_RETRIES,
+                        error_msg=error_msg,
+                    )
+                    await queue.move_to_dead_letter(
+                        message,
+                        reason="MaxRetriesExceeded",
+                        error_description=f"Job failed after {retry_count} retries: {file_path}",
+                    )
+                    if task_id:
+                        await update_file_task_status(task_id, "failed", error_msg)
+                    return
+
+                logger.info(
+                    "Processing indexing job",
                     job_id=job_id,
                     task_id=task_id,
                     file_path=file_path,
+                    workspace_id=workspace_id,
                     retry_count=retry_count,
                     max_retries=settings.MAX_RETRIES,
-                    error_msg=error_msg,
                 )
-                # Move to dead letter queue
-                await queue.move_to_dead_letter(
-                    message,
-                    reason="MaxRetriesExceeded",
-                    error_description=f"Job failed after {retry_count} retries: {file_path}"
+
+                processing_task = asyncio.create_task(
+                    process_indexing_job(job_data, retry_count=retry_count)
                 )
-                # Update task status to failed
-                if task_id:
-                    from src.workers.indexing_job_handler import update_file_task_status
-                    await update_file_task_status(task_id, "failed", error_msg)
-                return  # Skip processing this message
+                renewal_event = getattr(message, "lock_renewal_failed", None)
+                if renewal_event is not None:
+                    async def _wait_for_lock_loss():
+                        try:
+                            await asyncio.wait_for(
+                                renewal_event.wait(),
+                                timeout=settings.MAX_LOCK_RENEWAL_DURATION,
+                            )
+                            return getattr(message, "lock_renewal_error", None)
+                        except asyncio.TimeoutError:
+                            return RuntimeError(
+                                "Maximum Service Bus lock renewal duration reached"
+                            )
 
-            logger.info(
-                "Processing indexing job",
-                job_id=job_id,
-                task_id=task_id,
-                file_path=file_path,
-                workspace_id=workspace_id,
-                retry_count=retry_count,
-                max_retries=settings.MAX_RETRIES,
-            )
+                    renewal_wait = asyncio.create_task(_wait_for_lock_loss())
+                    done, _ = await asyncio.wait(
+                        {processing_task, renewal_wait},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if processing_task not in done:
+                        processing_task.cancel()
+                        await asyncio.gather(processing_task, return_exceptions=True)
+                        error = await renewal_wait
+                        error_msg = f"Service Bus lock renewal failed: {error}"
+                        await create_or_update_indexing_job(
+                            job_id,
+                            workspace_id,
+                            file_path,
+                            "lock_lost",
+                            retry_count,
+                            error_msg,
+                            kb_id=job_data.get("kb_id"),
+                        )
+                        if task_id:
+                            await update_file_task_status(task_id, "failed", error_msg)
+                        raise RuntimeError(error_msg)
+                    renewal_wait.cancel()
+                    await asyncio.gather(renewal_wait, return_exceptions=True)
 
-            # Process the indexing job with retry count
-            result = await process_indexing_job(job_data, retry_count=retry_count)
+                result = await processing_task
             success = result.get("success", False)
 
             if success:
                 # Delete message from queue - job completed successfully
-                await queue.delete_message(message)
+                settled = await queue.delete_message(message)
+                if settled is False:
+                    raise RuntimeError(f"Failed to settle completed job {job_id}")
                 logger.info(
                     "Successfully processed and removed from queue",
                     job_id=job_id,
@@ -260,7 +342,9 @@ async def indexing_worker():
             else:
                 error_msg = result.get("error", "Unknown error")
                 if result.get("non_retryable", False):
-                    await queue.delete_message(message)
+                    settled = await queue.delete_message(message)
+                    if settled is False:
+                        raise RuntimeError(f"Failed to settle non-retryable job {job_id}")
                     logger.warning(
                         "Dropped non-retryable indexing message",
                         job_id=job_id,
@@ -309,7 +393,9 @@ async def indexing_worker():
                     await asyncio.sleep(1)
                     continue
 
-                # Poll queue for messages (short wait since we're continuously polling)
+                # Long-poll where supported. For adapters without long polling,
+                # the remaining interval is slept below to avoid a busy loop.
+                receive_started_at = asyncio.get_running_loop().time()
                 # logger.info(
                 #     "Polling for messages",
                 #     available_slots=available_slots,
@@ -317,14 +403,16 @@ async def indexing_worker():
                 # )
                 messages = await queue.receive_messages(
                     max_messages=available_slots,
-                    visibility_timeout=300,  # 5 minutes to process
-                    wait_time_seconds=5,     # Shorter wait for responsive polling
+                    visibility_timeout=settings.MESSAGE_VISIBILITY_TIMEOUT,
+                    wait_time_seconds=poll_interval,
                 )
 
                 if not messages:
-                    # No messages, continue polling
                     logger.info("No messages in queue, continuing to poll")
-                    await asyncio.sleep(5)
+                    elapsed = asyncio.get_running_loop().time() - receive_started_at
+                    remaining_delay = max(0, poll_interval - elapsed)
+                    if remaining_delay:
+                        await asyncio.sleep(remaining_delay)
                     continue
 
                 # Spawn tasks for new messages immediately (non-blocking)
@@ -348,7 +436,7 @@ async def indexing_worker():
             except Exception as e:
                 logger.error(f"Error in worker loop: {e}", exc_info=True)
                 # Sleep before retrying
-                await asyncio.sleep(5)
+                await asyncio.sleep(poll_interval)
     finally:
         # Wait for active tasks to complete during shutdown
         if active_tasks:

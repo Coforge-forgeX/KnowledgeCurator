@@ -7,7 +7,8 @@ import pytest
 
 from shared.text_extraction.config import DocIntelligenceConfig
 from shared.text_extraction.decoders import DOCX_SIGNATURE, normalize_file_bytes
-from shared.text_extraction.extractor import DocExtractor, DocxExtractor, TextExtractionService
+from shared.text_extraction.extractor import DocExtractor, DocxExtractor, PdfExtractor, TextExtractionService
+from shared.adapters.ocr import AzureDocumentIntelligenceAdapter
 from shared.text_extraction.models import TextExtractionError
 
 
@@ -30,15 +31,47 @@ def test_doc_intelligence_config_from_env_prefers_long_names(monkeypatch) -> Non
 
 
 def test_injected_config_is_used_over_environment(monkeypatch) -> None:
-    # Explicit config must win, so a service whose credentials live only in its
-    # own settings object still gets the OCR fallbacks.
+    # The caller-owned adapter must win over unrelated environment settings.
     monkeypatch.setenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "https://from-env.example.net/")
     monkeypatch.setenv("AZURE_DOCUMENT_INTELLIGENCE_KEY", "env-key")
-    injected = DocIntelligenceConfig(endpoint="https://from-settings.example.net/", api_key="settings-key")
+    injected = AzureDocumentIntelligenceAdapter(
+        endpoint="https://from-settings.example.net/",
+        api_key="settings-key",
+    )
 
-    service = TextExtractionService(doc_intelligence=injected)
+    service = TextExtractionService(ocr_adapter=injected)
 
-    assert service._doc_intelligence == injected
+    assert service._ocr == injected
+
+
+def test_pdf_extractor_uses_configured_minimum(monkeypatch) -> None:
+    extractor = PdfExtractor(min_text_chars=5)
+
+    async def extract_with_pdfplumber(_file_bytes: bytes) -> str:
+        return "12345"
+
+    monkeypatch.setattr(extractor, "_extract_pdfplumber", extract_with_pdfplumber)
+
+    result = asyncio.run(extractor.extract(b"pdf", "document.pdf"))
+
+    assert result.extractor == "pdfplumber"
+
+
+def test_pdf_extractor_falls_back_when_pdfplumber_raises(monkeypatch) -> None:
+    extractor = PdfExtractor(min_text_chars=5)
+
+    async def failing_pdfplumber(_file_bytes: bytes) -> str:
+        raise ValueError("invalid PDF structure")
+
+    async def extract_with_pypdf2(_file_bytes: bytes) -> str:
+        return "12345"
+
+    monkeypatch.setattr(extractor, "_extract_pdfplumber", failing_pdfplumber)
+    monkeypatch.setattr(extractor, "_extract_pypdf2", extract_with_pypdf2)
+
+    result = asyncio.run(extractor.extract(b"pdf", "document.pdf"))
+
+    assert result.extractor == "pypdf2"
 
 
 def test_docx_extractor_rejects_non_docx_payload() -> None:

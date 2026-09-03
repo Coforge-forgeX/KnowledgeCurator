@@ -12,8 +12,7 @@ import base64
 from typing import List, Optional
 
 from shared.adapters.ocr import get_ocr_adapter
-from shared.text_extraction.extractor_v2 import TextExtractionService
-from shared.text_extraction import TextExtractionError, TextExtractionResult
+from shared.text_extraction import TextExtractionError, TextExtractionService
 
 from src.core.config import settings
 from src.core.exceptions import ValidationException
@@ -64,7 +63,10 @@ class FileContextExtractor:
             from shared.adapters.ocr import NoOpOCRAdapter
             ocr_adapter = NoOpOCRAdapter()
 
-        self._extraction_service = TextExtractionService(ocr_adapter=ocr_adapter)
+        self._extraction_service = TextExtractionService(
+            ocr_adapter=ocr_adapter,
+            min_text_chars=settings.ocr.PDF_MIN_TEXT_CHARS,
+        )
 
     async def extract(self, file_names: List[str], file_contents: List[str]) -> str:
         if len(file_names) != len(file_contents):

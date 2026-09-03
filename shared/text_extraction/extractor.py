@@ -2,12 +2,8 @@
 Dedicated service for robust text extraction by file type.
 
 Shared between indexer-service (indexing pipeline) and kb-rest-service
-(chat file-context extraction) so both use one implementation instead of
-maintaining duplicate extraction logic. This module is intentionally
-decoupled from any single service's settings/logging framework: Azure
-Document Intelligence credentials are injected by the caller as a
-`DocIntelligenceConfig`, so each service keeps ownership of its own config
-loading (see `config.py` for the environment fallback).
+(chat file-context extraction) so both use one provider-agnostic implementation.
+Each service owns its configuration and injects an OCR adapter.
 """
 
 import asyncio
@@ -19,12 +15,9 @@ from typing import Optional
 
 import PyPDF2
 import pdfplumber
-from azure.ai.documentintelligence import DocumentIntelligenceClient
-from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
-from azure.core.credentials import AzureKeyCredential
 from docx import Document
 
-from .config import DocIntelligenceConfig
+from shared.adapters.ocr import NoOpOCRAdapter, OCRAdapter
 from .decoders import normalize_file_bytes
 from .models import TextExtractionError, TextExtractionResult
 
@@ -65,10 +58,17 @@ class PlainTextExtractor(BaseExtractor):
 
 
 class PdfExtractor(BaseExtractor):
+    """PDF extractor with a provider-agnostic OCR fallback."""
+
     supported_extensions = (".pdf",)
 
-    def __init__(self, doc_intelligence: Optional[DocIntelligenceConfig] = None) -> None:
-        self._doc_intelligence = doc_intelligence or DocIntelligenceConfig()
+    def __init__(
+        self,
+        ocr_adapter: Optional[OCRAdapter] = None,
+        min_text_chars: int = 100,
+    ) -> None:
+        self._ocr = ocr_adapter or NoOpOCRAdapter()
+        self._min_text_chars = min_text_chars
 
     async def _extract_pdfplumber(self, file_bytes: bytes) -> str:
         def _read() -> str:
@@ -90,34 +90,43 @@ class PdfExtractor(BaseExtractor):
 
         return await asyncio.to_thread(_read)
 
-    async def _extract_azure_doc_intelligence(self, file_bytes: bytes) -> str:
-        config = self._doc_intelligence
+    async def _extract_with_ocr(self, file_bytes: bytes, file_path: str) -> str:
+        if not self._ocr.is_configured:
+            raise TextExtractionError(
+                f"OCR not configured (provider: {self._ocr.provider_name}). "
+                f"Cannot extract text from scanned PDF: {file_path}",
+                file_path=file_path,
+            )
 
-        if not config.is_configured:
-            raise TextExtractionError("Document Intelligence not configured")
-
-        client = DocumentIntelligenceClient(config.endpoint, AzureKeyCredential(config.api_key))
-        poller = await asyncio.to_thread(
-            client.begin_analyze_document,
-            "prebuilt-read",
-            body=AnalyzeDocumentRequest(bytes_source=file_bytes),
-            locale="en-US",
-        )
-        result = await asyncio.to_thread(poller.result)
-        return result.content or ""
+        try:
+            return await self._ocr.extract_text(file_bytes, file_path)
+        except Exception as exc:
+            raise TextExtractionError(
+                f"OCR extraction failed with {self._ocr.provider_name}: {exc}",
+                file_path=file_path,
+                cause=exc,
+            ) from exc
 
     async def extract(self, file_bytes: bytes, file_path: str) -> TextExtractionResult:
-        first_pass = await self._extract_pdfplumber(file_bytes)
-        if len(first_pass.strip()) >= 100:
+        try:
+            first_pass = await self._extract_pdfplumber(file_bytes)
+        except Exception as exc:
+            logger.warning("pdfplumber extraction failed for %s: %s", file_path, exc)
+            first_pass = ""
+
+        if len(first_pass.strip()) >= self._min_text_chars:
             return TextExtractionResult(text=first_pass, extractor="pdfplumber")
 
         second_pass = await self._extract_pypdf2(file_bytes)
-        if len(second_pass.strip()) >= 100:
+        if len(second_pass.strip()) >= self._min_text_chars:
             return TextExtractionResult(text=second_pass, extractor="pypdf2")
 
-        fallback = await self._extract_azure_doc_intelligence(file_bytes)
+        fallback = await self._extract_with_ocr(file_bytes, file_path)
         if len(fallback.strip()) >= 10:
-            return TextExtractionResult(text=fallback, extractor="azure_document_intelligence")
+            return TextExtractionResult(
+                text=fallback,
+                extractor=f"ocr_{self._ocr.provider_name}",
+            )
 
         raise TextExtractionError("Could not extract meaningful text from PDF", file_path=file_path)
 
@@ -182,10 +191,12 @@ class DocxExtractor(BaseExtractor):
 
 
 class DocExtractor(BaseExtractor):
+    """Legacy .doc extractor with a provider-agnostic OCR fallback."""
+
     supported_extensions = (".doc",)
 
-    def __init__(self, doc_intelligence: Optional[DocIntelligenceConfig] = None) -> None:
-        self._doc_intelligence = doc_intelligence or DocIntelligenceConfig()
+    def __init__(self, ocr_adapter: Optional[OCRAdapter] = None) -> None:
+        self._ocr = ocr_adapter or NoOpOCRAdapter()
 
     async def extract(self, file_bytes: bytes, file_path: str) -> TextExtractionResult:
         # Legacy Word binary files should start with OLE signature bytes.
@@ -207,21 +218,14 @@ class DocExtractor(BaseExtractor):
                 file_path=file_path,
             )
 
-        config = self._doc_intelligence
-
-        if config.is_configured:
-            client = DocumentIntelligenceClient(config.endpoint, AzureKeyCredential(config.api_key))
+        if self._ocr.is_configured:
             try:
-                poller = await asyncio.to_thread(
-                    client.begin_analyze_document,
-                    "prebuilt-read",
-                    body=AnalyzeDocumentRequest(bytes_source=file_bytes),
-                    locale="en-US",
-                )
-                result = await asyncio.to_thread(poller.result)
-                content = (result.content or "").strip()
+                content = (await self._ocr.extract_text(file_bytes, file_path)).strip()
                 if content:
-                    return TextExtractionResult(text=content, extractor="azure_document_intelligence")
+                    return TextExtractionResult(
+                        text=content,
+                        extractor=f"ocr_{self._ocr.provider_name}",
+                    )
             except Exception as exc:
                 logger.warning(
                     "Legacy .doc OCR extraction failed for %s: %s",
@@ -239,22 +243,21 @@ class TextExtractionService:
     """Facade that routes extraction through dedicated extractor classes.
 
     Args:
-        doc_intelligence: Azure Document Intelligence credentials used by the
-            PDF and legacy .doc OCR fallbacks. Services should pass their own
-            settings; when omitted the credentials are read from the process
-            environment, which only works where they are exported as real
-            environment variables (pydantic-settings' `env_file` does not
-            populate `os.environ`).
+        ocr_adapter: Provider-specific adapter for PDF and legacy .doc OCR
+            fallback. If omitted, OCR fallback is disabled.
     """
 
-    def __init__(self, doc_intelligence: Optional[DocIntelligenceConfig] = None) -> None:
-        config = doc_intelligence if doc_intelligence is not None else DocIntelligenceConfig.from_env()
-        self._doc_intelligence = config
+    def __init__(
+        self,
+        ocr_adapter: Optional[OCRAdapter] = None,
+        min_text_chars: int = 100,
+    ) -> None:
+        self._ocr = ocr_adapter or NoOpOCRAdapter()
         self._extractors = (
             PlainTextExtractor(),
-            PdfExtractor(config),
+            PdfExtractor(self._ocr, min_text_chars=min_text_chars),
             DocxExtractor(),
-            DocExtractor(config),
+            DocExtractor(self._ocr),
         )
 
     async def extract_text(self, file_bytes: bytes, file_path: str) -> TextExtractionResult:

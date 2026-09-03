@@ -35,4 +35,8 @@ pdfplumber==0.11.0
 
 # AWS S3 adapter (for multi-cloud storage)
 aioboto3
+boto3>=1.34.0,<2.0
 botocore
+
+# GCP Document AI OCR adapter
+google-cloud-documentai>=2.20.0,<3.0
