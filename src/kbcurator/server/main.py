@@ -94,7 +94,8 @@ from kbcurator.tools import account_status_tool  # noqa: F401
 from kbcurator.tools import llm_router_tool  # noqa: F401
 from kbcurator.tools import sharepoint_agent 
 from kbcurator.tools import config
-
+from kbcurator.tools import trustai_tools
+from kbcurator.tools import trustai_analytics_tools
 # ---------------------------
 # Middleware
 # ---------------------------
@@ -275,7 +276,7 @@ class SecurityAndCORSMiddleware(BaseHTTPMiddleware):
             "GET, POST, PUT, DELETE, OPTIONS, PATCH"
         )
         response.headers["Access-Control-Allow-Headers"] = (
-            "Authorization, Content-Type, Accept, X-Requested-With, mcp-protocol-version"
+            "Authorization, Content-Type, Accept, X-Requested-With, mcp-protocol-version, x-skip-auth"
         )
         response.headers["Access-Control-Expose-Headers"] = (
             "Authorization, Content-Type, Set-Cookie"

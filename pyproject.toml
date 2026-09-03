@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kbcurator"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<4.0.0"
 
 # Local-path dependency for zip-based testing.
 # Replace with git URL in real usage:
@@ -90,6 +90,7 @@ dependencies = [
   "gunicorn==26.0.0",
   # "nest-asyncio>=1.6.0",  # Unused in current service code
   "msal==1.37.0",
+  "apscheduler"  # for scheduling analytics_trustai worker
 ]
 
 [tool.setuptools.packages.find]

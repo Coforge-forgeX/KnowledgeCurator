@@ -3,7 +3,7 @@ from kbcurator.server.server import mcp
 import httpx
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from kbcurator.utils.auth import require_auth_async
+from kbcurator.utils.auth import require_auth_async , require_is_admin_async
 from os import getenv
 import os
 
@@ -15,52 +15,72 @@ _GUARDRAIL_SECTION_MAP: Dict[str, Dict[str, str]] = {
     "PROMPT_INJECTION": {
         "id": "security",
         "title": "SECURITY",
-        "description": "Detects attempts to override system instructions"
+        "description": "Detects attempts to override system instructions",
+        "guardrail_action_dropdown": [{ "label": 'Warn', "value": 'W' },{ "label": 'Block', "value": 'B' }]
     },
     "BSI_DETECTION": {
         "id": "security",
         "title": "SECURITY",
-        "description": "Detects business-sensitive information"
+        "description": "Detects business-sensitive information",
+        "guardrail_action_dropdown": [{ "label": 'Warn', "value": 'W' },{ "label": 'Block', "value": 'B' },{ "label": 'On Prem Model', "value": 'R' }]
     },
     "TOXIC": {
         "id": "content_safety",
         "title": "CONTENT SAFETY",
-        "description": "Hateful, harassing or unsafe language"
+        "description": "Hateful, harassing or unsafe language",
+        "guardrail_action_dropdown": [{ "label": 'Warn', "value": 'W' },{ "label": 'Block', "value": 'B' }]
+
     },
     "BIAS_DETECTION": {
         "id": "content_safety",
         "title": "CONTENT SAFETY",
-        "description": "Discriminatory or unfair output"
+        "description": "Discriminatory or unfair output",
+        "guardrail_action_dropdown": [{ "label": 'Warn', "value": 'W' },{ "label": 'Block', "value": 'B' }]
+
     },
     "PII": {
         "id": "data_protection",
         "title": "DATA PROTECTION",
-        "description": "Personal & health identifiers"
+        "description": "Personal & health identifiers",
+        "guardrail_action_dropdown": [{ "label": 'Warn', "value": 'W' },{ "label": 'Anonymous', "value": 'A' }]
     },
     "FACTUAL_ACCURACY": {
         "id": "quality",
         "title": "QUALITY",
-        "description": "Groundedness against provided context"
+        "description": "Groundedness against provided context",
+        "guardrail_action_dropdown": [{ "label": 'Warn', "value": 'W' },{ "label": 'Block', "value": 'B' }]
+        
     },
     "CODE_HALLUCINATION": {
         "id": "quality",
         "title": "QUALITY",
-        "description": "Fabricated APIs, packages or functions"
+        "description": "Fabricated APIs, packages or functions",
+        "guardrail_action_dropdown": [{ "label": 'Warn', "value": 'W' },{ "label": 'Block', "value": 'B' }]
+
+        
     },
     "COMPETITOR_CHECK": {
         "id": "brand_business",
         "title": "BRAND / BUSINESS",
-        "description": "Fed by the Restricted Terms denylist"
+        "description": "Fed by the Restricted Terms denylist",
+        "guardrail_action_dropdown": [{ "label": 'Warn', "value": 'W' },{ "label": 'Block', "value": 'B' }]
+
+        
     },
     "TOKEN_QUOTA": {
         "id": "usage",
         "title": "USAGE",
-        "description": "Managed in Token & Quota"
+        "description": "Managed in Token & Quota",
+        "guardrail_action_dropdown": [{ "label": 'Warn', "value": 'W' },{ "label": 'Block', "value": 'B' }]
+
+        
     },
     "REGEX_CHECK": {
         "id": "quality",
         "title": "QUALITY",
-        "description": "Custom regex pattern check"
+        "description": "Custom regex pattern check",
+        "guardrail_action_dropdown": [{ "label": 'Warn', "value": 'W' },{ "label": 'Block', "value": 'B' }]
+        
     }
 }
 
@@ -129,7 +149,12 @@ def _guardrail_policies_response(workspace_id: str, payload: Dict[str, Any]) -> 
 
         section_meta = _GUARDRAIL_SECTION_MAP.get(
             guardrail_name,
-            {"id": "general", "title": "GENERAL", "description": "Guardrail policy"}
+            {
+                "id": "general", 
+                "title": "GENERAL", 
+                "description": "Guardrail policy",
+                "guardrail_action_dropdown": [{ "label": 'Warn', "value": 'W' },{ "label": 'Block', "value": 'B' }]
+            }
         )
         section_id = section_meta["id"]
 
@@ -142,7 +167,9 @@ def _guardrail_policies_response(workspace_id: str, payload: Dict[str, Any]) -> 
             }
 
         # Keep TrustAI keys and values exactly as returned; only group by class sections.
-        sections_by_id[section_id]["items"].append(dict(row))
+        guardrail_row = dict(row)
+        guardrail_row["guardrail_action_dropdown"] = section_meta.get("guardrail_action_dropdown",[{ "label": 'Warn', "value": 'W' },{ "label": 'Block', "value": 'B' }])
+        sections_by_id[section_id]["items"].append(guardrail_row)
 
     return {
         "workspaceId": workspace_id,
@@ -265,7 +292,7 @@ async def batch_update_guardrail_config(
 
 
 @mcp.tool()
-@require_auth_async
+@require_is_admin_async
 async def get_guardrail_logs(
     workspace_id: Optional[str] = None,
     user_email: Optional[str] = None,
