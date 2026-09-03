@@ -516,6 +516,39 @@ class SingleKBStrategy(QueryStrategy):
             clean_answer = clean_response(response_text)
 
             chunks = self._parse_chunks(response_payload, kb)
+            if not references:
+                cited_labels = sorted(
+                    set(re.findall(r"\[(\d+)\]", clean_answer)),
+                    key=int,
+                )
+                seen_paths: set[str] = set()
+                document_chunks: List[tuple[str, str]] = []
+                for chunk in chunks:
+                    raw_path = str(
+                        (
+                            chunk.metadata.get("file_path")
+                            if isinstance(chunk.metadata, dict)
+                            else None
+                        )
+                        or chunk.source
+                    ).strip()
+                    normalized_path = raw_path.replace("\\", "/").strip("/")
+                    file_name = normalized_path.split("/")[-1]
+                    path_key = normalized_path.lower()
+                    if not normalized_path or "." not in file_name or path_key in seen_paths:
+                        continue
+                    seen_paths.add(path_key)
+                    document_chunks.append((normalized_path, file_name))
+
+                references = [
+                    DocumentReference(
+                        citation_number=f"[{label}]",
+                        file_path=file_path,
+                        file_name=file_name,
+                    )
+                    for label, (file_path, file_name) in zip(cited_labels, document_chunks)
+                ]
+
             if not references and not chunks:
                 clean_answer = "No relevant information found in the knowledge base."
             evidence = {

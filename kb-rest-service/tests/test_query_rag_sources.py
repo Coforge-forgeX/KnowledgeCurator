@@ -3,8 +3,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.helpers.source_extractor import extract_sources
-from src.models.rag_models import EnrichedSource, RAGQueryResult, RetrievedChunk
-from src.services.query_strategies import MultiKBStrategy
+from src.models.rag_models import EnrichedSource, KnowledgeBase, QueryContext, RAGQueryResult, RetrievedChunk
+from src.models.query_rag_models import SourceReferenceModel
+from src.services.query_rag_executor import _resolve_source_containers
+from src.services.query_strategies import MultiKBStrategy, SingleKBStrategy
 from src.services.rag_query_service import SourceEnricher
 
 
@@ -65,6 +67,35 @@ def test_extract_sources_keeps_same_filename_from_different_containers():
     assert [(source.container_name, source.citation) for source in sources] == [
         ("workspace-files", "[1]"),
         ("aksknowledgecurator", "[2]"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_single_kb_recovers_citation_from_retrieved_chunk_without_references():
+    strategy = SingleKBStrategy()
+    strategy._query_lightrag = AsyncMock(return_value={
+        "answer": "Luxury guidance [1]",
+        "retrieved_chunks": [
+            {
+                "chunk_id": "voyage-1",
+                "content": "Luxury guidance",
+                "score": 1.0,
+                "source": "Other/Demo/Virgin_Voyages_Best_Practice.docx",
+                "metadata": {
+                    "file_path": "Other/Demo/Virgin_Voyages_Best_Practice.docx"
+                },
+            }
+        ],
+    })
+
+    result = await strategy.execute(
+        QueryContext(query="Summarize domain knowledge", workspace_id=1066, role_id=1),
+        [KnowledgeBase(domain="Other", name="Demo")],
+    )
+
+    references = result.metadata["raw_references"]
+    assert [(ref.citation_number, ref.file_path) for ref in references] == [
+        ("[1]", "Other/Demo/Virgin_Voyages_Best_Practice.docx")
     ]
 
 
@@ -144,6 +175,49 @@ async def test_source_enricher_falls_back_to_kg_container_for_mixed_query():
     workspace_storage.blob_exists.assert_awaited_once()
     kg_storage.blob_exists.assert_awaited_once()
     kg_storage.generate_download_url.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_query_rag_resolves_each_source_container_before_signing():
+    workspace_storage = AsyncMock()
+    workspace_storage.blob_exists.return_value = False
+    kg_storage = AsyncMock()
+    kg_storage.blob_exists.return_value = True
+
+    def storage_for_container(*, container_override):
+        return {
+            "workspace": workspace_storage,
+            "kg-files": kg_storage,
+        }[container_override]
+
+    source = SourceReferenceModel(
+        file_id="",
+        file_name="rules.pdf",
+        container_name="workspace",
+        blob_path="Other/Demo Instances/1067/rules.pdf",
+        provider="azure",
+    )
+
+    with (
+        patch(
+            "src.services.query_rag_executor.settings.storage.WORKSPACE_CONTAINER_NAME",
+            "workspace",
+        ),
+        patch(
+            "src.services.query_rag_executor.settings.storage.STORAGE_CONTAINER_NAME",
+            "kg-files",
+        ),
+        patch(
+            "src.services.query_rag_executor.get_storage_adapter",
+            side_effect=storage_for_container,
+        ),
+    ):
+        resolved = await _resolve_source_containers([source])
+
+    assert len(resolved) == 1
+    assert resolved[0].container_name == "kg-files"
+    workspace_storage.blob_exists.assert_awaited_once_with(source.blob_path)
+    kg_storage.blob_exists.assert_awaited_once_with(source.blob_path)
 
 
 def test_source_enricher_does_not_duplicate_complete_blob_path():

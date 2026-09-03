@@ -37,6 +37,15 @@ def _deduplicate_filename(filename: str, seen_names: Dict[str, int]) -> str:
     return f"{base_name}_{count}{ext}"
 
 
+async def _find_storage_for_blob(blob_path: str, containers: List[str]):
+    """Return storage for the first candidate container containing the blob."""
+    for container in dict.fromkeys(name for name in containers if name):
+        storage = get_storage_adapter(container_override=container)
+        if await storage.blob_exists(blob_path):
+            return storage
+    return None
+
+
 async def _fetch_workspace_files(
     workspace_id: int,
     limit: int,
@@ -211,9 +220,28 @@ async def main(req: AbstractRequest, context: AbstractContext) -> AbstractRespon
             nonlocal zipped_count
             async with semaphore:
                 try:
-                    storage = get_storage_adapter(container_override=container_name if container_name else None)
-                    exists = await storage.blob_exists(blob_path)
-                    if not exists:
+                    candidate_containers = list(dict.fromkeys(
+                        container
+                        for container in [
+                            container_name,
+                            default_container,
+                            settings.storage.WORKSPACE_CONTAINER_NAME,
+                            settings.storage.STORAGE_CONTAINER_NAME,
+                        ]
+                        if container
+                    ))
+                    storage = await _find_storage_for_blob(
+                        blob_path,
+                        candidate_containers,
+                    )
+
+                    if storage is None:
+                        logger.warning(
+                            "File missing from all ZIP source containers",
+                            workspace_id=workspace_id,
+                            blob_path=blob_path,
+                            containers=candidate_containers,
+                        )
                         failed_files.append(f"{orig_name}: file missing from storage")
                         return
 

@@ -17,6 +17,7 @@ additional KBs). Neither authentication nor membership validation happens here:
 `ChatAccessValidator`, and duplicating either check would cost an extra DB
 round-trip per request.
 """
+import asyncio
 import hashlib
 import json
 import time
@@ -36,11 +37,12 @@ from src.models.query_rag_models import (
     SourceReferenceModel,
 )
 from src.services.rag_query_service import get_rag_query_service
+from src.storage import get_storage_adapter
 
 logger = get_logger(__name__)
 
 QUERY_EVIDENCE_TTL_SECONDS = 30 * 60
-QUERY_RESULT_CACHE_VERSION = "source-map-v4"
+QUERY_RESULT_CACHE_VERSION = "source-map-v5"
 
 
 def _cache_enabled() -> bool:
@@ -69,6 +71,37 @@ def _make_query_evidence_key(workspace_id: int, query: str, mode: str) -> str:
 def _make_source_mapping_key(file_id: str) -> str:
     """Create redis key for file token to storage mapping."""
     return f"query_file:{file_id}"
+
+
+async def _resolve_source_containers(
+    sources: List[SourceReferenceModel],
+) -> List[SourceReferenceModel]:
+    """Resolve every source to the container where its blob actually exists."""
+    kg_container = str(settings.storage.STORAGE_CONTAINER_NAME or "").strip()
+    workspace_container = str(settings.storage.WORKSPACE_CONTAINER_NAME or "").strip()
+
+    async def resolve(source: SourceReferenceModel) -> Optional[SourceReferenceModel]:
+        candidates = list(dict.fromkeys(
+            container
+            for container in [source.container_name, workspace_container, kg_container]
+            if container
+        ))
+
+        for container in candidates:
+            storage = get_storage_adapter(container_override=container)
+            if await storage.blob_exists(source.blob_path):
+                source.container_name = container
+                return source
+
+        logger.warning(
+            "Skipping source because its storage container could not be resolved",
+            blob_path=source.blob_path,
+            containers=candidates,
+        )
+        return None
+
+    resolved = await asyncio.gather(*(resolve(source) for source in sources))
+    return [source for source in resolved if source is not None]
 
 
 def _result_cache_query(query: str, history: Optional[List[dict]]) -> str:
@@ -163,6 +196,7 @@ async def execute_query_rag(
         kb_name,
         default_container=container_name,
     )
+    response_data.source = await _resolve_source_containers(response_data.source)
 
     if _cache_enabled():
         _cache_evidence_and_sources(
