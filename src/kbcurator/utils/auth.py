@@ -174,6 +174,7 @@ import psycopg2.extras
 
 # Centralized config and enums
 from .config import settings
+from .permission import get_user_role_id
 
 from .constants import Role
 from .request_context import request_var
@@ -301,6 +302,124 @@ def require_auth_async(func):
         return await func(*args, **kwargs)
     return wrapper
 
+def require_is_admin_async(func):
+    """
+    Async version of require_auth decorator for async tool functions.
+    
+    Usage:
+        @require_auth_async
+        async def my_async_tool_function(...):
+            ...
+    """
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        
+        platform_req = ((kwargs.get('workspace_id',None))==None or (kwargs.get('is_platform',False)) == True) # if workspace_id or is_platform = True present then not a platform req.
+        
+        request = request_var.get(None)
+        if not request:
+            return {"error": "Unauthorized: No request context available"}
+        
+        claims = getattr(request.state, "jwt_claims", None)
+        if not claims:
+            return {"error": "Unauthorized: Invalid or expired token"}
+        
+        jwt_role_id = claims.get("role_id")
+        user_id = claims.get('user_id')
+        # print("claims",claims)
+        if jwt_role_id is None or user_id is None:
+            return {"error": "Unauthorized: role_id or user_id not found in token claims"}
+
+        try:
+            normalized_role_id = None
+            if platform_req:
+                normalized_role_id = int(get_user_role_id(user_id))
+            else:
+                normalized_role_id = int(get_user_role_id(user_id,kwargs.get('workspace_id',None) or kwargs.get('workspace_ids',[])[0]))
+                
+        except (TypeError, ValueError):
+            return {"error": "Unauthorized: invalid role."}
+        except Exception as e:
+            print(f"Error occured while extracting role_id: {e}")
+            return {"error": "Unauthorized: invalid jwt token."}
+
+        is_admin = None
+        
+        if platform_req:
+            is_admin = normalized_role_id == Role.ADMIN.id
+        else:
+            is_admin = normalized_role_id in (Role.WS_ADMIN.id,Role.WS_MANAGER.id)
+            
+        if not is_admin:
+            return {"error": "Unauthorized: require extra permissions."}
+        
+        return await func(*args, **kwargs)
+    return wrapper
+
+def require_is_admin(func):
+    """
+    Decorator that validates JWT authentication via middleware-injected claims.
+    
+    Usage:
+        @require_auth
+        def my_tool_function(...):
+            ...
+    
+    The middleware extracts and validates the JWT, injecting claims into
+    request.state.jwt_claims. This decorator checks that claims exist,
+    meaning the token was valid and not expired.
+    
+    If authentication fails, returns an error dict:
+        {"error": "Unauthorized: <message>"}
+    
+    For async functions, use @require_auth_async instead.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+
+        
+        platform_req = ((kwargs.get('workspace_id',None))==None or (kwargs.get('is_platform',False)) == True) # if workspace_id or is_platform = True present then not a platform req.
+        
+        request = request_var.get(None)
+        if not request:
+            return {"error": "Unauthorized: No request context available"}
+        
+        claims = getattr(request.state, "jwt_claims", None)
+        if not claims:
+            return {"error": "Unauthorized: Invalid or expired token"}
+        
+        jwt_role_id = claims.get("role_id")
+        user_id = claims.get('user_id')
+        # print("claims",claims)
+        if jwt_role_id is None or user_id is None:
+            return {"error": "Unauthorized: role_id or user_id not found in token claims"}
+
+        try:
+            normalized_role_id = None
+            if platform_req:
+                normalized_role_id = int(get_user_role_id(user_id))
+            else:
+                normalized_role_id = int(get_user_role_id(user_id,kwargs.get('workspace_id',None) or kwargs.get('workspace_ids',[])[0]))
+                
+        except (TypeError, ValueError):
+            return {"error": "Unauthorized: invalid role."}
+        except Exception as e:
+            print(f"Error occured while extracting role_id: {e}")
+            return {"error": "Unauthorized: invalid jwt token."}
+
+        is_admin = None
+        
+        if platform_req:
+            is_admin = normalized_role_id == Role.ADMIN.id
+        else:
+            is_admin = normalized_role_id in (Role.WS_ADMIN.id,Role.WS_MANAGER.id)
+            
+        if not is_admin:
+            return {"error": "Unauthorized: require extra permissions."}
+        
+        
+        return func(*args, **kwargs)
+    return wrapper
 
 def get_current_user():
     """

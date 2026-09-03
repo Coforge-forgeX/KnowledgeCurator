@@ -3,7 +3,7 @@ from kbcurator.server.server import mcp
 import httpx
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from kbcurator.utils.auth import require_auth_async
+from kbcurator.utils.auth import require_auth_async , require_is_admin_async
 from os import getenv
 import os
 
@@ -292,7 +292,7 @@ async def batch_update_guardrail_config(
 
 
 @mcp.tool()
-@require_auth_async
+@require_is_admin_async
 async def get_guardrail_logs(
     workspace_id: Optional[str] = None,
     user_email: Optional[str] = None,
