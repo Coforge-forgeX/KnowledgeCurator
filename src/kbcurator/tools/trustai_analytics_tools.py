@@ -29,6 +29,7 @@ from kbcurator.utils.auth import (
     _fetch_user_by_email,
     encode_for_transport,
     require_auth,
+    require_is_admin,
     require_auth_async,
     get_current_user
 )
@@ -360,7 +361,7 @@ def _get_analytics_context(
 
 
 @mcp.tool()
-@require_auth
+@require_is_admin
 def get_workspace_agent_user_directory(
     workspace_id: int | None = None,
 ):
@@ -541,11 +542,12 @@ def get_workspace_agent_user_directory(
         session.close()  
 
 @mcp.tool()
-@require_auth
+@require_is_admin
 def get_overall_metrics(
     workspace_ids: list[int] | None = None,
     user_ids: list[str | int] | None = None,
     agent_ids: list[str | int] | None = None,
+    is_platform: bool = False,
     start_date: str | None = None,
     end_date: str | None = None
 ):
@@ -747,11 +749,12 @@ def get_overall_metrics(
         
         
 @mcp.tool()
-@require_auth
+@require_is_admin
 def get_workspace_metrics(
     workspace_ids: list[int] | None = None,
     user_ids: list[str | int] | None = None,
     agent_ids: list[str | int] | None = None,
+    is_platform: bool = False,
     start_date: str | None = None,
     end_date: str | None = None
 ):
@@ -1103,11 +1106,12 @@ def get_workspace_metrics(
                         
 
 @mcp.tool()
-@require_auth
+@require_is_admin
 def get_agent_metrics(
     workspace_ids: list[int] | None = None,
     user_ids: list[str | int] | None = None,
     agent_ids: list[str | int] | None = None,
+    is_platform: bool = False,
     start_date: str | None = None,
     end_date: str | None = None
 ):
@@ -1376,11 +1380,12 @@ def get_agent_metrics(
                             
                             
 @mcp.tool()
-@require_auth
+@require_is_admin
 def get_user_metrics(
     workspace_ids: list[int] | None = None,
     user_ids: list[str | int] | None = None,
     agent_ids: list[str | int] | None = None,
+    is_platform: bool = False,
     start_date: str | None = None,
     end_date: str | None = None
 ):
@@ -1670,11 +1675,12 @@ def get_user_metrics(
         ctx["kb_session"].close()
         
 @mcp.tool()
-@require_auth
+@require_is_admin
 def get_block_warn_pass_metrics(
     workspace_ids: list[int] | None = None,
     user_ids: list[str | int] | None = None,
     agent_ids: list[str | int] | None = None,
+    is_platform: bool = False,
     start_date: str | None = None,
     end_date: str | None = None
 ):
@@ -1775,11 +1781,12 @@ def get_block_warn_pass_metrics(
         
         
 @mcp.tool()
-@require_auth
+@require_is_admin
 def get_llm_model_token_and_request_metrics(
     workspace_ids: list[int] | None = None,
     user_ids: list[str | int] | None = None,
     agent_ids: list[str | int] | None = None,
+    is_platform: bool = False,
     start_date: str | None = None,
     end_date: str | None = None
 ):
@@ -1906,11 +1913,12 @@ def get_llm_model_token_and_request_metrics(
         
        
 @mcp.tool()
-@require_auth
+@require_is_admin
 def get_guardrail_detection_metrics(
     workspace_ids: list[int] | None = None,
     user_ids: list[str | int] | None = None,
     agent_ids: list[str | int] | None = None,
+    is_platform: bool = False,
     start_date: str | None = None,
     end_date: str | None = None
 ):
