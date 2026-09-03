@@ -71,7 +71,7 @@ class TrustaiAnalyticsDB:
         # add TRUSTAI_* env vars when your postgres instance for trustai_db is different from the UserManagementSystem,
         # else it will fallback to default postgres instance.
         trustai_postgres_host = os.getenv("TRUSTAI_POSTGRES_HOST") or settings.POSTGRES_HOST
-        trusati_postgres_port = os.getenv("TRUSTAI_POSTGRES_PORT") or settings.POSTGRES_PORT
+        trustai_postgres_port = os.getenv("TRUSTAI_POSTGRES_PORT") or settings.POSTGRES_PORT
         trustai_postgres_user = os.getenv("TRUSTAI_POSTGRES_USER") or settings.POSTGRES_USER
         trustai_postgres_password = os.getenv("TRUSTAI_POSTGRES_PASSWORD") or settings.POSTGRES_PASSWORD
         trustai_postgres_db = os.getenv("TRUSTAI_POSTGRES_DB") or settings.TRUSTAI_DB
