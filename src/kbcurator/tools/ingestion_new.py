@@ -1,4 +1,4 @@
-#from datasets import Dataset
+# from datasets import Dataset
 import os
 from dotenv import load_dotenv
 import time
@@ -15,7 +15,7 @@ from kbcurator.server.server import mcp
 import psycopg2
 
 from azure.storage.blob import BlobServiceClient
-#from PyPDF2 import PdfReader
+# from PyPDF2 import PdfReader
 from docx import Document
 import io
 import numpy as np
@@ -178,6 +178,21 @@ def parse_references_from_response(response_text: str) -> List[Dict[str, str]]:
             })
     
     return references
+
+NO_RELEVANT_INFO_MESSAGE = "Sorry, I'm not able to provide an answer to that question.[no-context]"
+
+def _has_relevant_response(response: object, refrences: List[Dict[str, str]]) -> bool:
+    if not isinstance(response, str) or not response.strip():
+        return False
+    normalised_response = response.lower()
+    no_result_marker = (
+        "no relevant information",
+        "no relevant info",
+        "no information found",
+        "could not find relevant"
+    )
+
+    return bool(refrences) and not any(marker in normalised_response for marker in no_result_marker)
 
 
 def generate_download_url_for_file(
@@ -413,6 +428,7 @@ When handling relationships with timestamps:
 ---Response Rules---
 
 - **Format**: Use multiple paragraphs with markdown formatting and section headings.
+- **No-result behaviour**: If the Knowledge Base contains no relevant information, respond exactly with 'No relevant information found in the knowledge base.' Do not explain anything else or add citation or include Refrences section
 - **Language**: Always respond in English, regardless of the language used in the question.
 - **Emphasis**: Highlight all referenced information using **bold text**.
 - **Inline Citations**:
@@ -551,6 +567,17 @@ When handling relationships with timestamps:
                     kb_graph_refs.append(f"Knowledge Base: {kb}")
 
             # Summarize the results using LLM Router
+            parsed_refrences_by_kb = {
+                kb: parse_references_from_response(resp)
+                for kb, resp in results.items()
+                if isinstance(resp, str)
+            }
+            if not any (parsed_refrences_by_kb.values()):
+                return {
+                    "LightRAG": NO_RELEVANT_INFO_MESSAGE,
+                    "response": NO_RELEVANT_INFO_MESSAGE,
+                    "sources": [],
+                }
             summary_prompt = user_prompt
             
             for kb, resp in results.items():
@@ -586,7 +613,7 @@ When handling relationships with timestamps:
             all_parsed_refs = []
             for kb, resp in results.items():
                 if isinstance(resp, str):  # Only process string responses, skip error dicts
-                    kb_refs = parse_references_from_response(resp)
+                    kb_refs = parsed_refrences_by_kb.get(kb, [])
                     all_parsed_refs.extend(kb_refs)
             
             print(f"Parsed {len(all_parsed_refs)} references from original RAG responses")
@@ -657,6 +684,12 @@ When handling relationships with timestamps:
             print("="*80)
             
             parsed_refs = parse_references_from_response(response)
+            if not _has_relevant_response(response, parsed_refs):
+                return {
+                    "LightRAG": NO_RELEVANT_INFO_MESSAGE,
+                    "response": NO_RELEVANT_INFO_MESSAGE,
+                    "sources": [],
+                }
             print(f"✓ Parsed {len(parsed_refs)} references")
             if parsed_refs:
                 for ref in parsed_refs:
@@ -1365,9 +1398,23 @@ async def lightrag_indexing_tool(
         normalized_file_path = file_path.replace('\\', '/') if file_path else file_path
         print(f"[DEBUG] Normalized file_path: '{normalized_file_path}'")
         
-        for idx, chunk in enumerate(chunks):
-            await rag.ainsert(input=chunk, file_paths=[normalized_file_path])
-            print(f"Chunk {idx+1}/{len(chunks)} indexed for: {normalized_file_path}")
+        # Insert all chunks in a single call: one ainsert per chunk previously caused
+        # repeated kv_store_doc_status.json - stores metadata rewrites, which collide with OneDrive's
+        # background file sync/lock on Windows (WinError 5 Access is denied on rename).
+        max_attempts = 5
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await rag.ainsert(
+                    input=chunks,
+                    file_paths=[normalized_file_path] * len(chunks),
+                )
+                break
+            except PermissionError as e:
+                if attempt == max_attempts:
+                    raise
+                print(f"[WARN] ainsert attempt {attempt}/{max_attempts} hit a file lock ({e}); retrying...")
+                await asyncio.sleep(1.5 * attempt)
+        print(f"Indexed {len(chunks)} chunk(s) for: {normalized_file_path}")
         return {"status": "success", "file": normalized_file_path, "chunks": len(chunks)}
     except Exception as e:
         return {"error": str(e)}    
@@ -1383,7 +1430,9 @@ async def upload_and_index_tool(
     file_contents: Optional[List[bytes]] = None,
     domain: Optional[str] = None,
     kb_name: Optional[str] = None,
+    knowledge_bases: Optional[list] = None,
     user_id: Optional[str] = None,
+    role_id: Optional[str] = None,
     expiry_years: int = 10
 ) -> dict:
     """
@@ -1394,8 +1443,61 @@ async def upload_and_index_tool(
     - Then starts indexing in background (status 'indexing') using the same indexing logic you had
     - Updates status to 'indexed' or 'failed'
     """
+    # Normalize common placeholder values from UI payloads.
+    def _norm_opt_str(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text.lower() in {"none", "null", "undefined"}:
+            return None
+        return text
+
+    container_name = _norm_opt_str(container_name)
+    upload_path = _norm_opt_str(upload_path)
+    domain = _norm_opt_str(domain)
+    kb_name = _norm_opt_str(kb_name)
+    workspace_id = _norm_opt_str(workspace_id)
+
+    # Accept knowledge_bases in either string-list or object-list format.
+    normalized_kbs: List[str] = []
+    if isinstance(knowledge_bases, list):
+        for kb in knowledge_bases:
+            if isinstance(kb, str):
+                candidate = kb.strip()
+                if candidate:
+                    normalized_kbs.append(candidate)
+            elif isinstance(kb, dict):
+                candidate = (
+                    str(kb.get("title") or kb.get("name") or kb.get("kb_name") or "").strip()
+                )
+                if candidate:
+                    normalized_kbs.append(candidate)
+
+    # Backward-compatible defaulting when frontend omits path fields.
+    if not container_name:
+        container_name = "workspace" if workspace_id else os.getenv("AZURE_BLOB_STORAGE_CONTAINER_NAME")
+
+    if not upload_path:
+        if domain and kb_name and workspace_id:
+            upload_path = f"{domain}/{kb_name}/{workspace_id}"
+        elif domain and kb_name and normalized_kbs:
+            upload_path = f"{domain}/{kb_name}/{normalized_kbs[0]}"
+        elif domain and kb_name:
+            upload_path = f"{domain}/{kb_name}"
+        elif domain:
+            upload_path = domain
+    
+    # Validate required parameters
     if user_id is None:
         return {"status": "error", "error": "user_id cannot be null"}
+    
+    if not container_name:
+        return {"status": "error", "error": "container_name is required"}
+    
+    if not upload_path:
+        return {"status": "error", "error": "upload_path is required"}
+
+    print(f"[DEBUG] normalized knowledge_bases: {normalized_kbs}")
 
     # --- JWT-based authentication and workspace-user mapping check (copied from list_workspace_users) ---
     # Validate workspace_id presence
@@ -2969,43 +3071,45 @@ async def get_indexed_file_names(domain, kb_name):
                 break
             page += 1
 
-        # Fallback path: some environments can have searchable chunks but empty doc_status.
-        # In that case, derive file/doc mapping from chunk storage table directly.
-        if not doc_dict:
-            try:
-                conn = psycopg2.connect(
-                    host=os.environ["POSTGRES_HOST"],
-                    user=os.environ["POSTGRES_USER"],
-                    password=os.environ["POSTGRES_PASSWORD"],
-                    dbname=os.environ.get("POSTGRES_DATABASE") or os.environ.get("POSTGRESQL_DATABASE_DATABASE_2")
-                )
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    SELECT DISTINCT full_doc_id, file_path
-                    FROM LIGHTRAG_VDB_CHUNKS
-                    WHERE workspace = %s
-                      AND full_doc_id IS NOT NULL
-                      AND file_path IS NOT NULL
-                    """,
-                    (workspace_name,),
-                )
-                rows = cur.fetchall()
-                cur.close()
-                conn.close()
+        # Fallback path: doc_status can be missing/stale for a specific file (e.g. an
+        # interrupted write) even while other files' doc_status entries exist and its
+        # chunks are already persisted. Always merge in chunk-table data instead of only
+        # running this when doc_status is entirely empty, so partially-synced files are
+        # still discoverable for deletion/listing.
+        try:
+            conn = psycopg2.connect(
+                host=os.environ["POSTGRES_HOST"],
+                user=os.environ["POSTGRES_USER"],
+                password=os.environ["POSTGRES_PASSWORD"],
+                dbname=os.environ.get("POSTGRES_DATABASE") or os.environ.get("POSTGRESQL_DATABASE_DATABASE_2")
+            )
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT DISTINCT full_doc_id, file_path
+                FROM LIGHTRAG_VDB_CHUNKS
+                WHERE workspace = %s
+                  AND full_doc_id IS NOT NULL
+                  AND file_path IS NOT NULL
+                """,
+                (workspace_name,),
+            )
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
 
-                for full_doc_id, file_path in rows:
-                    file_name = os.path.basename(file_path) if file_path else ""
-                    if not file_name or not full_doc_id:
-                        continue
-                    if file_name not in doc_dict:
-                        doc_dict[file_name] = []
-                    if full_doc_id not in doc_dict[file_name]:
-                        doc_dict[file_name].append(full_doc_id)
+            for full_doc_id, file_path in rows:
+                file_name = os.path.basename(file_path) if file_path else ""
+                if not file_name or not full_doc_id:
+                    continue
+                if file_name not in doc_dict:
+                    doc_dict[file_name] = []
+                if full_doc_id not in doc_dict[file_name]:
+                    doc_dict[file_name].append(full_doc_id)
 
-                print(f"Fallback doc-chunks mapping used for workspace: {workspace_name}")
-            except Exception as fallback_err:
-                print(f"Fallback from LIGHTRAG_DOC_CHUNKS failed: {fallback_err}")
+            print(f"Merged chunk-table doc mapping for workspace: {workspace_name}")
+        except Exception as fallback_err:
+            print(f"Fallback from LIGHTRAG_VDB_CHUNKS failed: {fallback_err}")
 
         print("Doc ID to File Name Dictionary:", doc_dict)
         return doc_dict
@@ -3439,429 +3543,6 @@ async def delete_by_doc_ids(
                 )
 
 
-@mcp.tool()
-async def delete_file_single_call(
-    domain: str,
-    kb_name: str,
-    file_name: str,
-    workspace_id: Optional[str] = None,
-    role_id: Optional[int] = None,
-    skip_rebuild: bool = True,
-):
-    """
-    One-call delete flow for frontend button:
-    1) Resolve doc_ids for file_name across candidate KB scopes.
-    2) Delete indexed records by doc_ids (per scope).
-    3) Delete blob file from candidate containers/paths.
-    """
-
-    try:
-        trace_id = f"del-{uuid.uuid4().hex[:12]}"
-        print(
-            f"DELETE_TRACE [{trace_id}] delete_file_single_call:start "
-            f"domain={domain} kb_name={kb_name} file_name={file_name} "
-            f"workspace_id={workspace_id} role_id={role_id} skip_rebuild={skip_rebuild}"
-        )
-
-        if not domain or not kb_name or not file_name:
-            print(
-                f"DELETE_TRACE [{trace_id}] delete_file_single_call:invalid_input "
-                f"domain={domain} kb_name={kb_name} file_name={file_name}"
-            )
-            return {
-                "status": "error",
-                "message": "domain, kb_name and file_name are required",
-                "resolved": {"doc_ids": []},
-                "index_delete": {"scopes": [], "summary": {"requested": 0, "success": 0, "not_found": 0, "failed": 0}},
-                "blob_delete": {"deleted": []},
-            }
-
-        # Build candidate KB scopes to tolerate role/type drift and legacy paths.
-        workspace_id_alpha = ""
-        if workspace_id:
-            digit_map = {
-                '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
-                '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
-            }
-            result = []
-            for c in str(workspace_id):
-                if c.isalpha():
-                    result.append(c)
-                elif c.isdigit():
-                    result.append(digit_map[c])
-            workspace_id_alpha = ''.join(result)
-
-        candidate_kbs = []
-        if workspace_id_alpha:
-            candidate_kbs.append(f"{kb_name}/{workspace_id_alpha}")
-        if workspace_id:
-            candidate_kbs.append(f"{kb_name}/{workspace_id}")
-        candidate_kbs.append(kb_name)
-
-        seen_kbs = set()
-        candidate_kbs = [k for k in candidate_kbs if not (k in seen_kbs or seen_kbs.add(k))]
-
-        print(
-            f"DELETE_TRACE [{trace_id}] delete_file_single_call:candidate_kbs "
-            f"candidate_kbs={candidate_kbs}"
-        )
-
-        base_filename = os.path.basename(file_name).strip()
-        max_attempts = 20
-        retry_delay_seconds = 1.2
-        min_attempts_when_no_index_evidence = 10
-
-        async def _resolve_doc_ids_once() -> tuple[list[str], dict[str, list[str]]]:
-            doc_ids_by_kb_local: Dict[str, List[str]] = {}
-            all_doc_ids_local: List[str] = []
-
-            # First: resolve from shared doc status.
-            for kb_scope in candidate_kbs:
-                scope_doc_ids = []
-                try:
-                    rag_scope = await initialize_rag(domain=domain, kb_name=kb_scope)
-                    page = 1
-                    page_size = 500
-
-                    while True:
-                        docs_page, total_count = await rag_scope.doc_status.get_docs_paginated(
-                            status_filter=None,
-                            page=page,
-                            page_size=page_size,
-                            sort_field="updated_at",
-                            sort_direction="desc",
-                        )
-                        print("0"*60)
-                        print(docs_page)
-                        print(total_count)
-                        print("0"*60)
-                        if not docs_page:
-                            break
-
-                        for doc_id, doc_status in docs_page:
-                            file_path = getattr(doc_status, "file_path", "") if doc_status else ""
-                            file_path_norm = str(file_path).replace("\\", "/")
-                            file_name_from_status = file_path_norm.split("/")[-1].strip() if file_path_norm else ""
-                            if file_name_from_status and file_name_from_status.lower() == base_filename.lower():
-                                if doc_id and doc_id not in scope_doc_ids:
-                                    scope_doc_ids.append(doc_id)
-                                if doc_id and doc_id not in all_doc_ids_local:
-                                    all_doc_ids_local.append(doc_id)
-
-                        if page * page_size >= int(total_count or 0):
-                            break
-                        page += 1
-                except Exception as status_err:
-                    print(
-                        f"DELETE_TRACE [{trace_id}] resolve_doc_ids:doc_status_error "
-                        f"kb_scope={kb_scope} error={str(status_err)}"
-                    )
-
-                if scope_doc_ids:
-                    doc_ids_by_kb_local[kb_scope] = scope_doc_ids
-
-                print(
-                    f"DELETE_TRACE [{trace_id}] resolve_doc_ids:doc_status_scan "
-                    f"kb_scope={kb_scope} matched_doc_ids={len(scope_doc_ids)}"
-                )
-
-            # Fallback: resolve directly from chunk table for scopes still missing.
-            try:
-                conn = psycopg2.connect(
-                    host=os.environ["POSTGRES_HOST"],
-                    user=os.environ["POSTGRES_USER"],
-                    password=os.environ["POSTGRES_PASSWORD"],
-                    dbname=os.environ.get("POSTGRES_DATABASE") or os.environ.get("POSTGRESQL_DATABASE_DATABASE_2")
-                )
-                cur = conn.cursor()
-
-                for kb_scope in candidate_kbs:
-                    if kb_scope in doc_ids_by_kb_local and doc_ids_by_kb_local[kb_scope]:
-                        continue
-
-                    workspace = ''.join(char for char in f"{domain}{kb_scope}" if char.isalpha())
-                    cur.execute(
-                        """
-                        SELECT DISTINCT full_doc_id
-                        FROM LIGHTRAG_VDB_CHUNKS
-                        WHERE workspace = %s
-                          AND full_doc_id IS NOT NULL
-                          AND file_path IS NOT NULL
-                          AND (
-                                lower(file_path) = lower(%s)
-                                OR lower(file_path) LIKE lower(%s)
-                                OR lower(file_path) LIKE lower(%s)
-                                OR lower(file_path) LIKE lower(%s)
-                          )
-                        """,
-                        (
-                            workspace,
-                            base_filename,
-                            f"%/{base_filename}",
-                            f"%\\{base_filename}",
-                            f"%{base_filename}%",
-                        ),
-                    )
-                    rows = cur.fetchall()
-                    if not rows:
-                        continue
-
-                    scope_doc_ids = []
-                    for (doc_id,) in rows:
-                        if doc_id and doc_id not in scope_doc_ids:
-                            scope_doc_ids.append(doc_id)
-                        if doc_id and doc_id not in all_doc_ids_local:
-                            all_doc_ids_local.append(doc_id)
-
-                    if scope_doc_ids:
-                        doc_ids_by_kb_local[kb_scope] = scope_doc_ids
-                        print(
-                            f"DELETE_TRACE [{trace_id}] resolve_doc_ids:fallback_match "
-                            f"kb_scope={kb_scope} fallback_doc_ids={len(scope_doc_ids)}"
-                        )
-
-                cur.close()
-                conn.close()
-            except Exception as db_resolve_err:
-                print(
-                    f"DELETE_TRACE [{trace_id}] resolve_doc_ids:fallback_error "
-                    f"error={str(db_resolve_err)}"
-                )
-
-            print(
-                f"DELETE_TRACE [{trace_id}] resolve_doc_ids:summary "
-                f"total_unique_doc_ids={len(all_doc_ids_local)} "
-                f"scopes_with_docs={list(doc_ids_by_kb_local.keys())}"
-            )
-
-            return all_doc_ids_local, doc_ids_by_kb_local
-
-        async def _delete_indexes_once(doc_ids_map: Dict[str, List[str]]) -> tuple[list[dict], int, int, int, int]:
-            scope_results = []
-            requested = 0
-            success = 0
-            not_found = 0
-            failed = 0
-
-            for kb_scope, scope_doc_ids in doc_ids_map.items():
-                requested += len(scope_doc_ids)
-                print(
-                    f"DELETE_TRACE [{trace_id}] index_delete:scope_start "
-                    f"kb_scope={kb_scope} doc_count={len(scope_doc_ids)}"
-                )
-                delete_result = await delete_by_doc_ids(
-                    doc_ids=scope_doc_ids,
-                    domain=domain,
-                    kb_name=kb_scope,
-                    skip_rebuild=skip_rebuild,
-                    trace_id=trace_id,
-                )
-
-                summary = delete_result.get("summary", {}) if isinstance(delete_result, dict) else {}
-                success += int(summary.get("success", 0) or 0)
-                not_found += int(summary.get("not_found", 0) or 0)
-                failed += int(summary.get("failed", 0) or 0)
-
-                scope_results.append(
-                    {
-                        "kb_name": kb_scope,
-                        "doc_ids": scope_doc_ids,
-                        "result": delete_result,
-                    }
-                )
-
-                print(
-                    f"DELETE_TRACE [{trace_id}] index_delete:scope_result "
-                    f"kb_scope={kb_scope} summary={summary}"
-                )
-
-            return scope_results, requested, success, not_found, failed
-
-        connection_string = os.getenv('AZURE_BLOB_STORAGE_CONNECTION_STRING')
-        main_container = os.getenv('AZURE_BLOB_STORAGE_CONTAINER_NAME')
-        container_candidates = [c for c in [main_container, "workspace"] if c]
-        blob_service_client = BlobServiceClient.from_connection_string(connection_string) if connection_string else None
-
-        def _delete_blob_once() -> list[str]:
-            if not blob_service_client:
-                return []
-
-            deleted_now = []
-            for container_name in container_candidates:
-                container_client = blob_service_client.get_container_client(container_name)
-                for kb_scope in candidate_kbs:
-                    blob_path = f"{domain}/{kb_scope}/{base_filename}"
-                    blob_client = container_client.get_blob_client(blob_path)
-                    try:
-                        blob_client.delete_blob()
-                        deleted_now.append(f"{container_name}:{blob_path}")
-                        print(
-                            f"DELETE_TRACE [{trace_id}] blob_delete:deleted "
-                            f"container={container_name} blob_path={blob_path}"
-                        )
-                    except Exception:
-                        # Missing blob in a candidate path/container is expected; continue.
-                        pass
-            return deleted_now
-
-        def _blob_exists() -> bool:
-            if not blob_service_client:
-                return False
-
-            for container_name in container_candidates:
-                container_client = blob_service_client.get_container_client(container_name)
-                for kb_scope in candidate_kbs:
-                    blob_path = f"{domain}/{kb_scope}/{base_filename}"
-                    blob_client = container_client.get_blob_client(blob_path)
-                    try:
-                        if blob_client.exists():
-                            return True
-                    except Exception:
-                        continue
-            return False
-
-        index_scope_results = []
-        total_requested = 0
-        total_success = 0
-        total_not_found = 0
-        total_failed = 0
-        resolved_doc_ids_all: List[str] = []
-        resolved_by_kb_final: Dict[str, List[str]] = {}
-        deleted_blob_paths_set = set()
-        attempts_used = 0
-
-        for attempt in range(1, max_attempts + 1):
-            attempts_used = attempt
-            print(
-                f"DELETE_TRACE [{trace_id}] delete_file_single_call:attempt_start "
-                f"attempt={attempt}/{max_attempts} file_name={base_filename}"
-            )
-
-            resolved_doc_ids, resolved_by_kb = await _resolve_doc_ids_once()
-            print(
-                f"DELETE_TRACE [{trace_id}] delete_file_single_call:attempt_resolved "
-                f"attempt={attempt} resolved_doc_ids={len(resolved_doc_ids)} "
-                f"scopes={list(resolved_by_kb.keys())}"
-            )
-            for doc_id in resolved_doc_ids:
-                if doc_id not in resolved_doc_ids_all:
-                    resolved_doc_ids_all.append(doc_id)
-            for kb_scope, ids in resolved_by_kb.items():
-                if kb_scope not in resolved_by_kb_final:
-                    resolved_by_kb_final[kb_scope] = []
-                for doc_id in ids:
-                    if doc_id not in resolved_by_kb_final[kb_scope]:
-                        resolved_by_kb_final[kb_scope].append(doc_id)
-
-            if resolved_by_kb:
-                scope_results, requested, success, not_found, failed = await _delete_indexes_once(resolved_by_kb)
-                index_scope_results.extend(scope_results)
-                total_requested += requested
-                total_success += success
-                total_not_found += not_found
-                total_failed += failed
-
-            deleted_now = _delete_blob_once()
-            for path in deleted_now:
-                deleted_blob_paths_set.add(path)
-
-            # Verify both sides after the deletion pass.
-            unresolved_doc_ids_after, _ = await _resolve_doc_ids_once()
-            blob_still_exists = _blob_exists()
-            print(
-                f"DELETE_TRACE [{trace_id}] delete_file_single_call:attempt_verify "
-                f"attempt={attempt} unresolved_doc_ids={len(unresolved_doc_ids_after)} "
-                f"blob_still_exists={blob_still_exists}"
-            )
-            if not unresolved_doc_ids_after and not blob_still_exists:
-                index_delete_evidence = (total_requested > 0) or (len(resolved_doc_ids_all) > 0)
-                if index_delete_evidence:
-                    print(
-                        f"DELETE_TRACE [{trace_id}] delete_file_single_call:completed_early "
-                        f"attempt={attempt} index_delete_evidence={index_delete_evidence}"
-                    )
-                    break
-
-                if attempt >= min_attempts_when_no_index_evidence:
-                    print(
-                        f"DELETE_TRACE [{trace_id}] delete_file_single_call:stop_without_index_evidence "
-                        f"attempt={attempt} min_attempts_when_no_index_evidence={min_attempts_when_no_index_evidence}"
-                    )
-                    break
-
-            if attempt < max_attempts:
-                print(
-                    f"DELETE_TRACE [{trace_id}] delete_file_single_call:retry_sleep "
-                    f"attempt={attempt} sleep_seconds={retry_delay_seconds}"
-                )
-                await asyncio.sleep(retry_delay_seconds)
-
-        final_unresolved_doc_ids, _ = await _resolve_doc_ids_once()
-        final_blob_exists = _blob_exists()
-
-        index_delete_evidence_final = (total_requested > 0) or (len(resolved_doc_ids_all) > 0)
-        completed_both = (not final_unresolved_doc_ids) and (not final_blob_exists) and index_delete_evidence_final
-        status = "completed" if completed_both else "partial"
-
-        print(
-            f"DELETE_TRACE [{trace_id}] delete_file_single_call:final "
-            f"status={status} attempts_used={attempts_used} "
-            f"resolved_total_doc_ids={len(resolved_doc_ids_all)} "
-            f"remaining_doc_ids={len(final_unresolved_doc_ids)} "
-            f"blob_remaining_exists={final_blob_exists} "
-            f"index_delete_evidence={index_delete_evidence_final} "
-            f"index_summary={{'requested': {total_requested}, 'success': {total_success}, 'not_found': {total_not_found}, 'failed': {total_failed}}}"
-        )
-
-        if completed_both:
-            final_message = "Completed deletion across index and blob"
-        elif (not final_blob_exists) and (not index_delete_evidence_final):
-            final_message = "Blob deleted but index document IDs were never resolved; index cleanup pending"
-        else:
-            final_message = "Reached retry limit before full deletion"
-
-        return {
-            "status": status,
-            "trace_id": trace_id,
-            "file_name": base_filename,
-            "candidate_kbs": candidate_kbs,
-            "attempts": {
-                "used": attempts_used,
-                "max": max_attempts,
-            },
-            "resolved": {
-                "doc_ids": resolved_doc_ids_all,
-                "by_kb": resolved_by_kb_final,
-                "remaining_doc_ids": final_unresolved_doc_ids,
-            },
-            "index_delete": {
-                "scopes": index_scope_results,
-                "summary": {
-                    "requested": total_requested,
-                    "success": total_success,
-                    "not_found": total_not_found,
-                    "failed": total_failed,
-                },
-            },
-            "blob_delete": {
-                "deleted": sorted(list(deleted_blob_paths_set)),
-                "remaining_exists": final_blob_exists,
-            },
-            "message": final_message,
-        }
-    except Exception as e:
-        print(
-            f"DELETE_TRACE [n/a] delete_file_single_call:error "
-            f"domain={domain} kb_name={kb_name} file_name={file_name} error={str(e)}"
-        )
-        return {
-            "status": "error",
-            "message": f"delete_file_single_call failed: {str(e)}",
-            "resolved": {"doc_ids": []},
-            "index_delete": {"scopes": [], "summary": {"requested": 0, "success": 0, "not_found": 0, "failed": 0}},
-            "blob_delete": {"deleted": []},
-        }
- 
 @mcp.tool()
 async def clear_cache(doc_id):
      try:

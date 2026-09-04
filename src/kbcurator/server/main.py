@@ -95,7 +95,8 @@ from kbcurator.tools import account_status_tool  # noqa: F401
 from kbcurator.tools import llm_router_tool  # noqa: F401
 from kbcurator.tools import sharepoint_agent 
 from kbcurator.tools import config
-#from kbcurator.tools import trustai_tools
+from kbcurator.tools import trustai_tools
+from kbcurator.tools import trustai_analytics_tools
 # ---------------------------
 # Middleware
 # ---------------------------
@@ -276,7 +277,7 @@ class SecurityAndCORSMiddleware(BaseHTTPMiddleware):
             "GET, POST, PUT, DELETE, OPTIONS, PATCH"
         )
         response.headers["Access-Control-Allow-Headers"] = (
-            "Authorization, Content-Type, Accept, X-Requested-With, mcp-protocol-version"
+            "Authorization, Content-Type, Accept, X-Requested-With, mcp-protocol-version, x-skip-auth"
         )
         response.headers["Access-Control-Expose-Headers"] = (
             "Authorization, Content-Type, Set-Cookie"
@@ -419,7 +420,6 @@ async def get_workspace(request: Request):
         
         workspace_id = ws.workspace_id
 
-
         # Ensure we read global config robustly (dotenv or pydantic settings)
         global_ws_id = None
         try:
@@ -433,7 +433,8 @@ async def get_workspace(request: Request):
                 from kbcurator.utils.config import settings
                 global_ws_id = int(getattr(settings, 'GLOBAL_WORKSPACE_ID', None) or 0) or None
             except Exception:
-                global_ws_id = None        
+                global_ws_id = None
+        
         # Check if user has access to this workspace
         user_mapping = session.query(db.UserMap).filter(
             db.UserMap.user_id == user_id,
@@ -637,7 +638,7 @@ async def get_bookmark(request: Request):
         try:
             user_id = int(user_id)
         except Exception:
-            return JSONResponse({"error": "Invalid token: user_id must be an integer"}, status_code=401)        
+            return JSONResponse({"error": "Invalid token: user_id must be an integer"}, status_code=401)
     except Exception as e:
         return JSONResponse({"error": f"Invalid token: {str(e)}"}, status_code=401)
     
@@ -670,14 +671,15 @@ async def get_bookmark(request: Request):
                 global_ws_id = None
 
         # Global workspace is intended to be accessible to all authenticated users.
-        # If the user is missing a mapping row, create it lazily (idempotent insert).        
+        # If the user is missing a mapping row, create it lazily (idempotent insert).
+        
         # Check if user has access to this workspace
         user_mapping = session.query(db.UserMap).filter(
             db.UserMap.user_id == user_id,
             db.UserMap.workspace_id == workspace_id,
             db.UserMap.is_active == True
         ).first()
-        
+
         if not user_mapping:
             # For the configured global workspace, auto-provision access.
             if global_ws_id is not None and int(workspace_id) == int(global_ws_id):
@@ -903,7 +905,6 @@ class CookieWrapperApp:
 
 # Wrap the MCP app with the cookie layer
 http_app = CookieWrapperApp(base_app)
-
 
 # ---------------------------
 # Server startup

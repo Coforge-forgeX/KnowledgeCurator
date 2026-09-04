@@ -183,7 +183,7 @@ class SessionHistoryManager:
     #         logging.error(f"Error in load_history: {e}")
     #         return []
 
-    def load_history(self, workspace_id, user_id, session_id):
+    def load_history(self, workspace_id, user_id, session_id, blocked=True):
         try:
             # Ensure consistent types with persisted docs.
             try:
@@ -196,6 +196,11 @@ class SessionHistoryManager:
                 pass
 
             query = {"workspace_id": workspace_id, "user_id": user_id, "session_id": session_id}
+            
+            # Filter out blocked messages by default
+            if blocked:
+                query["is_blocked"] = {"$ne": True}
+            
             messages = list(self.chat_collection.find(query).sort("timestamp", 1))
             return [
                 {
@@ -206,6 +211,7 @@ class SessionHistoryManager:
                     "task_ids": m.get("tasks", None),  # Fixed: read from "tasks" not "task_ids"
                     # Re-mint a fresh SAS download URL from the persisted blob
                     # coordinates so links served from old sessions never expire.
+                    **({'is_blocked': m.get("is_blocked", False)} if not blocked else {}),
                     "sources": [refresh_source_url(s) for s in m.get("sources", [])]
                 }
                 for m in messages
@@ -241,6 +247,39 @@ class SessionHistoryManager:
                 "status": "error",
                 "message": str(e)
             }
+            
+    def mark_last_message_blocked(self, workspace_id, user_id, session_id):
+        """
+        Mark the last message in a session as blocked (is_blocked: true).
+        Used when guardrail blocks a message.
+
+        Args:
+            workspace_id: Unique workspace identifier
+            user_id: Unique user identifier
+            session_id: Unique session identifier
+
+        Returns:
+            Dictionary with operation status
+        """
+        try:
+            query = {"workspace_id": workspace_id, "user_id": user_id, "session_id": session_id}
+            last_message = self.chat_collection.find_one(query, sort=[("timestamp", -1)])
+
+            if not last_message:
+                return {"status": "error", "message": "No message found in session"}
+
+            result = self.chat_collection.update_one(
+                {"_id": last_message["_id"]},
+                {"$set": {"is_blocked": True}}
+            )
+
+            return {
+                "status": "success" if result.modified_count > 0 else "no_change",
+                "modified_count": result.modified_count
+            }
+        except Exception as e:
+            logging.error(f"Error in mark_last_message_blocked: {e}")
+            raise
 
     def set_conversation_title(self, workspace_id, user_id, session_id, title):
         """Set/update the conversation title in the context collection."""

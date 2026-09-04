@@ -2,6 +2,7 @@ import os
 import sys
 import logging
 import ast
+import uuid
 from dotenv import load_dotenv
 import json
 import psycopg2
@@ -27,6 +28,10 @@ from kbcurator.utils.access_validation import (
     validate_chatbot_request_scope,
 )
 from kbcurator.utils.request_context import request_var
+from common_adapters.trustai.exceptions import GuardrailBlockedException
+
+# Basic input validation (empty / symbol-only prompts)
+from common_adapters.input_validation import is_valid_user_prompt
 
 # Cancellation support (used by UI Stop button via `cancel_conversation` MCP tool)
 from common_adapters.cancel_convesation import (
@@ -209,6 +214,8 @@ def validate_url(url: str) -> bool:
 
 class Chatbot:
     """ Interactive chatbot for knowledge base management. """
+    
+    
     def __init__(
             self, 
             industry: str, 
@@ -347,12 +354,13 @@ class Chatbot:
                 if not op_task.done():
                     op_task.cancel()
 
+        user_message_id = None  # Track user message ID for rollback on guardrail block
         try:
             cancel_watcher = asyncio.create_task(_cancel_watch())
 
             print(f"Inside Process message: {message}")
             context = self.get_or_create_context(self.session_id)
-            insert_id = self.session.append_message(self.workspace_id, self.user_id, self.session_id, "user", message, [])
+            user_message_id = self.session.append_message(self.workspace_id, self.user_id, self.session_id, "user", message, [])
             # Seed title/time once when the first user message for this session is stored.
             self.session.ensure_conversation_metadata(
                 self.workspace_id,
@@ -476,6 +484,10 @@ class Chatbot:
             return response
         except (asyncio.CancelledError, CancelledError):
             return {"Request cancelled."}
+        except GuardrailBlockedException:
+            # Re-raise to be handled by message_gpt for consistent UI responses
+            # User message is preserved in history (same as cancellation)
+            raise
         except Exception as e:
             print(f"Error processing message: {e}")
             return "Sorry, something went wrong while processing your request. Please try again"
@@ -551,8 +563,8 @@ class Chatbot:
             history = history[-5:]
             # print(f"History: {history}, type: {type(history)}")
             # Check for cancellation before starting long-running RAG.
-            if await is_cancelled(conversation_id=str(self.session_id)):
-                raise asyncio.CancelledError()
+            # if await is_cancelled(conversation_id=str(self.session_id)):
+            #     raise asyncio.CancelledError()
 
             assistant_message = await self.mcp_tool_obj.query_rag(
                 'Search',
@@ -564,8 +576,8 @@ class Chatbot:
             )
 
             # Check cancellation again right after the call.
-            if await is_cancelled(conversation_id=str(self.session_id)):
-                raise asyncio.CancelledError()
+            # if await is_cancelled(conversation_id=str(self.session_id)):
+            #     raise asyncio.CancelledError()
             print(f"Query RAG response type: {type(assistant_message)}")
             
             # Check if response is structured (dict with sources) or plain text
@@ -749,7 +761,31 @@ class Chatbot:
                     cur.execute("DELETE FROM public.file_tasks WHERE file_path = %s", (file_path,))
         finally:
             conn.close()
-    
+
+    async def delete_file_task_from_db_by_name(self, filename: str, workspace_id) -> int:
+        """
+        Fallback cleanup for stale file_tasks rows when the blob was already removed
+        in a prior attempt (so delete_file_task_from_db's exact-path delete never ran).
+        Matches by basename + workspace_id since file_path stores the full blob path.
+        """
+        conn = psycopg2.connect(
+            host=os.environ["POSTGRES_HOST"],
+            user=os.environ["POSTGRES_USER"],
+            password=os.environ["POSTGRES_PASSWORD"],
+            dbname=os.environ.get("POSTGRES_DATABASE") or os.environ.get("POSTGRESQL_DATABASE_DATABASE_2"),
+        )
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    # ILIKE: file_path casing can differ from the originally requested filename.
+                    cur.execute(
+                        "DELETE FROM public.file_tasks WHERE workspace_id = %s AND file_path ILIKE %s",
+                        (workspace_id, f"%/{filename}"),
+                    )
+                    return cur.rowcount
+        finally:
+            conn.close()
+
     async def _find_orphaned_neo4j_docs(self, workspace_id, role_id, doc_ids=None):
         """
         Query Neo4j directly to find orphaned documents that exist in the graph
@@ -768,7 +804,10 @@ class Chatbot:
         try:
             # Construct workspace name same way as LightRAG does
             from kbcurator.utils.mcp_service_client import MCPServiceClient
-            if  workspace_id and MCPServiceClient()._is_kg_workspace(workspace_id) :
+            # _is_kg_workspace only needs workspace_id; pass empty required args explicitly.
+            if workspace_id and MCPServiceClient(
+                server_url="", industry="", sub_industry="", knowledge_bases=None
+            )._is_kg_workspace(workspace_id):
                 kb_name = self.sub_industry
             else:
                 workspace_id_alpha = workspace_id_to_alpha(workspace_id)
@@ -1189,6 +1228,142 @@ class Chatbot:
         except Exception as e:
             return (f"Error occurred while handling confirmation: {e}")
 
+    async def delete_file_now(self, filename: str) -> dict:
+        """
+        Direct (non-chat) equivalent of the 'delete file' + 'confirm' flow used in
+        handle_delete_file/handle_confirmation, for callers (e.g. side panel) that
+        must not write anything to conversation/session history.
+        """
+        trace_id = f"panel-del-{uuid.uuid4().hex[:8]}"
+        try:
+            indexed_files = await self.mcp_tool_obj.get_indexed_files(self.workspace_id, self.role_id)
+            result_dict = self._parse_indexed_files_response(indexed_files)
+            indexed_lookup_name = resolve_indexed_filename(filename, result_dict) or filename
+            print(
+                f"DELETE_TRACE [{trace_id}] delete_file_now:resolve "
+                f"filename={filename} indexed_lookup_name={indexed_lookup_name} "
+                f"base_workspace_keys={list(result_dict.keys())}"
+            )
+
+            all_workspaces_to_check = []
+            if self.workspace_id:
+                all_workspaces_to_check.append(self.workspace_id)
+            if self.knowledge_bases:
+                for kb in self.knowledge_bases:
+                    workspace_to_query = kb if kb else None
+                    if workspace_to_query not in all_workspaces_to_check:
+                        all_workspaces_to_check.append(workspace_to_query)
+            print(f"DELETE_TRACE [{trace_id}] delete_file_now:workspaces_to_check={all_workspaces_to_check}")
+
+            all_doc_ids_by_workspace = {}
+            known_doc_ids = []
+            for ws_identifier in all_workspaces_to_check:
+                try:
+                    idx_files = await self.mcp_tool_obj.get_indexed_files(ws_identifier, self.role_id)
+                    rd = self._parse_indexed_files_response(idx_files)
+                    doc_ids = rd.get(indexed_lookup_name) or rd.get(filename) or []
+                    print(
+                        f"DELETE_TRACE [{trace_id}] delete_file_now:scope_lookup "
+                        f"ws_identifier={ws_identifier} keys={list(rd.keys())} doc_ids_found={len(doc_ids)}"
+                    )
+                    if doc_ids:
+                        workspace_key = str(ws_identifier) if ws_identifier else "base"
+                        all_doc_ids_by_workspace[workspace_key] = {"ws_identifier": ws_identifier, "doc_ids": doc_ids}
+                        known_doc_ids.extend(doc_ids)
+                except Exception as e:
+                    print(f"Error checking workspace {ws_identifier}: {e}")
+
+            # Cross-workspace orphan cleanup, same as handle_confirmation.
+            if known_doc_ids:
+                for ws_identifier in all_workspaces_to_check:
+                    workspace_key = str(ws_identifier) if ws_identifier else "base"
+                    if workspace_key in all_doc_ids_by_workspace:
+                        continue
+                    try:
+                        orphaned_doc_ids = await self._find_orphaned_neo4j_docs(ws_identifier, self.role_id, known_doc_ids)
+                        if not orphaned_doc_ids:
+                            orphaned_doc_ids = await self._find_orphaned_neo4j_docs(ws_identifier, self.role_id, None)
+                        if orphaned_doc_ids:
+                            all_doc_ids_by_workspace[workspace_key] = {"ws_identifier": ws_identifier, "doc_ids": orphaned_doc_ids}
+                    except Exception as e:
+                        print(f"Error checking Neo4j orphans in workspace {ws_identifier}: {e}")
+
+            print(
+                f"DELETE_TRACE [{trace_id}] delete_file_now:doc_ids_by_workspace "
+                f"{ {k: len(v['doc_ids']) for k, v in all_doc_ids_by_workspace.items()} }"
+            )
+
+            deleted_doc_count = 0
+            failed_doc_count = 0
+            for workspace_key, ws_data in all_doc_ids_by_workspace.items():
+                try:
+                    bulk_result = await self.mcp_tool_obj.delete_files_by_doc_ids(
+                        ws_data["doc_ids"], ws_data["ws_identifier"], self.role_id
+                    )
+                    summary = {}
+                    if not isinstance(bulk_result, dict):
+                        structured = getattr(bulk_result, "structured_content", None)
+                        if isinstance(structured, dict):
+                            summary = structured.get("summary", {}) or {}
+                    print(
+                        f"DELETE_TRACE [{trace_id}] delete_file_now:delete_result "
+                        f"workspace_key={workspace_key} ws_identifier={ws_data['ws_identifier']} "
+                        f"doc_id_count={len(ws_data['doc_ids'])} summary={summary}"
+                    )
+                    deleted_doc_count += int(summary.get("success", 0) or 0)
+                    failed_doc_count += int(summary.get("failed", 0) or 0) + int(summary.get("not_found", 0) or 0)
+                except Exception as e:
+                    print(f"Error deleting from workspace {workspace_key}: {e}")
+                    failed_doc_count += len(ws_data["doc_ids"])
+
+            delet_from_blob = await self.mcp_tool_obj.delete_files_from_blob([filename], self.workspace_id, self.role_id)
+            blob_deleted_files = []
+            try:
+                content = getattr(delet_from_blob, "content", None)
+                if content:
+                    text = getattr(content[0], "text", "") or ""
+                    if "Deleted files:" in text:
+                        raw_list = text.split("Deleted files:", 1)[1].strip()
+                        parsed_list = ast.literal_eval(raw_list)
+                        if isinstance(parsed_list, list):
+                            blob_deleted_files = parsed_list
+            except Exception:
+                pass
+
+            print(
+                f"DELETE_TRACE [{trace_id}] delete_file_now:final "
+                f"deleted_doc_count={deleted_doc_count} failed_doc_count={failed_doc_count} "
+                f"blob_deleted_files={blob_deleted_files}"
+            )
+
+            for blob_path in blob_deleted_files:
+                await self.delete_file_task_from_db(blob_path)
+
+            # Fallback cleanup: if blob was already removed in a prior attempt (nothing
+            # new deleted here), the file_tasks row from that earlier run is still
+            # stale. Remove it by name so the side panel stops listing this file.
+            db_rows_removed = 0
+            if not blob_deleted_files:
+                try:
+                    db_rows_removed = await self.delete_file_task_from_db_by_name(indexed_lookup_name, self.workspace_id)
+                    print(f"DELETE_TRACE [{trace_id}] delete_file_now:stale_file_tasks_removed count={db_rows_removed}")
+                except Exception as e:
+                    print(f"DELETE_TRACE [{trace_id}] delete_file_now:stale_file_tasks_cleanup_error {e}")
+
+            return {
+                "status": "success" if (deleted_doc_count > 0 or blob_deleted_files or db_rows_removed > 0) else "not_found",
+                "file_name": filename,
+                "indexed_match": indexed_lookup_name,
+                "deleted_doc_count": deleted_doc_count,
+                "failed_doc_count": failed_doc_count,
+                "blob_deleted_files": blob_deleted_files,
+                "stale_file_tasks_removed": db_rows_removed,
+                "scopes_checked": all_workspaces_to_check,
+                "scopes_with_doc_ids": {k: len(v["doc_ids"]) for k, v in all_doc_ids_by_workspace.items()},
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
 
 @mcp.tool()
 def start_conversation() -> Dict[str, Any]:
@@ -1241,6 +1416,10 @@ async def message_gpt(
     role_id = int(role_id)
     agent_id = int(agent_id)
 
+    # Block empty / symbol-only prompts early (do not call LLM)
+    if not is_valid_user_prompt(user_message):
+        return {"response": "Invalid input. Please enter a valid message.", "status": "error"}
+
     try:
         token = get_http_headers(include_all=True).get('authorization',"") or get_http_headers().get('Authorization',"")
         if token:
@@ -1278,9 +1457,83 @@ async def message_gpt(
             }
         else:
             return {"response": response}
+    except GuardrailBlockedException as gbe:
+        
+        logger.warning(
+            f"[GUARDRAIL_BLOCKED] workspace={workspace_id} user={user_id} "
+            f"blocked_by={gbe.blocked_by} details={gbe.details}"
+        )
+        
+        # Mark the last user message as blocked
+        try:
+            bot.session.mark_last_message_blocked(workspace_id, user_id, session_id)
+        except Exception as mark_err:
+            logger.error(f"Failed to mark message as blocked: {mark_err}")
+        return {
+            "response": gbe.get_user_message(),
+            "blocked": True,
+            "blocked_by": gbe.blocked_by
+        }
     except Exception as e:
         print(f"Error in message_gpt: {e}")
         return {"error":f"Sorry, something went wrong while processing your request. Please try again.{e}"}
+
+@mcp.tool()
+async def delete_file_from_panel(
+    workspace_id: str,
+    user_id: str,
+    role_id: str,
+    industry: str,
+    sub_industry: str,
+    file_name: str,
+    agent_id: str | int = 1,
+    knowledge_bases: Optional[list[str]] = None,
+) -> dict:
+    """
+    Side-panel file delete. Reuses the exact same doc-id resolution + delete
+    logic as the chat 'delete/confirm' flow (message_gpt), but runs it in one
+    call and never writes to conversation/session history.
+    """
+    valid, err = validate_user_workspace_access(user_id=user_id, workspace_id=workspace_id)
+    if not valid:
+        return {"error": err}
+
+    valid_scope, scope_err, can_curate_kb = validate_chatbot_request_scope(
+        user_id=user_id,
+        workspace_id=workspace_id,
+        role_id=role_id,
+        industry=industry,
+        sub_industry=sub_industry,
+        knowledge_bases=knowledge_bases,
+    )
+    if not valid_scope:
+        return {"error": scope_err}
+
+    if not can_curate_kb:
+        return {"error": "You have search-only access in this workspace. Deleting files is not allowed for your account."}
+
+    if not file_name:
+        return {"error": "file_name is required"}
+
+    token = get_http_headers(include_all=True).get('authorization', "") or get_http_headers().get('Authorization', "")
+
+    bot = Chatbot(
+        industry=industry,
+        sub_industry=sub_industry,
+        knowledge_bases=knowledge_bases,
+        workspace_id=int(workspace_id),
+        user_id=int(user_id),
+        role_id=int(role_id),
+        session_id="panel-delete",  # not persisted; delete_file_now never touches session history
+        can_curate_kb=can_curate_kb,
+        file_names=None,
+        file_contents=None,
+        mode="Update",
+        agent_id=int(agent_id),
+        token=token,
+    )
+
+    return await bot.delete_file_now(file_name)
 
 @mcp.tool()
 def get_conversation_history(workspace_id: str = None, user_id: str = None, limit: Optional[int] = None) -> Dict[str, Any]:
@@ -1468,7 +1721,7 @@ def load_conversation(workspace_id: str, user_id: str, session_id: str) -> Dict[
         user_id_q = user_id
 
     try:
-        response = session.load_history(workspace_id_q, user_id_q, session_id)
+        response = session.load_history(workspace_id_q, user_id_q, session_id,blocked=False)
         return {"response": response}
     except Exception as e:
         return {"error": f"Error occurred while loading conversation: {e}"}
