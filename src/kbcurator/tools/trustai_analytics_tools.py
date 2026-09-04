@@ -615,7 +615,7 @@ def get_overall_metrics(
                 func.sum(
                     case(
                         (
-                            AnalyticsEventFact.outcome == "Block",
+                            AnalyticsEventFact.outcome.in_(["Block","Warn"]),
                             1,
                         ),
                         else_=0,
@@ -628,7 +628,7 @@ def get_overall_metrics(
                     case(
                         (
                             AnalyticsEventFact.outcome.in_(
-                                ["Pass", "Warn"]
+                                ["Pass"]
                             ),
                             1,
                         ),
