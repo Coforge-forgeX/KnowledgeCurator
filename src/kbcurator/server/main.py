@@ -20,7 +20,7 @@ def _load_env_robust() -> None:
 
     # a) Directory containing this file: .../KnowledgeCurator/src/kbcurator/server
     here = os.path.dirname(os.path.abspath(__file__))
-    candidates.append(os.path.abspath(os.path.join(here, "../../../../.env")))  # KnowledgeCurator/.env
+    candidates.append(os.path.abspath(os.path.join(here, "../../../.env")))  # KnowledgeCurator/.env
 
     # b) Current working directory .env (some tools run from repo root)
     candidates.append(os.path.abspath(os.path.join(os.getcwd(), ".env")))
@@ -42,10 +42,17 @@ def _load_env_robust() -> None:
 
 _load_env_robust()
 
+# TrustAI configuration lives in the same target database as the service unless
+# a deployment explicitly supplies a separate TRUSTAI_DEV_DB.
+os.environ.setdefault(
+    "TRUSTAI_DEV_DB",
+    os.getenv("POSTGRESQL_DATABASE_DATABASE", "test_nt"),
+)
+
 # DEBUG/ROBUSTNESS: ensure global workspace env is populated from KnowledgeCurator/.env.
 # This guards against cases where other components cleared these keys after startup.
 try:
-    _kc_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.env"))
+    _kc_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.env"))
     if os.path.exists(_kc_env):
         _vals = {}
         try:
@@ -94,8 +101,10 @@ from kbcurator.tools import account_status_tool  # noqa: F401
 from kbcurator.tools import llm_router_tool  # noqa: F401
 from kbcurator.tools import sharepoint_agent 
 from kbcurator.tools import config
-from kbcurator.tools import trustai_tools
-from kbcurator.tools import trustai_analytics_tools
+
+if os.getenv("TRUSTAI_DEV_DB"):
+    from kbcurator.tools import trustai_tools
+    from kbcurator.tools import trustai_analytics_tools
 # ---------------------------
 # Middleware
 # ---------------------------
