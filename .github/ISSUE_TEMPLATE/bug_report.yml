@@ -1,0 +1,87 @@
+name: Bug Report
+description: Report a defect or unexpected behavior in the Knowledge Base service.
+title: "[BUG]: "
+labels:
+  - bug
+
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Briefly describe the issue.
+      placeholder: KB indexing fails when processing SharePoint documents.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - KB APIs
+        - Indexer
+        - Search
+        - Integration
+        - Database
+        - UI
+        - Deployment
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Upload a document
+        2. Trigger indexing
+        3. Open search
+        4. Observe failure
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Error Messages
+      description: Paste relevant logs, stack traces, or screenshots.
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: dev / stage / prod
+
+  - type: input
+    id: version
+    attributes:
+      label: Release / Commit
+      placeholder: commit hash, tag, or build number
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Critical
+        - High
+        - Medium
+        - Low
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Business Impact
+      description: Explain user or business impact.

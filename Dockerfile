@@ -40,4 +40,4 @@ EXPOSE 8000
 WORKDIR /app/src
 #CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker kbcurator.server.main:http_app --bind 0.0.0.0:${PORT:-9000}"]
 #CMD [ "uvicorn", "kbcurator.server.main:http_app --bind 0.0.0.0:${PORT:-9000}"]
-CMD ["sh","-c","gunicorn -k uvicorn.workers.UvicornWorker kbcurator.server.main:http_app --bind 0.0.0.0:${PORT:-8000} --timeout 300 --workers 1"]
+CMD ["sh","-c","gunicorn -k uvicorn.workers.UvicornWorker kbcurator.server.main:http_app --bind 0.0.0.0:${PORT:-9000} --timeout 300 --workers 1"]
