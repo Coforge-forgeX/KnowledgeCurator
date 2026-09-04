@@ -1,5 +1,4 @@
 import os
-from urllib.parse import quote_plus
 import threading
 import logging
 import certifi
@@ -71,13 +70,6 @@ class MongoDBSingleton:
             mongodb_uri = os.getenv("MONGODB_DATABASE_URI", "").strip()
             if not mongodb_uri:
                 raise ValueError("MONGODB_DATABASE_URI environment variable is required")
-
-            if "://" in mongodb_uri and "@" in mongodb_uri:
-                scheme, rest = mongodb_uri.split("://", 1)
-                userinfo, host_and_query = rest.rsplit("@", 1)
-                if ":" in userinfo:
-                    username, password = userinfo.split(":", 1)
-                    mongodb_uri = f"{scheme}://{username}:{quote_plus(password)}@{host_and_query}"
 
             self._client = MongoClient(
                 mongodb_uri,
