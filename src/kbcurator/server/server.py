@@ -83,9 +83,10 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
         # Initialize other services
         logging.info("🔧 Initializing services...")
         
-        # Start worker scheduler job for trustai aggregation tables.
-        start_scheduler()
-        logging.info("Start scheduler for trustai_analytics...")
+        if os.getenv("USE_TRUSTAI","false") == "true":
+            # Start worker scheduler job for trustai aggregation tables.
+            start_scheduler()
+            logging.info("Start scheduler for trustai_analytics...")
         
         logging.debug("Initializing Redis cache...")
         CacheFactory.initialize()  # (optional, usually called automatically)
