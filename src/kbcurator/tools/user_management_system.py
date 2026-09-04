@@ -677,6 +677,77 @@ def fetch_workspaces_list(user_id):
     session = db.Session()
     try:
         session.rollback()
+        def _global_workspace_from_env() -> dict:
+            raw_id = getenv("GLOBAL_WORKSPACE_ID", "2").strip().strip('"').strip("'")
+            try:
+                ws_id = int(raw_id)
+            except Exception:
+                ws_id = 2
+            return {
+                'workspace_id': ws_id,
+                # IMPORTANT: frontend deep-links use public_workspace_id.
+                # For a "global default" workspace to be clickable, it must be a real DB workspace
+                # with a public_workspace_id, or the UI will navigate to /workspace-detail/null.
+                'public_workspace_id': getenv("GLOBAL_PUBLIC_WORKSPACE_ID", "").strip() or None,
+                'workspace_name': getenv("GLOBAL_WORKSPACE_NAME", "Global Workspace"),
+                'workspace_desc': getenv(
+                    "GLOBAL_WORKSPACE_DESC",
+                    "Default workspace visible to all users.",
+                ),
+                'agent_count': 0,
+                'tool_count': 0,
+                'user_count': 0,
+            }
+
+        def _append_global_workspace(results: list) -> list:
+            if results is None:
+                results = []
+            global_ws = _global_workspace_from_env()
+            gw_id = global_ws.get('workspace_id')
+            try:
+                gw_id_int = int(gw_id)
+            except Exception:
+                gw_id_int = gw_id
+
+            for ws in results:
+                try:
+                    if int(ws.get('workspace_id')) == gw_id_int:
+                        return results
+                except Exception:
+                    if ws.get('workspace_id') == gw_id:
+                        return results
+            results.append(global_ws)
+            return results
+
+        def _ensure_global_workspace_mapping(session, user_id: int) -> None:
+            """Make sure user has mapping to the configured global workspace.
+
+            This is required for /bookmark and /workspaces endpoints, which enforce
+            workspace_users_mapping access checks.
+            """
+            gw = _global_workspace_from_env()
+            gw_id = gw.get('workspace_id')
+            if not gw_id:
+                return
+            try:
+                gw_id = int(gw_id)
+                user_id = int(user_id)
+            except Exception:
+                return
+
+            exists = session.query(db.UserMap).filter(
+                db.UserMap.user_id == user_id,
+                db.UserMap.workspace_id == gw_id,
+                db.UserMap.is_active == True
+            ).first()
+            if exists:
+                return
+            try:
+                _assign_user_to_workspace(user_id, gw_id)
+            except Exception:
+                # Don't fail list call if mapping can't be created.
+                return
+
 
         def _global_workspace_from_env() -> dict:
             raw_id = getenv("GLOBAL_WORKSPACE_ID", "2").strip().strip('"').strip("'")
@@ -850,6 +921,8 @@ def fetch_workspaces_list(user_id):
             }
             for ws in workspaces_with_counts
         ]
+        # Ensure the authenticated user can access the global workspace if it is shown.
+        _ensure_global_workspace_mapping(session, jwt_user_id)
 
         # Ensure the authenticated user can access the global workspace if it is shown.
         _ensure_global_workspace_mapping(session, jwt_user_id)

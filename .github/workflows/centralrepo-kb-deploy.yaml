@@ -2,19 +2,12 @@ name: Deploy-KBCurator deploy to poly app
 
 on:
   workflow_dispatch: 
-  push:
-    branches:
-      - stage
-    paths:    
-      - 'src/kbcurator/**'
-      - 'Dockerfile'
-      - '.github/workflows/python-kb-stage-agents.yaml'
    
 env:
-  AZURE_WEBAPP_NAME: forgeX-stg-kb                     
-  REGISTRY: ${{ secrets.registry }}
-  DOCKER_IMAGE_NAME: stg-poly-kbcurator
-  rg_name: ${{ secrets.STG_RG_NAME }}
+  AZURE_WEBAPP_NAME: forgex-iac-test-kb                     
+  REGISTRY: forgexacr001.azurecr.io
+  DOCKER_IMAGE_NAME: centralrepo-kbcurator
+  rg_name: forgex-iactest
   subscription_id: ${{ secrets.subscription_id }}
 
 jobs:
@@ -59,6 +52,14 @@ jobs:
         az resource update \
           --ids /subscriptions/${{ env.subscription_id }}/resourceGroups/${{ env.rg_name }}/providers/Microsoft.Web/sites/${{ env.AZURE_WEBAPP_NAME }}/config/web \
           --set properties.acrUseManagedIdentityCreds=true
+    - name: Get Managed Identity Principal ID
+      id: identity
+      run: |
+         PRINCIPAL_ID=$(az webapp identity show \
+            --name ${{ env.AZURE_WEBAPP_NAME }} \
+            --resource-group ${{ env.rg_name }} \
+            --query principalId \            -o tsv)
+         echo "PRINCIPAL_ID=$PRINCIPAL_ID" >> $GITHUB_ENV
 
     - name: Set Health Check Path
       run: |

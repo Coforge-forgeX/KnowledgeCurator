@@ -1,4 +1,6 @@
 
+import os
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
@@ -11,7 +13,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         env_ignore_empty=False,
         extra="ignore",
-    )
+        )
 
     # =====================
     # Database Configuration
@@ -131,6 +133,11 @@ class Settings(BaseSettings):
     SIMILARITY_SEARCH_SIM_SEARCH_K: Optional[int] = Field(None, env="SIMILARITY_SEARCH_SIM_SEARCH_K")
     RETRIEVER_RETRIEVER_SEARCH_TYPE: Optional[str] = Field(None, env="RETRIEVER_RETRIEVER_SEARCH_TYPE")
     RETRIEVER_RETRIEVER_K: Optional[int] = Field(None, env="RETRIEVER_RETRIEVER_K")
+    # =====================
+    # Global Workspace (always-visible)
+    # =====================
+    GLOBAL_WORKSPACE_ID: Optional[int] = Field(None, env="GLOBAL_WORKSPACE_ID")
+    GLOBAL_PUBLIC_WORKSPACE_ID: Optional[str] = Field(None, env="GLOBAL_PUBLIC_WORKSPACE_ID")
 
     # =====================
     # Global Workspace (always-visible)
